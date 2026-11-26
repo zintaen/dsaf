@@ -1,4 +1,4 @@
-# DSAF Repository Auto-Evolution Strategy (`v0.8.0`)
+# DSAF Repository Auto-Evolution Strategy (`v0.9.0`)
 
 Pinned governance rules for autonomous Design System & UX refinement loops bootstrapped via `dsaf init`.
 

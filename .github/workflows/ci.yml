@@ -20,6 +20,7 @@ jobs:
       - run: npm test
       - run: node bin/dsaf.mjs version
       - run: node bin/dsaf.mjs audit --self-test
+      - run: node bin/dsaf.mjs personas --self-test
       - run: node bin/dsaf.mjs init --self-test
       - run: node bin/dsaf.mjs mcp --self-test
       - run: node skill/scripts/ci-report.mjs --self-test

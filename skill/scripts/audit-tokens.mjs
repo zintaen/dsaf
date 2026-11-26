@@ -504,7 +504,13 @@ export function scanTarget(targetPath, options = {}) {
           continue;
         }
         const lower = entry.name.toLowerCase();
-        if (lower.endsWith(".json") && (/\.tokens\.json$/.test(lower) || /tokens?[^/]*\.json$/.test(lower))) {
+        if (
+          lower.endsWith(".json") &&
+          (/\.tokens\.json$/.test(lower) ||
+            /tokens?[^/]*\.json$/.test(lower) ||
+            /(^|\/)(?:tokens|design-tokens)\/[^/]+\.json$/i.test(rel)) &&
+          !/(?:^|\/)(?:package|tsconfig[^/]*|.*schema.*|meta)\.json$/i.test(lower)
+        ) {
           tokenJsonFiles.push(full);
         } else if (CODE_EXTS.has(extname(lower))) {
           codeFiles.push(full);
@@ -1069,6 +1075,14 @@ function runSelfTest() {
     assert.equal(svgScan.drift.swatchPaletteHits, 3, "Must count swatch table literals separately");
     assert.equal(svgScan.drift.hardcodedColorHits, 1, "Must still enforce inline style={} hardcoded hexes");
     assert.equal(svgScan.ciFindings.active.filter((f) => f.ruleId === "dsaf/hardcoded-color").length, 1);
+
+    // Monorepo tokens/color.json + tokens/foundations.json discovery
+    const monoTokDir = join(scratch, "mono-tokens/packages/design/tokens");
+    mkdirSync(monoTokDir, { recursive: true });
+    writeFileSync(join(monoTokDir, "color.json"), JSON.stringify({ light: { bg: { $type: "color", $value: "#F7F8FA" } }, dark: { bg: { $type: "color", $value: "#0A111D" } } }));
+    writeFileSync(join(monoTokDir, "meta.json"), JSON.stringify({ title: "ignore non-dtcg" }));
+    const monoTokScan = scanTarget(join(scratch, "mono-tokens"));
+    assert.equal(monoTokScan.dtcg.tokenCount, 2, "Must discover DTCG tokens inside packages/*/tokens/color.json");
 
     console.log("AUDIT_TOKENS_SELF_TEST_PASSED (DTCG + scoped CSS/@theme/Tailwind + fixture/OG + SVG/swatch + SARIF/waivers)");
     return 0;

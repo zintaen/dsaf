@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
- * DSAF v0.8.0 — Zero-Dependency Stdio MCP Server (`dsaf mcp`).
- * Exposes 8 read-only audit tools over JSON-RPC 2.0 stdio (supporting both
+ * DSAF v0.9.0 — Zero-Dependency Stdio MCP Server (`dsaf mcp`).
+ * Exposes 9 read-only audit tools over JSON-RPC 2.0 stdio (supporting both
  * Content-Length LSP framing and newline-delimited JSON-RPC messages).
  */
 
@@ -18,8 +18,9 @@ import { compareDefinedToShipped, compareVertices } from "./audit-figma-diff.mjs
 import { runAuditPipeline } from "./audit-pipeline.mjs";
 import { planFloorFixes } from "./fix-floor.mjs";
 import { readGovernanceStatus } from "./evolve-runner.mjs";
+import { generatePersonas } from "./generate-personas.mjs";
 
-export const MCP_SERVER_VERSION = "0.8.0";
+export const MCP_SERVER_VERSION = "0.9.0";
 export const MCP_PROTOCOL_VERSION = "2024-11-05";
 
 export const TOOL_DEFINITIONS = [
@@ -127,6 +128,18 @@ export const TOOL_DEFINITIONS = [
       required: ["target"],
     },
   },
+  {
+    name: "dsaf_personas",
+    description: "Deterministic read-only Multi-Axis Persona Matrix generator seeded from repository topology and surface mode.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        target: { type: "string", description: "Target repository directory." },
+        depth: { type: "string", enum: ["quick", "deep"], description: "Persona depth: quick (5) or deep (8)." },
+      },
+      required: ["target"],
+    },
+  },
 ];
 
 function executeTool(name, args = {}) {
@@ -195,6 +208,8 @@ function executeTool(name, args = {}) {
     }
     case "dsaf_evolve_status":
       return readGovernanceStatus(resolve(args.target || "."));
+    case "dsaf_personas":
+      return generatePersonas(resolve(args.target || "."), { depth: args.depth || "deep" });
     default:
       throw new Error(`Unknown tool: ${name}`);
   }
@@ -389,13 +404,14 @@ function runSelfTest() {
         JSON.stringify({ jsonrpc: "2.0", id: 7, method: "tools/call", params: { name: "dsaf_figma_diff", arguments: { tokens: join(scratch, "src"), runtime: runtimeJson } } }),
         JSON.stringify({ jsonrpc: "2.0", id: 8, method: "tools/call", params: { name: "dsaf_fix_preview", arguments: { target: join(scratch, "src") } } }),
         JSON.stringify({ jsonrpc: "2.0", id: 9, method: "tools/call", params: { name: "dsaf_evolve_status", arguments: { target: scratch } } }),
-        JSON.stringify({ jsonrpc: "2.0", id: 10, method: "unknown/method" }),
+        JSON.stringify({ jsonrpc: "2.0", id: 10, method: "tools/call", params: { name: "dsaf_personas", arguments: { target: scratch, depth: "deep" } } }),
+        JSON.stringify({ jsonrpc: "2.0", id: 11, method: "unknown/method" }),
       ].join("\n") + "\n"
     );
 
-    assert.equal(responses.length, 9);
+    assert.equal(responses.length, 10);
     const listRes = JSON.parse(responses[0]);
-    assert.equal(listRes.result.tools.length, 8);
+    assert.equal(listRes.result.tools.length, 9);
 
     const reconRes = JSON.parse(JSON.parse(responses[1]).result.content[0].text);
     assert.ok(["S", "C", "P"].includes(reconRes.recommendedMode));
@@ -421,10 +437,14 @@ function runSelfTest() {
     assert.equal(evoRes.initialized, false);
     assert.equal(evoRes.status, "uninitialized");
 
-    const unknownRes = JSON.parse(responses[8]);
+    const persRes = JSON.parse(JSON.parse(responses[8]).result.content[0].text);
+    assert.equal(persRes.schema, "dsaf-personas/1");
+    assert.equal(persRes.personaCount, 8);
+
+    const unknownRes = JSON.parse(responses[9]);
     assert.equal(unknownRes.error.code, -32601);
 
-    console.log("DSAF_MCP_SELF_TEST_PASSED (8 tools + Content-Length & NDJSON framing)");
+    console.log("DSAF_MCP_SELF_TEST_PASSED (9 tools + Content-Length & NDJSON framing)");
     return 0;
   } finally {
     rmSync(scratch, { recursive: true, force: true });
@@ -440,7 +460,7 @@ if (isEntrypoint) {
     },
   });
   if (values.help) {
-    console.log("Usage: dsaf mcp [--self-test]\nRuns the zero-dependency JSON-RPC 2.0 stdio MCP server exposing 8 read-only DSAF tools.");
+    console.log("Usage: dsaf mcp [--self-test]\nRuns the zero-dependency JSON-RPC 2.0 stdio MCP server exposing 9 read-only DSAF tools.");
     process.exit(0);
   }
   if (values["self-test"]) {

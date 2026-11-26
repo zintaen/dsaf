@@ -29,6 +29,7 @@ const REQUIRED_FILES = [
   "resources/evolve-strategy.md",
   "resources/preview-shell.html",
   "scripts/audit-pipeline.mjs",
+  "scripts/generate-personas.mjs",
   "scripts/init-evolve.mjs",
   "scripts/fix-floor.mjs",
   "scripts/evolve-runner.mjs",
@@ -133,6 +134,7 @@ function main() {
   console.log("==> [4/4] Running deterministic CLI --self-test suites...");
   for (const script of [
     "recon.mjs",
+    "generate-personas.mjs",
     "init-evolve.mjs",
     "ci-report.mjs",
     "dsaf-hook.mjs",
@@ -158,7 +160,7 @@ function main() {
     }
   }
 
-  console.log("SKILL_INTEGRITY_ALL_PASSED (v0.8.0)");
+  console.log("SKILL_INTEGRITY_ALL_PASSED (v0.9.0)");
 }
 
 main();

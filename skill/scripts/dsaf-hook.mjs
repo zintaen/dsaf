@@ -47,35 +47,93 @@ const SKIP_DIRS = new Set([
   ".venv",
 ]);
 
+function splitTopLevelCommas(selStr) {
+  const parts = [];
+  let paren = 0;
+  let bracket = 0;
+  let start = 0;
+  for (let i = 0; i < selStr.length; i++) {
+    const ch = selStr[i];
+    if (ch === "(") paren++;
+    else if (ch === ")") paren = Math.max(0, paren - 1);
+    else if (ch === "[") bracket++;
+    else if (ch === "]") bracket = Math.max(0, bracket - 1);
+    else if (ch === "," && paren === 0 && bracket === 0) {
+      const part = selStr.slice(start, i).trim();
+      if (part) parts.push(part);
+      start = i + 1;
+    }
+  }
+  const tail = selStr.slice(start).trim();
+  if (tail) parts.push(tail);
+  return parts;
+}
+
+function resolveNestedSelector(parentResolved, rawChildSelector) {
+  const child = String(rawChildSelector || "").trim();
+  if (!child) return parentResolved || "";
+  if (child.startsWith("@")) return parentResolved || "";
+  if (!parentResolved) return child;
+  const pBranches = splitTopLevelCommas(parentResolved);
+  const cBranches = splitTopLevelCommas(child);
+  const out = [];
+  for (const p of pBranches) {
+    for (const c of cBranches) {
+      out.push(c.includes("&") ? c.replace(/&/g, p) : `${p} ${c}`);
+    }
+  }
+  return out.join(", ");
+}
+
 export function extractCssRuleBlocks(cleanedCss) {
   const blocks = [];
   let idx = 0;
-  let depth = 0;
   let headerStart = 0;
   const stack = [];
+  let chunkStart = 0;
+
+  const flushChunk = (upTo) => {
+    if (stack.length > 0 && upTo > chunkStart) {
+      stack[stack.length - 1].directChunks.push(cleanedCss.slice(chunkStart, upTo));
+    }
+  };
 
   while (idx < cleanedCss.length) {
     const ch = cleanedCss[idx];
     if (ch === "{") {
-      const selector = cleanedCss.slice(headerStart, idx).trim();
-      const inStartingStyle = stack.some((s) => /@starting-style\b/i.test(s.selector)) || /@starting-style\b/i.test(selector);
-      depth++;
-      stack.push({ selector, bodyStart: idx + 1, selectorStart: headerStart, inStartingStyle });
+      const header = cleanedCss.slice(headerStart, idx);
+      const selector = header.trim();
+      flushChunk(headerStart);
+      const parent = stack.length > 0 ? stack[stack.length - 1] : null;
+      const inStartingStyle = Boolean(parent?.inStartingStyle) || /@starting-style\b/i.test(selector);
+      const resolvedSelector = resolveNestedSelector(parent?.resolvedSelector || "", selector);
+      stack.push({
+        selector,
+        resolvedSelector,
+        bodyStart: idx + 1,
+        selectorStart: headerStart,
+        inStartingStyle,
+        directChunks: [],
+      });
       headerStart = idx + 1;
+      chunkStart = idx + 1;
     } else if (ch === "}") {
+      flushChunk(idx);
       const top = stack.pop();
       if (top) {
         blocks.push({
           selector: top.selector,
+          resolvedSelector: top.resolvedSelector || top.selector,
           selectorStart: top.selectorStart,
           bodyStart: top.bodyStart,
           bodyEnd: idx,
           inStartingStyle: top.inStartingStyle,
-          body: cleanedCss.slice(top.bodyStart, idx),
+          body: top.directChunks.join(""),
+          fullBody: cleanedCss.slice(top.bodyStart, idx),
         });
       }
-      depth = Math.max(0, depth - 1);
       headerStart = idx + 1;
+      chunkStart = idx + 1;
     } else if (ch === ";") {
       headerStart = idx + 1;
     }
@@ -167,7 +225,7 @@ function findAncestorDsCssFiles(startDir, maxLevels = 3, maxFiles = 6, maxBytes 
 }
 
 const FOCUS_INDICATOR_RE =
-  /\b(?:box-shadow|border(?:-color|-width)?|outline-offset)\s*:|\boutline\s*:\s*(?!none\b|0\b)[^;}\n]+/i;
+  /\b(?:box-shadow|border(?:-color|-width)?|outline-offset)\s*:|\boutline\s*:\s*(?!\s*(?:none|0)\b)\S[^;}\n]*/i;
 
 export function discoverExternalDsCss(startDir = ".", explicitPaths = []) {
   const paths = [];
@@ -205,8 +263,9 @@ export function discoverExternalDsCss(startDir = ".", explicitPaths = []) {
     }
     const clean = stripCommentsPreservingLines(raw);
     for (const blk of extractCssRuleBlocks(clean)) {
-      if (/(?::focus-within\b|:has\([^)]*:focus(?:-visible)?\b)/i.test(blk.selector) && FOCUS_INDICATOR_RE.test(blk.body)) {
-        focusBlocks.push({ selector: blk.selector, body: blk.body, source: p });
+      const sel = blk.resolvedSelector || blk.selector;
+      if (/(?::focus-within\b|:has\([^)]*:focus(?:-visible)?\b)/i.test(sel) && FOCUS_INDICATOR_RE.test(blk.body)) {
+        focusBlocks.push({ selector: sel, resolvedSelector: sel, body: blk.body, source: p });
       }
     }
   }
@@ -281,30 +340,67 @@ export function scanUiContent(raw, filePath, options = {}) {
     const hasVisibleFocusIndicator = (body) => FOCUS_INDICATOR_RE.test(body);
     const SKIP_FOCUS_RE =
       /(?:^|[\s,])(?:#(?:main|content|main-content|app)|main|\[tabindex\s*=\s*["']?-1["']?\])(?::focus(?:-visible)?|$)/i;
+    const WRAPPER_FOCUS_RE =
+      /(?:^|[._-])(?:positioner|popup|listbox|menu-list|combobox-list|select-list|time-picker-list)\b/i;
+    const ITEM_ACTIVE_RE = /\b(?:background(?:-color)?|box-shadow|border(?:-color|-width)?|outline(?:-offset)?)\s*:/i;
+    const getBlockBranches = (other) => splitTopLevelCommas(other.resolvedSelector || other.selector || "");
     const hasBranchSiblingFocusVisible = (p) => {
-      const targetSel = `${p}:focus-visible`.toLowerCase();
+      const base = p.replace(/:focus(?:-visible)?\s*$/i, "").trim();
+      const targetSel = `${base}:focus-visible`.toLowerCase();
       return cssBlocks.some(
         (other) =>
           hasVisibleFocusIndicator(other.body) &&
-          other.selector.split(",").some((os) => os.trim().toLowerCase() === targetSel)
+          getBlockBranches(other).some((os) => os.trim().toLowerCase() === targetSel)
+      );
+    };
+    const hasBranchItemHighlightRule = (p) => {
+      const base = p.replace(/:focus(?:-visible)?\s*$/i, "").trim().toLowerCase();
+      if (!base) return false;
+      const targets = new Set([
+        `${base}[data-highlighted]`,
+        `${base}[data-focused]`,
+        `${base}[aria-selected="true"]`,
+        `${base}[aria-selected='true']`,
+      ]);
+      return cssBlocks.some(
+        (other) =>
+          ITEM_ACTIVE_RE.test(other.body) &&
+          getBlockBranches(other).some((os) => targets.has(os.trim().toLowerCase()))
       );
     };
     const hasBranchParentFocusWithin = (p) => {
+      const bareBase = p.replace(/:focus(?:-visible)?\s*$/i, "").trim().toLowerCase();
+      if (bareBase) {
+        const escBase = bareBase.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        const hasChildPat = new RegExp(`:has\\([^;]*${escBase}(?::focus(?:-visible)?\\b|\\b)`, "i");
+        if (
+          combinedFocusBlocks.some(
+            (other) =>
+              hasVisibleFocusIndicator(other.body) &&
+              getBlockBranches(other).some((os) => {
+                const s = os.trim();
+                return hasChildPat.test(s) && /:focus(?:-visible)?\b/i.test(s);
+              })
+          )
+        ) {
+          return true;
+        }
+      }
       const idx = p.search(/[\s>~+]+[^\s>~+]+$/);
       if (idx <= 0) return false;
-      const ancestor = p.slice(0, idx).trim().toLowerCase();
+      const ancestor = p.slice(0, idx).replace(/[\s>~+]+$/, "").trim().toLowerCase();
       const tokens = ancestor.match(/[#.][a-zA-Z0-9_-]+/g) || [];
       for (const tok of [ancestor, ...tokens]) {
         const esc = tok.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
         const pat = new RegExp(
-          `(?:^|[\\s>~+,])${esc}(?::[a-z-]+(?:\\([^)]*\\))?|\\.[a-zA-Z0-9_-]+)*(?::focus-within\\b|:has\\([^)]*:focus(?:-visible)?\\))`,
+          `(?:^|[\\s>~+,])${esc}(?::[a-z-]+(?:\\([^)]*\\))?|\\.[a-zA-Z0-9_-]+)*(?::focus-within\\b|:has\\([^;]*:focus(?:-visible)?\\b)`,
           "i"
         );
         if (
           combinedFocusBlocks.some(
             (other) =>
               hasVisibleFocusIndicator(other.body) &&
-              other.selector.split(",").some((os) => pat.test(os.trim()))
+              getBlockBranches(other).some((os) => pat.test(os.trim()))
           )
         ) {
           return true;
@@ -313,28 +409,31 @@ export function scanUiContent(raw, filePath, options = {}) {
       return false;
     };
     const isSelectorSafeForOutlineNone = (selStr) => {
-      const parts = selStr.split(",").map((s) => s.trim()).filter(Boolean);
+      const parts = splitTopLevelCommas(selStr);
       if (parts.length === 0) return false;
       return parts.every((p) => {
         if (/:focus:not\(:focus-visible\)/i.test(p) || SKIP_FOCUS_RE.test(p)) return true;
-        if (!/:focus\b/i.test(p) && hasBranchSiblingFocusVisible(p)) return true;
+        if (!/:focus-visible\b/i.test(p) && WRAPPER_FOCUS_RE.test(p)) return true;
+        if (!/:focus-visible\b/i.test(p) && hasBranchSiblingFocusVisible(p)) return true;
         if (/:focus(?:-visible)?\b/i.test(p) && hasBranchParentFocusWithin(p)) return true;
+        if (hasBranchItemHighlightRule(p)) return true;
         return false;
       });
     };
 
     for (const blk of cssBlocks) {
       const outMatch = /\boutline\s*:\s*(?:none|0)\b/i.exec(blk.body);
+      const effSelector = blk.resolvedSelector || blk.selector;
       if (outMatch) {
-        const hasReplacement = /\b(?:box-shadow|border(?:-color|-width)?|outline-offset)\s*:/i.test(blk.body);
-        if (!hasReplacement && !isSelectorSafeForOutlineNone(blk.selector)) {
+        const hasReplacement = hasVisibleFocusIndicator(blk.body);
+        if (!hasReplacement && !isSelectorSafeForOutlineNone(effSelector)) {
           findings.push({
             file: filePath,
             line: offsetToLine(cleanComments, slice.baseOffset + blk.bodyStart + outMatch.index),
             ruleId: "dsaf/no-outline-none-naked",
             tier: "floor",
             severity: "error",
-            message: `Focus \`${outMatch[0]}\` on \`${blk.selector || "(rule)"}\` without visible focus ring/border replacement.`,
+            message: `Focus \`${outMatch[0]}\` on \`${effSelector || "(rule)"}\` without visible focus ring/border replacement.`,
           });
         }
       }
@@ -683,6 +782,33 @@ function runSelfTest() {
     );
     const autoDsRes = checkTarget(join(dsProj, "src"), { tier: "floor" });
     assert.equal(autoDsRes.counts.floor, 0, "Auto-discovered node_modules/@acme/design/dist/styles.css must satisfy .pkg-field input:focus");
+
+    // 3d. CSS Nesting (&) + :has(> .input:focus-visible) + Base UI [data-highlighted] & popup positioners
+    const nestedCss = join(scratch, "nested-baseui.css");
+    writeFileSync(
+      nestedCss,
+      [
+        ".cs-input-group {",
+        "  border: 1px solid #7d889b;",
+        "  &:has(> .cs-input:focus-visible, .cs-multi-input:focus-visible) { outline: 2px solid #14243D; }",
+        "  & > .cs-input:focus-visible { outline: none; }",
+        "}",
+        ".cs-chart-plot {",
+        "  & .recharts-surface:focus { outline: none; }",
+        "  & .recharts-surface:focus-visible { outline: 2px solid #14243D; }",
+        "}",
+        ".cs-combobox-positioner { outline: 0; }",
+        ".cs-combobox-item {",
+        "  outline: 0;",
+        "  &[data-highlighted] { background: #eef1f5; }",
+        "}",
+        ".cs-data-table-scroll { overflow: auto; &:focus-visible { outline: 0; } }",
+        ".cs-data-table:has(> .cs-data-table-scroll:focus-visible) { outline: 2px solid #14243D; }",
+        ".naked-nested { &:focus { outline: none; } }",
+      ].join("\n")
+    );
+    const nestedRes = checkFile(nestedCss, { tier: "floor", displayPath: "nested-baseui.css" });
+    assert.equal(nestedRes.counts.floor, 1, "Must recognize nested :has/:focus-visible & [data-highlighted] while flagging .naked-nested:focus");
 
     // 4. Stdin hook payload
     const hookOut = runHookStdin(JSON.stringify({ tool_input: { file_path: badCss } }));

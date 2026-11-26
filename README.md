@@ -1,4 +1,4 @@
-# DSAF — Design System & UX/UI Audit Framework (`v0.8.0`)
+# DSAF — Design System & UX/UI Audit Framework (`v0.9.0`)
 
 [![Website](https://img.shields.io/badge/site-zintaen.github.io%2Fdsaf-1d4ed8)](https://zintaen.github.io/dsaf/)
 [![CI](https://github.com/zintaen/dsaf/actions/workflows/ci.yml/badge.svg)](https://github.com/zintaen/dsaf/actions/workflows/ci.yml)
@@ -65,7 +65,7 @@ node bin/dsaf.mjs guardrails --out ./your-app/.dsaf-guardrails --stack tailwind
 > - **Automatic `playwright` & `axe-core` discovery (`dsaf runtime`):** Automatically searches `process.cwd()` and the target file/directory's ancestor `node_modules/` folders cleanly with no `NODE_PATH` needed (override with `NODE_PATH` or `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH` if using an isolated browser dir).
 > - **`+SG` gate targets & env caps (`check-design-discipline.mjs`):** Accepts either a directory (`app`, `src`) or a single file (`app/globals.css`). Configure budgets with `DSAF_MAX_HARDCODED_COLORS`, `DSAF_MAX_IMPORTANT`, `DSAF_MAX_TW_ARBITRARY`, plus optional `DSAF_MAX_SVG_COLORS` and `DSAF_MAX_SWATCH_COLORS`.
 
-Or install/link via `npm link` / `npm install -g @zintaen/dsaf` (or `npx @zintaen/dsaf` — `package.json` configures a strict `"files"` whitelist excluding maintainer-only `evolve/`; releases publish automatically via GitHub Actions OIDC `.github/workflows/publish.yml` on `v*` tags) to invoke `dsaf <command>` anywhere (`audit`, `init`, `fix`, `evolve`, `mcp`, `recon`, `tokens`, `figma-diff`, `runtime`, `scorecard`, `diff`, `guardrails`, `hook`, `install-skill`, `doctor`, `integrity`, `verify`, `mine`, `sync`, `version`). See [RELEASE_NOTES.md](RELEASE_NOTES.md) for concise highlights per release.
+Or install/link via `npm link` / `npm install -g @zintaen/dsaf` (or `npx @zintaen/dsaf` — `package.json` configures a strict `"files"` whitelist excluding maintainer-only `evolve/`; releases publish automatically via GitHub Actions OIDC `.github/workflows/publish.yml` on `v*` tags) to invoke `dsaf <command>` anywhere (`audit`, `init`, `personas`, `fix`, `evolve`, `mcp`, `recon`, `tokens`, `figma-diff`, `runtime`, `scorecard`, `diff`, `guardrails`, `hook`, `install-skill`, `doctor`, `integrity`, `verify`, `mine`, `sync`, `version`). See [RELEASE_NOTES.md](RELEASE_NOTES.md) for concise highlights per release.
 
 ### 3. Install `dsaf` (Zero-Clone) into AI Coding Agents
 
@@ -85,7 +85,7 @@ Or copy [skill/](skill/) manually into your agent's skill directory (`~/.gemini/
 
 ```yaml
 - uses: actions/checkout@v7
-- uses: zintaen/dsaf@v0.8.0
+- uses: zintaen/dsaf@v0.9.0
   with:
     target: apps/web
     sarif-file: dsaf.sarif
@@ -113,10 +113,11 @@ Always start at **Step 0**: the agent runs a fast ~30-second Tier 0 read-only `r
 | Command / Script | Purpose | Zero-Dep Core |
 |---|---|---|
 | `dsaf audit <target>` (`skill/scripts/audit-pipeline.mjs`) | One-click Tier 0 Read-Only orchestrator chaining `recon` (incl. Surface Mode), scoped `tokens`, optional `--cdp`/multi-route `runtime`, optional 3-vertex `figma-diff --runtime`, `audit-diff`, and `--sarif` / `--github` CI outputs into `audit-summary.json` + Markdown | Yes (`runtime` needs Playwright) |
-| `dsaf init [target]` (`skill/scripts/init-evolve.mjs`) | Universal repository auto-evolution bootstrap scaffolding `.dsaf/` C1–C10 governance (`STRATEGY.md`, `rules.json`, `decision-queue.md`, `strategy-feedback.md`, `handoff.md`), optional `--with-hook`, `--with-guardrails`, `--with-workflow` | Yes |
+| `dsaf init [target]` (`skill/scripts/init-evolve.mjs`) | Universal repository auto-evolution bootstrap scaffolding `.dsaf/` C1–C10 governance (`STRATEGY.md`, `rules.json`, `decision-queue.md`, `strategy-feedback.md`, `handoff.md`), topology-seeded `.dsaf/personas.json`, optional `--with-hook`, `--with-guardrails`, `--with-workflow` | Yes |
+| `dsaf personas [target]` (`skill/scripts/generate-personas.mjs`) | Deterministically seeds 5 (`quick`) or 8 (`deep`) orthogonal multi-axis personas bound to `dsaf recon` topology, Surface Mode, routes, and T2 edge scenarios | Yes |
 | `dsaf fix <target>` (`skill/scripts/fix-floor.mjs`) | Dry-run planner (`--dry-run`) and safe bounded Floor auto-remediator (`--apply --backup`) for `transition: all`, `100vw`, naked `outline: none`, and unmuted `<video autoplay>` respecting `.dsaf/rules.json` `protectedFiles` | Yes |
 | `dsaf evolve [target]` (`skill/scripts/evolve-runner.mjs`) | Supervised `.dsaf/` evolution runner enforcing `.dsaf/STOP` kill switches, `.dsaf/circuit-breaker.json` consecutive failure caps, bounded Floor fixes, and `.dsaf/handoff.md` round logs | Yes |
-| `dsaf mcp` (`skill/scripts/mcp-server.mjs`) | Zero-dep JSON-RPC 2.0 stdio MCP server exposing 8 read-only tools (`dsaf_recon`, `dsaf_tokens`, `dsaf_doctor`, `dsaf_hook_check`, `dsaf_figma_diff`, `dsaf_audit`, `dsaf_fix_preview`, `dsaf_evolve_status`) | Yes (`Node >= 20`) |
+| `dsaf mcp` (`skill/scripts/mcp-server.mjs`) | Zero-dep JSON-RPC 2.0 stdio MCP server exposing 9 read-only tools (`dsaf_recon`, `dsaf_tokens`, `dsaf_doctor`, `dsaf_hook_check`, `dsaf_figma_diff`, `dsaf_audit`, `dsaf_fix_preview`, `dsaf_evolve_status`, `dsaf_personas`) | Yes (`Node >= 20`) |
 | `dsaf recon <target>` (`skill/scripts/recon.mjs`) | 30s read-only scan detecting stack, routes, Storybook, DTCG tokens, Figma Code Connect, cloud DB risk (`T2-Mock`), Surface Mode (`Persuade/Operate/Read/Experience`), and recommended Mode `S/C/P` | Yes |
 | `dsaf tokens <dir-or-json>` (`skill/scripts/audit-tokens.mjs`) | Validates W3C DTCG tokens (`$value`, `$type`, `{alias}`, `$ref`, cycles), Light/Dark parity & contrast, separates semantic orphans vs palette scale vars, skips `fixtures/`/`demo/`/`ImageResponse`/`playwright-report/`, tracks Tailwind `@theme`/arbitrary/primitive drift, and enforces `dsaf-ignore` waivers + `--sarif` / `--github` / `--report-unused-ignores` | Yes |
 | `dsaf hook <check\|stdin\|install>` (`skill/scripts/dsaf-hook.mjs`) | Edit-time Floor/Reflex checker for Claude Code, Cursor & Codex `PostToolUse` hooks with external DS `:focus-within` / `:has(:focus-visible)` resolution (`--ds-css`) plus CI `--sarif` / `--github` file gate | Yes |

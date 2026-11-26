@@ -4,6 +4,13 @@ Concise version highlights for **DSAF (`@zintaen/dsaf`)**. Follows [Semantic Ver
 
 ---
 
+## v0.9.0 (2026-11-27) — Deterministic Personas (`dsaf personas`), Hardened Probes & Rebuilt UI
+
+- **Topology-Seeded Persona Generator (`dsaf personas`):** Added deterministic `generate-personas.mjs` generating `5` (`quick`) or `8` (`deep`) orthogonal multi-axis personas bound to detected routes, Surface Mode, and T2-Mock edge cases, automatically written to `.dsaf/personas.json` during `dsaf init` and exposed as the 9th MCP tool (`dsaf_personas`).
+- **CSS Nesting, Base UI & Monorepo Accuracy:** `dsaf hook` now resolves nested `&` rules with isolated `directChunks`, top-level comma splitting outside `(...)`, Base UI `[data-highlighted]`/`[data-focus-visible]` wrappers, and `:has(> child:focus-visible)` parent focus rules (`17 -> 0` false-positive Floor findings on nested DS libraries), while `dsaf recon` & `dsaf tokens` discover `tokens/*.json` directories and exclude monorepo self-dependencies + headless primitives (`@base-ui/*`, `@radix-ui/*`) for clean `Mode S` classification.
+- **Anti-Broken-UI Runtime Probes (`dsaf runtime`):** Added pseudo `::before`/`::after` extended touch hit-area detection (`computeEffectiveHitArea`) plus explicit guards for mobile `headerBloat`, `crushedBadges` vertical pill wrapping, and horizontally `clippedTables`.
+- **Rebuilt Docs & Canonical Preview Shell:** Fixed mobile header crowding, `24px` single-line badges, Light + Dark showcase captures, responsive stacked Release Notes cards (`<= 640px`), `44x44` transparent hit wrappers around `26px` Gold pins, and opaque dark card surface fallbacks (`apcaBodyMin=67..69`, `axe=0`, `clip=0` across `320px–1920px`).
+
 ## v0.8.0 (2026-11-26) — Ink & Gold v3 Theme, Safe Floor Auto-Fix (`dsaf fix`) & Repo Auto-Evolve (`dsaf evolve`)
 
 - **Ink & Gold v3 Aesthetic (`preview-shell.html`, `docs/`):** Rebuilt canonical `preview-shell.html`, `docs/index.html`, `docs/styles.css`, `docs/favicon.svg`, `docs/assets/og-card.png`, and `docs/assets/preview-shell-showcase.png` around an Ink & Gold v3 token hierarchy (`#F7F8FA`/`#0A111D`, `#14243D` Ink, `#F4BA17` Gold, 3-stop blue/teal/gold aurora wash, `Manrope` + `Be Vietnam Pro` + `JetBrains Mono`) passing WCAG 2.2 AA & APCA `Lc` (`0` hardcoded colors, `0` orphans, `0` `!important`).

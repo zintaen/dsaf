@@ -18,7 +18,7 @@ import { parseArgs } from "node:util";
 import { probeRuntimeDeps } from "./audit-runtime.mjs";
 import { checkTarget, installAgentHook } from "./dsaf-hook.mjs";
 
-export const DOCTOR_VERSION = "0.8.0";
+export const DOCTOR_VERSION = "0.9.0";
 
 const SKIP_DIRS = new Set([
   ".git",

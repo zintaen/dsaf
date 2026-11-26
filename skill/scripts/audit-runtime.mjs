@@ -224,6 +224,65 @@ export function summarizeKeyboardAccessibility(controls) {
   };
 }
 
+export function computeEffectiveHitArea(rect, beforeStyle, afterStyle) {
+  let maxW = Number(rect?.width || 0);
+  let maxH = Number(rect?.height || 0);
+  for (const ps of [beforeStyle, afterStyle]) {
+    if (!ps) continue;
+    const c = String(ps.content || "");
+    if (!c || c === "none" || c === "normal") continue;
+    if (String(ps.position || "") !== "absolute") continue;
+    const pw = Math.max(parseFloat(ps.width) || 0, parseFloat(ps.minWidth) || 0);
+    const ph = Math.max(parseFloat(ps.height) || 0, parseFloat(ps.minHeight) || 0);
+    const insetNegW =
+      (parseFloat(ps.left) < 0 ? Math.abs(parseFloat(ps.left)) : 0) +
+      (parseFloat(ps.right) < 0 ? Math.abs(parseFloat(ps.right)) : 0);
+    const insetNegH =
+      (parseFloat(ps.top) < 0 ? Math.abs(parseFloat(ps.top)) : 0) +
+      (parseFloat(ps.bottom) < 0 ? Math.abs(parseFloat(ps.bottom)) : 0);
+    const effW = Math.max(pw, rect?.width && insetNegW ? Number(rect.width) + insetNegW : 0);
+    const effH = Math.max(ph, rect?.height && insetNegH ? Number(rect.height) + insetNegH : 0);
+    if (effW > maxW) maxW = effW;
+    if (effH > maxH) maxH = effH;
+  }
+  return { width: Number(maxW.toFixed(1)), height: Number(maxH.toFixed(1)) };
+}
+
+export function evaluateLayoutHealth({
+  isMobile = false,
+  viewportHeight = 844,
+  headerHeight = 0,
+  badges = [],
+  tables = [],
+} = {}) {
+  const maxHeaderPx = Math.max(220, Math.round(Number(viewportHeight || 844) * 0.32));
+  const headerBloat =
+    isMobile && headerHeight > maxHeaderPx
+      ? { height: Math.round(headerHeight), viewportHeight: Math.round(viewportHeight), ratioPct: Math.round((headerHeight / Math.max(1, viewportHeight)) * 100) }
+      : null;
+
+  const crushedBadges = [];
+  for (const b of badges || []) {
+    const h = Number(b.h || 0);
+    const lh = Number(b.lineHeightPx || 18);
+    if (h > 36 && h > lh * 1.7) {
+      crushedBadges.push({ tag: b.tag || "span", text: String(b.text || "").slice(0, 32), w: Math.round(b.w || 0), h: Math.round(h) });
+    }
+  }
+
+  const clippedTables = [];
+  if (isMobile) {
+    for (const t of tables || []) {
+      if (t.allowScroll) continue;
+      if (Number(t.overflowPx || 0) > 24) {
+        clippedTables.push({ headers: String(t.headers || "").slice(0, 48), tableW: Math.round(t.tableW || 0), containerW: Math.round(t.containerW || 0), overflowPx: Math.round(t.overflowPx || 0) });
+      }
+    }
+  }
+
+  return { headerBloat, crushedBadges, clippedTables };
+}
+
 export function expandRouteTargets(targets, routesCsv) {
   if (!routesCsv) return targets;
   const routes = String(routesCsv)
@@ -919,8 +978,21 @@ async function auditGeometryApcaInventoryAndSlop(page, isMobile) {
           clippedTargets.push({ tag: el.tagName.toLowerCase(), text: shape.label, left: Number(r.left.toFixed(1)), right: Number(r.right.toFixed(1)), vw });
         }
         if (el.tagName !== "LABEL" || cs.borderTopWidth !== "0px") {
-          if (r.width < 43.99 || r.height < 43.99) {
-            smallTargets.push({ tag: el.tagName.toLowerCase(), text: shape.label, w: Number(r.width.toFixed(1)), h: Number(r.height.toFixed(1)) });
+          let effW = r.width;
+          let effH = r.height;
+          for (const pseudo of ["::before", "::after"]) {
+            const ps = getComputedStyle(el, pseudo);
+            if (!ps || !ps.content || ps.content === "none" || ps.content === "normal") continue;
+            if (ps.position !== "absolute") continue;
+            const pw = Math.max(parseFloat(ps.width) || 0, parseFloat(ps.minWidth) || 0);
+            const ph = Math.max(parseFloat(ps.height) || 0, parseFloat(ps.minHeight) || 0);
+            const negW = (parseFloat(ps.left) < 0 ? Math.abs(parseFloat(ps.left)) : 0) + (parseFloat(ps.right) < 0 ? Math.abs(parseFloat(ps.right)) : 0);
+            const negH = (parseFloat(ps.top) < 0 ? Math.abs(parseFloat(ps.top)) : 0) + (parseFloat(ps.bottom) < 0 ? Math.abs(parseFloat(ps.bottom)) : 0);
+            effW = Math.max(effW, pw, negW > 0 ? r.width + negW : 0);
+            effH = Math.max(effH, ph, negH > 0 ? r.height + negH : 0);
+          }
+          if (effW < 43.99 || effH < 43.99) {
+            smallTargets.push({ tag: el.tagName.toLowerCase(), text: shape.label, w: Number(effW.toFixed(1)), h: Number(effH.toFixed(1)) });
           }
         }
       }
@@ -1028,6 +1100,55 @@ async function auditGeometryApcaInventoryAndSlop(page, isMobile) {
       });
     }
 
+    let headerHeight = 0;
+    if (mobile && vw <= 480) {
+      for (const hdr of document.querySelectorAll("header")) {
+        if (!visible(hdr)) continue;
+        headerHeight = Math.max(headerHeight, Math.round(hdr.getBoundingClientRect().height));
+      }
+    }
+
+    const badgesSnapshot = [];
+    for (const el of document.querySelectorAll('[class*="badge"], [class*="pill"], [class*="chip"], [class*="tag"]')) {
+      if (badgesSnapshot.length >= 40 || !visible(el)) continue;
+      if (["BUTTON", "A", "INPUT", "SELECT", "TEXTAREA", "CODE", "PRE", "SVG"].includes(el.tagName)) continue;
+      const txt = (el.textContent || "").trim();
+      if (!txt || txt.length > 42) continue;
+      const cs = getComputedStyle(el);
+      const fs = parseFloat(cs.fontSize) || 14;
+      const lh = cs.lineHeight === "normal" ? fs * 1.25 : parseFloat(cs.lineHeight) || fs * 1.25;
+      const r = el.getBoundingClientRect();
+      badgesSnapshot.push({ tag: el.tagName.toLowerCase(), text: txt.slice(0, 32), w: r.width, h: r.height, lineHeightPx: lh });
+    }
+
+    const tablesSnapshot = [];
+    if (mobile) {
+      for (const tbl of document.querySelectorAll("table")) {
+        if (!visible(tbl)) continue;
+        const tCs = getComputedStyle(tbl);
+        if (tCs.display === "block" || tCs.display === "grid") continue;
+        const tr = tbl.getBoundingClientRect();
+        let scroller = tbl;
+        for (let p = tbl.parentElement; p && p !== document.body; p = p.parentElement) {
+          const pcs = getComputedStyle(p);
+          if (pcs.overflowX === "auto" || pcs.overflowX === "scroll") {
+            scroller = p;
+            break;
+          }
+        }
+        const cr = scroller.getBoundingClientRect();
+        const overflowPx = Math.max(0, tbl.scrollWidth - Math.min(cr.width || vw, vw), scroller.scrollWidth - (scroller.clientWidth || vw));
+        const headers = Array.from(tbl.querySelectorAll("th")).slice(0, 4).map((th) => th.textContent.trim()).join(" / ");
+        tablesSnapshot.push({
+          headers,
+          tableW: tr.width,
+          containerW: cr.width || vw,
+          overflowPx,
+          allowScroll: Boolean(tbl.closest("[data-allow-table-scroll]")),
+        });
+      }
+    }
+
     const coveredText = [];
     let sampledTextChecks = 0;
     for (const el of document.querySelectorAll("h1, h2, h3, p, a, button")) {
@@ -1074,6 +1195,10 @@ async function auditGeometryApcaInventoryAndSlop(page, isMobile) {
     return {
       docOverflow,
       bodyOverflow,
+      viewportHeight: window.innerHeight,
+      headerHeight,
+      badgesSnapshot,
+      tablesSnapshot,
       childOverflows,
       smallTargets,
       clippedTargets,
@@ -1111,10 +1236,20 @@ async function auditGeometryApcaInventoryAndSlop(page, isMobile) {
     overflowKeys.has(`${s.tag}|${s.text}`) ? { ...s, overlapsChildOverflow: true } : s
   );
   const rtlChecks = evaluateRtlDiagnostics(raw.rtlSnapshot);
+  const layoutHealth = evaluateLayoutHealth({
+    isMobile,
+    viewportHeight: raw.viewportHeight,
+    headerHeight: raw.headerHeight,
+    badges: raw.badgesSnapshot,
+    tables: raw.tablesSnapshot,
+  });
 
   return {
     docOverflow: raw.docOverflow,
     bodyOverflow: raw.bodyOverflow,
+    headerBloat: layoutHealth.headerBloat,
+    crushedBadges: layoutHealth.crushedBadges,
+    clippedTables: layoutHealth.clippedTables,
     childOverflows: raw.childOverflows,
     smallTargets: smallTargetsAnnotated,
     clippedTargets: raw.clippedTargets,
@@ -1337,6 +1472,27 @@ async function runSelfTest() {
     assert.equal(computeImagePixelDiffRatio(decodedBase, { width: 2, height: 2, rgba: pxSame }).diffPct, 0);
     assert.equal(computeImagePixelDiffRatio(decodedBase, { width: 2, height: 2, rgba: pxChanged }).diffPct, 25);
     assert.equal(computeImagePixelDiffRatio(decodedBase, { width: 1, height: 4, rgba: pxBase }).sizeMismatch, true);
+
+    assert.deepEqual(
+      computeEffectiveHitArea({ width: 28, height: 26 }, { content: '""', position: "absolute", width: "44px", height: "44px" }, null),
+      { width: 44, height: 44 },
+      "Must recognize 44px ::before pseudo hit-area"
+    );
+    assert.deepEqual(
+      computeEffectiveHitArea({ width: 20, height: 20 }, { content: '""', position: "absolute", top: "-14px", bottom: "-14px", left: "-14px", right: "-14px" }, null),
+      { width: 48, height: 48 },
+      "Must recognize negative inset ::before touch target"
+    );
+    const badLayout = evaluateLayoutHealth({
+      isMobile: true,
+      viewportHeight: 844,
+      headerHeight: 340,
+      badges: [{ tag: "span", text: "Wrapped Three Line Pill", w: 72, h: 68, lineHeightPx: 16 }],
+      tables: [{ headers: "Col A / Col B", tableW: 520, containerW: 350, overflowPx: 170, allowScroll: false }],
+    });
+    assert.ok(badLayout.headerBloat && badLayout.headerBloat.height === 340, "Must flag mobile header bloat");
+    assert.equal(badLayout.crushedBadges.length, 1, "Must flag crushed multi-line pill badges");
+    assert.equal(badLayout.clippedTables.length, 1, "Must flag clipped mobile tables");
   } finally {
     rmSync(scratch, { recursive: true, force: true });
   }
@@ -1584,6 +1740,9 @@ async function main() {
         const ok =
           geom.docOverflow === 0 &&
           geom.bodyOverflow === 0 &&
+          !geom.headerBloat &&
+          geom.crushedBadges.length === 0 &&
+          geom.clippedTables.length === 0 &&
           geom.childOverflows.length === 0 &&
           geom.smallTargets.length === 0 &&
           geom.clippedTargets.length === 0 &&
@@ -1661,7 +1820,7 @@ async function main() {
       }
       for (const c of f.checks) {
         console.log(
-          `  [${c.state}] ${c.passed ? "PASS" : "FAIL"} | overflow=${c.docOverflow}/${c.bodyOverflow} child=${c.childOverflows.length} small44=${c.smallTargets.length} clip=${c.clippedTargets.length}${c.clippedTargets.length ? `(${c.clippedTargets.map((t) => t.text).join(",")})` : ""} borders=${c.borderFails.length} hover=${c.hoverFails.length} covered=${c.coveredText.length} leaks=${c.focusLeaks.length} tab=${c.keyboardMap.tabbableCount}(+${c.keyboardMap.positiveTabindexCount}/un=${c.keyboardMap.unnamedInteractiveCount}) slop=${c.badTransitions.length + c.hiddenAtRest.length + c.inlineHeightMismatches.length} axe=${c.axeViolations.length}${c.axeViolations.length ? `(${c.axeViolations.map((v) => v.id).join(",")})` : ""} | apcaBodyMin=${c.apca.minBodyLc ?? "n/a"} btnSigs=${c.componentInventory.buttons.distinctSignatures}`
+          `  [${c.state}] ${c.passed ? "PASS" : "FAIL"} | overflow=${c.docOverflow}/${c.bodyOverflow} child=${c.childOverflows.length} small44=${c.smallTargets.length} clip=${c.clippedTargets.length}${c.clippedTargets.length ? `(${c.clippedTargets.map((t) => t.text).join(",")})` : ""} hdrBloat=${c.headerBloat ? c.headerBloat.height + "px" : 0} badges=${c.crushedBadges?.length || 0} clipTbl=${c.clippedTables?.length || 0} borders=${c.borderFails.length} hover=${c.hoverFails.length} covered=${c.coveredText.length} leaks=${c.focusLeaks.length} tab=${c.keyboardMap.tabbableCount}(+${c.keyboardMap.positiveTabindexCount}/un=${c.keyboardMap.unnamedInteractiveCount}) slop=${c.badTransitions.length + c.hiddenAtRest.length + c.inlineHeightMismatches.length} axe=${c.axeViolations.length}${c.axeViolations.length ? `(${c.axeViolations.map((v) => v.id).join(",")})` : ""} | apcaBodyMin=${c.apca.minBodyLc ?? "n/a"} btnSigs=${c.componentInventory.buttons.distinctSignatures}`
         );
       }
     }

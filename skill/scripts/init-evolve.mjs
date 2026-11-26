@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 /**
- * DSAF v0.8.0 — Universal Repo Auto-Evolution Bootstrap (`dsaf init`).
+ * DSAF v0.9.0 — Universal Repo Auto-Evolution Bootstrap (`dsaf init`).
  * Scaffolds `.dsaf/` governance (pinned STRATEGY.md, rules.json circuit breakers,
- * decision-queue.md, strategy-feedback.md, handoff.md) plus optional edit-time
- * hooks, CI guardrails, and workflow files. Zero external dependencies.
+ * decision-queue.md, strategy-feedback.md, handoff.md, personas.json) plus optional
+ * edit-time hooks, CI guardrails, and workflow files. Zero external dependencies.
  */
 
 import assert from "node:assert/strict";
@@ -14,8 +14,9 @@ import { parseArgs } from "node:util";
 import { analyzeDirectory } from "./recon.mjs";
 import { installAgentHook } from "./dsaf-hook.mjs";
 import { generateGuardrails } from "./generate-guardrails.mjs";
+import { generatePersonas } from "./generate-personas.mjs";
 
-export const INIT_VERSION = "0.8.0";
+export const INIT_VERSION = "0.9.0";
 
 const RESOURCE_STRATEGY_PATH = decodeURIComponent(
   new URL("../resources/evolve-strategy.md", import.meta.url).pathname
@@ -106,13 +107,14 @@ function buildStrategyFeedback(repoName) {
   ].join("\n");
 }
 
-function buildHandoff({ repoName, mode, surfaceMode, hooksInstalled, guardrailsEnabled }) {
+function buildHandoff({ repoName, mode, surfaceMode, hooksInstalled, guardrailsEnabled, personaCount }) {
   return [
     `# DSAF Evolve Handoff — ${repoName}`,
     "",
     `- **Engine Version:** ${INIT_VERSION}`,
     `- **Detected Mode:** ${mode} | **Surface:** ${surfaceMode}`,
     `- **Loop Mode:** focused (create \`.dsaf/STOP\` to halt cleanly at next checkpoint)`,
+    `- **Persona Matrix:** ${personaCount > 0 ? `.dsaf/personas.json (${personaCount} seeded personas)` : "skipped (--skip-personas)"}`,
     `- **Edit-Time Hooks:** ${hooksInstalled.length > 0 ? hooksInstalled.join(", ") : "not installed (pass --with-hook)"}`,
     `- **CI Guardrails:** ${guardrailsEnabled ? "enabled (.dsaf-guardrails/)" : "not generated (pass --with-guardrails)"}`,
     "",
@@ -236,6 +238,10 @@ export function initEvolve(options = {}) {
     skipped,
     absTarget
   );
+  const personaReport = options.skipPersonas
+    ? null
+    : generatePersonas(absTarget, { depth: options.depth || "deep", recon });
+
   writeManagedFile(
     join(dsafDir, "handoff.md"),
     buildHandoff({
@@ -244,12 +250,24 @@ export function initEvolve(options = {}) {
       surfaceMode,
       hooksInstalled,
       guardrailsEnabled: withGuardrails,
+      personaCount: personaReport ? personaReport.personaCount : 0,
     }),
     { dryRun, force },
     created,
     skipped,
     absTarget
   );
+
+  if (personaReport) {
+    writeManagedFile(
+      join(dsafDir, "personas.json"),
+      JSON.stringify(personaReport, null, 2) + "\n",
+      { dryRun, force },
+      created,
+      skipped,
+      absTarget
+    );
+  }
 
   let workflowFile = null;
   if (withWorkflow) {
@@ -301,7 +319,7 @@ function runSelfTest() {
 
     const dry = initEvolve({ targetDir: scratch, dryRun: true, withHook: true, withGuardrails: true, withWorkflow: true });
     assert.equal(dry.dryRun, true);
-    assert.equal(dry.created.length, 6);
+    assert.equal(dry.created.length, 7);
     assert.equal(existsSync(join(scratch, ".dsaf/rules.json")), false, "dry-run must not write files");
 
     const full = initEvolve({ targetDir: scratch, withHook: true, agent: "claude", withGuardrails: true, withWorkflow: true });
@@ -311,7 +329,11 @@ function runSelfTest() {
     assert.ok(full.created.includes(".dsaf/decision-queue.md"));
     assert.ok(full.created.includes(".dsaf/strategy-feedback.md"));
     assert.ok(full.created.includes(".dsaf/handoff.md"));
+    assert.ok(full.created.includes(".dsaf/personas.json"));
     assert.ok(full.created.includes(".github/workflows/dsaf-gate.yml"));
+    const parsedPersonas = JSON.parse(readFileSync(join(scratch, ".dsaf/personas.json"), "utf8"));
+    assert.equal(parsedPersonas.schema, "dsaf-personas/1");
+    assert.equal(parsedPersonas.personaCount, 8);
     assert.equal(full.guardrailFiles.length, 3);
     assert.equal(full.hookFiles.length, 1);
 
@@ -326,11 +348,11 @@ function runSelfTest() {
     writeFileSync(join(scratch, ".dsaf/decision-queue.md"), "# Custom Queue\n", "utf8");
     const second = initEvolve({ targetDir: scratch, withWorkflow: true });
     assert.equal(second.created.length, 0);
-    assert.equal(second.skipped.length, 6);
+    assert.equal(second.skipped.length, 7);
     assert.equal(readFileSync(join(scratch, ".dsaf/decision-queue.md"), "utf8"), "# Custom Queue\n");
 
     const forced = initEvolve({ targetDir: scratch, force: true });
-    assert.equal(forced.created.length, 5);
+    assert.equal(forced.created.length, 6);
     assert.match(readFileSync(join(scratch, ".dsaf/decision-queue.md"), "utf8"), /DSAF Decision Queue/);
 
     console.log("DSAF_INIT_SELF_TEST_PASSED");
@@ -342,7 +364,7 @@ function runSelfTest() {
 
 function printUsage() {
   console.log(
-    "Usage: dsaf init [targetDir] [--with-hook] [--agent claude|cursor|codex|all] [--with-guardrails] [--with-workflow] [--mode auto|S|C|P] [--dry-run] [--force] [--json] [--self-test]"
+    "Usage: dsaf init [targetDir] [--with-hook] [--agent claude|cursor|codex|all] [--with-guardrails] [--with-workflow] [--mode auto|S|C|P] [--depth quick|deep] [--skip-personas] [--dry-run] [--force] [--json] [--self-test]"
   );
 }
 
@@ -356,6 +378,8 @@ if (isEntrypoint) {
       "with-guardrails": { type: "boolean", default: false },
       "with-workflow": { type: "boolean", default: false },
       mode: { type: "string", default: "auto" },
+      depth: { type: "string", default: "deep" },
+      "skip-personas": { type: "boolean", default: false },
       "dry-run": { type: "boolean", default: false },
       force: { type: "boolean", default: false },
       json: { type: "boolean", default: false },
@@ -379,6 +403,8 @@ if (isEntrypoint) {
     withGuardrails: values["with-guardrails"],
     withWorkflow: values["with-workflow"],
     mode: values.mode,
+    depth: values.depth,
+    skipPersonas: values["skip-personas"],
     dryRun: values["dry-run"],
     force: values.force,
   });

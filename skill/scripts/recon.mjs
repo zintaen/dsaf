@@ -187,17 +187,29 @@ export function analyzeDirectory(inputDir) {
 
   const deps = new Set();
   const runtimeDeps = new Set();
+  const workspacePackageNames = new Set();
   let hasExportsOrMain = false;
   let hasDevAppScripts = false;
   let rootKeywordsDesignSystem = false;
+  for (const { data } of pkgInfos) {
+    if (typeof data.name === "string" && data.name.trim()) {
+      workspacePackageNames.add(data.name.trim().toLowerCase());
+    }
+  }
   for (const { rel, data } of pkgInfos) {
-    for (const k of Object.keys(data.dependencies || {})) runtimeDeps.add(k.toLowerCase());
+    for (const k of Object.keys(data.dependencies || {})) {
+      const lk = k.toLowerCase();
+      if (!workspacePackageNames.has(lk)) runtimeDeps.add(lk);
+    }
     for (const bucket of [data.dependencies, data.devDependencies, data.peerDependencies]) {
       if (bucket && typeof bucket === "object") {
-        for (const k of Object.keys(bucket)) deps.add(k.toLowerCase());
+        for (const k of Object.keys(bucket)) {
+          const lk = k.toLowerCase();
+          if (!workspacePackageNames.has(lk)) deps.add(lk);
+        }
       }
     }
-    if (rel === "package.json") {
+    if (rel === "package.json" || /^packages\/[^/]+\/package\.json$/i.test(rel)) {
       if (Array.isArray(data.keywords) && data.keywords.some((kw) => /design[-_\s]?system|design[-_\s]?tokens/i.test(String(kw)))) {
         rootKeywordsDesignSystem = true;
       }
@@ -212,13 +224,22 @@ export function analyzeDirectory(inputDir) {
   }
 
   const stories = relFiles.filter((r) => /\.stories\.(tsx|jsx|ts|js|mdx)$/.test(r) || /(^|\/)\.storybook\//.test(r));
-  const tokenJsonFiles = relFiles.filter((r) => /(\.tokens\.json|(^|\/)tokens[^/]*\.json)$/.test(r));
+  const candidateTokenJsonFiles = relFiles.filter(
+    (r) =>
+      (/\.tokens\.json$/i.test(r) ||
+        /(^|\/)tokens[^/]*\.json$/i.test(r) ||
+        /(^|\/)(?:tokens|design-tokens)\/[^/]+\.json$/i.test(r)) &&
+      !/(?:^|\/)(?:package|tsconfig[^/]*|.*schema.*|meta)\.json$/i.test(r)
+  );
+  const tokenJsonFiles = [];
   let hasDtcgTokens = false;
-  for (const tf of tokenJsonFiles.slice(0, 12)) {
-    const raw = safeReadText(join(root, tf), 120_000);
+  for (const tf of candidateTokenJsonFiles.slice(0, 30)) {
+    const raw = safeReadText(join(root, tf), 250_000);
     if (raw && /"\$value"\s*:|"\$type"\s*:/.test(raw)) {
       hasDtcgTokens = true;
-      break;
+      tokenJsonFiles.push(tf);
+    } else if (/(\.tokens\.json|(^|\/)tokens[^/]*\.json)$/.test(tf)) {
+      tokenJsonFiles.push(tf);
     }
   }
 
@@ -252,6 +273,9 @@ export function analyzeDirectory(inputDir) {
 
   const dsDeps = [...deps].filter((d) =>
     /(design-system|\/design$|radix|base-ui|chakra|mantine|antd|@mui\/material|primereact|shoelace|ariakit|react-aria|tamagui|nativewind)/.test(d)
+  );
+  const nonHeadlessDsDeps = dsDeps.filter(
+    (d) => !/^@(?:base-ui|radix-ui|headlessui|react-aria|ark-ui|floating-ui)\//.test(d)
   );
   const hasShadcnMarkers = relFiles.some((r) => r.endsWith("components.json")) || relFiles.some((r) => /(^|\/)components\/ui\/.+\.(tsx|jsx)$/.test(r));
 
@@ -287,10 +311,10 @@ export function analyzeDirectory(inputDir) {
 
   let recommendedMode = "P";
   let topologyLabel = "Mode P — Product UX/UI (No Formal Design System)";
-  if (dsSignals >= 4 && hasExportsOrMain && dsDeps.length === 0) {
+  if (dsSignals >= 4 && hasExportsOrMain && nonHeadlessDsDeps.length === 0) {
     recommendedMode = "S";
     topologyLabel = "Mode S — Design System Core";
-  } else if (dsSignals >= 4 && !isAppLike && dsDeps.length === 0) {
+  } else if (dsSignals >= 4 && !isAppLike && nonHeadlessDsDeps.length === 0) {
     recommendedMode = "S";
     topologyLabel = "Mode S — Design System Core";
   } else if (dsDeps.length > 0 || (isAppLike && (consumptionSignals || dsSignals >= 3))) {
@@ -485,6 +509,23 @@ function runSelfTest() {
     writeFileSync(join(dirSdk, "package.json"), JSON.stringify({ name: "sdk-app", dependencies: { next: "^16.0.0", react: "^19.0.0", "@supabase/supabase-js": "^2.0.0" } }));
     writeFileSync(join(dirSdk, "app/page.tsx"), "export default function Page() { return null; }");
     assert.equal(analyzeDirectory(dirSdk).t2MockRequired, true, "Must detect cloud BaaS SDK even without .env");
+
+    // 8. Monorepo DS with packages/design/tokens/*.json + apps/site consuming workspace package must resolve Mode S
+    const monoDs = join(scratch, "mono-ds");
+    mkdirSync(join(monoDs, "packages/design/tokens"), { recursive: true });
+    mkdirSync(join(monoDs, "packages/design/src/components"), { recursive: true });
+    mkdirSync(join(monoDs, "apps/site/app"), { recursive: true });
+    writeFileSync(join(monoDs, "package.json"), JSON.stringify({ name: "mono-root", private: true, workspaces: ["packages/*", "apps/*"] }));
+    writeFileSync(join(monoDs, "packages/design/package.json"), JSON.stringify({ name: "@acme/design", exports: { ".": "./dist/index.js" }, dependencies: { "@base-ui/react": "^1.0.0" } }));
+    writeFileSync(join(monoDs, "packages/design/tokens/color.json"), JSON.stringify({ light: { bg: { $type: "color", $value: "#F7F8FA" } } }));
+    writeFileSync(join(monoDs, "packages/design/tokens/foundations.json"), JSON.stringify({ space: { s4: { $type: "dimension", $value: "16px" } } }));
+    writeFileSync(join(monoDs, "packages/design/src/components/Button.stories.tsx"), "export default {};");
+    writeFileSync(join(monoDs, "packages/design/src/components/Badge.stories.tsx"), "export default {};");
+    writeFileSync(join(monoDs, "apps/site/package.json"), JSON.stringify({ name: "@acme/site", dependencies: { "@acme/design": "0.0.0", next: "^16.0.0" } }));
+    writeFileSync(join(monoDs, "apps/site/app/page.tsx"), "export default function Home() { return null; }");
+    const monoRes = analyzeDirectory(monoDs);
+    assert.equal(monoRes.stack.hasDtcgTokens, true, "Must detect DTCG JSON under packages/*/tokens/");
+    assert.equal(monoRes.recommendedMode, "S", "Monorepo DS with self-referencing site workspace must still classify as Mode S");
 
     console.log("RECON_SELF_TEST_PASSED (Mode S/C/P + Surface Modes + @theme + auth/hidden-dir exclusion + URL safety)");
     return 0;
