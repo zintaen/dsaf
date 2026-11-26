@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 /**
- * DSAF v0.3.0 — Unified Tier 0 Read-Only One-Click Audit Pipeline (Node ESM).
+ * DSAF v0.4.0 — Unified Tier 0 Read-Only One-Click Audit Pipeline (Node ESM).
  * Chains `recon`, `tokens`, optional live/Storybook `runtime`, optional 3-vertex
- * `figma-diff`, and optional `audit-diff` into `audit-summary.json` + Markdown.
+ * `figma-diff`, and optional `audit-diff` into `audit-summary.json` + Markdown + SARIF 2.1.0.
  * Strictly Tier 0 Read-Only on target repos; writes only inside explicit `--out`.
  */
 
@@ -14,6 +14,7 @@ import { dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { scanTarget } from "./audit-tokens.mjs";
 import { compareVertices, renderMarkdown as renderFigmaMarkdown } from "./audit-figma-diff.mjs";
+import { CI_REPORT_VERSION, formatGithubAnnotations, formatSarif } from "./ci-report.mjs";
 
 const SCRIPT_DIR = dirname(decodeURIComponent(new URL(import.meta.url).pathname));
 
@@ -43,6 +44,7 @@ export function runAuditPipeline(opts = {}) {
   const tokens = scanTarget(target, {
     includeDemos: Boolean(opts.includeDemos),
     scope: opts.scope || undefined,
+    reportUnusedIgnores: Boolean(opts.reportUnusedIgnores),
   });
   const tokensPath = outDir ? join(outDir, "tokens.json") : null;
   if (tokensPath) writeFileSync(tokensPath, JSON.stringify(tokens, null, 2) + "\n", "utf8");
@@ -108,13 +110,26 @@ export function runAuditPipeline(opts = {}) {
     };
   }
 
+  const ciGate = tokens.ciFindings?.counts || { floor: 0, reflex: 0, finish: 0, waived: 0, unusedIgnores: 0 };
+  const ciFindingsList = tokens.ciFindings?.active || [];
+  if (opts.sarifPath) {
+    const absSarif = resolve(opts.sarifPath);
+    mkdirSync(dirname(absSarif), { recursive: true });
+    writeFileSync(
+      absSarif,
+      JSON.stringify(formatSarif(ciFindingsList, { toolVersion: CI_REPORT_VERSION, repoRoot: target }), null, 2) + "\n",
+      "utf8"
+    );
+  }
+
   const summary = {
     schema: "dsaf-audit/1",
-    engine_version: "0.3.0",
+    engine_version: "0.4.0",
     generated: new Date().toISOString(),
     dataTier: "tier_0_readonly",
     target,
-    passed: runtimePassed && regressionPassed,
+    passed: runtimePassed && regressionPassed && ciGate.floor === 0,
+    ciGate,
     recon: {
       recommendedMode: recon.recommendedMode,
       topologyLabel: recon.topologyLabel,
@@ -151,6 +166,7 @@ export function runAuditPipeline(opts = {}) {
         }
       : null,
     regressionDiff,
+    ciFindings: ciFindingsList,
   };
 
   if (outDir) {
@@ -163,12 +179,14 @@ export function runAuditPipeline(opts = {}) {
 export function renderAuditMarkdown(summary) {
   const d = summary.tokens.drift;
   const r = summary.recon;
+  const cg = summary.ciGate || { floor: 0, reflex: 0, finish: 0, waived: 0, unusedIgnores: 0 };
   const lines = [
-    "# DSAF Unified Audit Summary (`v0.3.0` · Tier 0 Read-Only)",
+    "# DSAF Unified Audit Summary (`v0.4.0` · Tier 0 Read-Only)",
     "",
     `- **Target:** \`${summary.target}\``,
     `- **Topology / Maturity:** \`Mode ${r.recommendedMode}\` (${r.topologyLabel}) | \`${r.estimatedMaturity}\` | \`T2-Mock required: ${r.t2MockRequired}\``,
     `- **Pipeline Status:** ${summary.passed ? "PASS" : "FAIL"}`,
+    `- **CI Gate & Waivers:** Floor=${cg.floor} · Reflex=${cg.reflex} · Finish=${cg.finish} · Waived=${cg.waived} · Unused Ignores=${cg.unusedIgnores}`,
     "",
     "## Codebase Tokens & Drift",
     "",
@@ -233,24 +251,28 @@ function runSelfTest() {
     const figmaPath = join(scratch, "figma.json");
     writeFileSync(figmaPath, JSON.stringify({ "brand/primary": "#1d4ed8" }));
 
+    const sarifOut = join(outDir, "dsaf.sarif");
     const summary = runAuditPipeline({
       target: repoDir,
       figmaPath,
       outDir,
+      sarifPath: sarifOut,
     });
     assert.equal(summary.schema, "dsaf-audit/1");
-    assert.equal(summary.engine_version, "0.3.0");
+    assert.equal(summary.engine_version, "0.4.0");
     assert.equal(summary.passed, true);
     assert.equal(summary.tokens.drift.hardcodedColorHits, 0);
     assert.deepEqual(summary.tokens.drift.demoFilesSkipped, ["demo/old-prototype.html"]);
     assert.equal(summary.figmaDiff.summary.matchedCount, 1);
+    assert.ok(existsSync(sarifOut));
+    assert.equal(JSON.parse(readFileSync(sarifOut, "utf8")).version, "2.1.0");
     assert.ok(existsSync(join(outDir, "audit-summary.json")));
     assert.ok(existsSync(join(outDir, "audit-summary.md")));
     assert.ok(existsSync(join(outDir, "recon.json")));
     assert.ok(existsSync(join(outDir, "tokens.json")));
     assert.ok(existsSync(join(outDir, "figma-diff.json")));
 
-    console.log("AUDIT_PIPELINE_SELF_TEST_PASSED (recon + scoped tokens + figma-diff + markdown summary)");
+    console.log("AUDIT_PIPELINE_SELF_TEST_PASSED (recon + scoped tokens + figma-diff + SARIF + markdown summary)");
     return 0;
   } finally {
     rmSync(scratch, { recursive: true, force: true });
@@ -273,6 +295,9 @@ function main() {
       "executable-path": { type: "string" },
       "theme-toggle": { type: "string" },
       "include-demos": { type: "boolean", default: false },
+      "report-unused-ignores": { type: "boolean", default: false },
+      sarif: { type: "string" },
+      github: { type: "boolean", default: false },
       scope: { type: "string" },
       out: { type: "string" },
       format: { type: "string", default: "markdown" },
@@ -283,7 +308,7 @@ function main() {
 
   if (values.help) {
     console.log(
-      "Usage: node skill/scripts/audit-pipeline.mjs <target> [--url <url>] [--routes /,/about] [--figma <vars.json>] [--code-connect <dir>] [--prefix <str>] [--storybook <url|index.json>] [--baseline <a.json> --current <b.json>] [--include-demos] [--scope <subdir>] [--out <dir>] [--format markdown|json] [--self-test]"
+      "Usage: node skill/scripts/audit-pipeline.mjs <target> [--url <url>] [--routes /,/about] [--figma <vars.json>] [--code-connect <dir>] [--prefix <str>] [--storybook <url|index.json>] [--baseline <a.json> --current <b.json>] [--include-demos] [--scope <subdir>] [--sarif <file>] [--github] [--report-unused-ignores] [--out <dir>] [--format markdown|json|sarif] [--self-test]"
     );
     process.exit(0);
   }
@@ -309,11 +334,21 @@ function main() {
     executablePath: values["executable-path"],
     themeToggle: values["theme-toggle"],
     includeDemos: values["include-demos"],
+    reportUnusedIgnores: values["report-unused-ignores"],
+    sarifPath: values.sarif,
     scope: values.scope,
     outDir: values.out,
   });
 
-  process.stdout.write(values.format === "json" ? JSON.stringify(summary, null, 2) + "\n" : renderAuditMarkdown(summary));
+  if (values.format === "sarif") {
+    const sarifDoc = formatSarif(summary.ciFindings || [], { toolVersion: CI_REPORT_VERSION, repoRoot: summary.target });
+    process.stdout.write(JSON.stringify(sarifDoc, null, 2) + "\n");
+  } else if (values.github) {
+    const ann = formatGithubAnnotations(summary.ciFindings || [], { repoRoot: summary.target });
+    if (ann) process.stdout.write(ann + "\n");
+  } else {
+    process.stdout.write(values.format === "json" ? JSON.stringify(summary, null, 2) + "\n" : renderAuditMarkdown(summary));
+  }
   process.exit(summary.passed ? 0 : 1);
 }
 

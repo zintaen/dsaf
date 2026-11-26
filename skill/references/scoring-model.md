@@ -1,4 +1,4 @@
-# Unified Deterministic Scoring Model & No-Silent-Regression Policy (`v0.3.0`)
+# Unified Deterministic Scoring Model & No-Silent-Regression Policy (`v0.4.0`)
 
 Load this reference during criterion scoring and baseline comparison in every mode (`Mode S`, `Mode C`, `Mode P`). Pair with `../scripts/compute-scorecard.mjs` and `../scripts/audit-diff.mjs` to guarantee zero arithmetic drift, strict evidence linkage, and mechanical regression blocking.
 
@@ -54,6 +54,15 @@ For each pillar $p$ with assigned weight $W_p$ ($\sum W_p = 100$):
 Every `DS01–DS12` entry in `system` mode optionally records `bands: { prose, artifacts, verification }` (`0..40`, `0..40`, `0..20`):
 - **Rule:** Documentation alone (`artifacts === 0 && verification === 0`) **CANNOT** score `2` (Pass) — `compute-scorecard.mjs` rejects `score: 2` when structural artifacts and verification proof are both missing (`prose <= 40%` hard cap).
 - Every `DS*` criterion additionally carries `check_type`: `"AUTO"` (verifiable via code, tokens, DOM, Storybook, CI) or `"MANUAL"` (requiring human research, AT testing, counsel/design stewardship review), plus `volatility`: `"FIXED"` or `"DYNAMIC"`.
+
+### 2b. Three-Tier Gate & Controlled Waiver Model (`Floor` · `Reflex` · `Finish`)
+Static, edit-time hook (`dsaf hook`), and CI SARIF (`--sarif` / `--github`) checks classify findings into three operational tiers:
+
+| Tier | Policy | Inline Waiver Syntax | Rationale Requirement |
+|---|---|---|---|
+| **`Floor`** (`error`) | Non-negotiable baseline correctness, a11y, focus, reduced motion, DTCG validity. **Never waivable.** | Rejected (`dsaf/floor-waiver-rejected`) | N/A — must be fixed |
+| **`Reflex`** (`warning`) | Model defaults & drift heuristics (hardcoded colors, `!important`, off-grid px, Tailwind brackets). | `/* dsaf-ignore <rule-id> -- <reason> */` | Concrete, project-specific rationale `>= 12` chars (boilerplate like `ok`/`todo`/`legacy` fails `dsaf/waiver-reason-weak`) |
+| **`Finish`** (`note`) | Craft polish & cleanup hygiene (semantic orphan tokens, stale waivers). Non-blocking unless escalated. | Tracked by `--report-unused-ignores` | Remove stale `dsaf-ignore` directives once resolved |
 
 ---
 

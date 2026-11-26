@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * DSAF v0.3.0 — Deterministic Weighted Scorecard Calculator & Validator (Node ESM).
+ * DSAF v0.4.0 — Deterministic Weighted Scorecard Calculator & Validator (Node ESM).
  * Zero external dependencies. Supports three audit types under schema `dsaf-scores/2`:
  * - `usability` (U01..U18, 6 pillars, Hard Floor)
  * - `visual`    (V01..V11, 6 pillars, Hard Floor)
@@ -11,8 +11,9 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { parseArgs } from "node:util";
+import { isBoilerplateReason } from "./ci-report.mjs";
 
-export const ENGINE_VERSION = "0.3.0";
+export const ENGINE_VERSION = "0.4.0";
 
 const USABILITY_PILLARS = [
   ["P1", "Onboarding & Value Clarity", ["U01", "U02", "U03"]],
@@ -267,12 +268,52 @@ function evaluatePhase(auditType, pillars, weights, scores, blockers) {
   };
 }
 
+function validateWaivers(rawWaivers) {
+  if (rawWaivers == null) return [];
+  if (!Array.isArray(rawWaivers)) throw new ScorecardError("'waivers' must be an array of { id, tier, reason, guard } entries.");
+  const out = [];
+  for (const w of rawWaivers) {
+    if (!w || typeof w !== "object") throw new ScorecardError("Each waiver entry must be an object.");
+    const id = String(w.id || w.ruleId || "").trim();
+    const tier = String(w.tier || "reflex").trim().toLowerCase();
+    const reason = String(w.reason || "").trim();
+    if (!id) throw new ScorecardError("Waiver entry missing 'id' / 'ruleId'.");
+    if (tier === "floor") throw new ScorecardError(`Waiver '${id}' rejected: Floor rules are never waivable.`);
+    if (isBoilerplateReason(reason)) {
+      throw new ScorecardError(`Waiver '${id}' rejected: Reflex waiver requires a concrete reason (>= 12 chars, non-boilerplate).`);
+    }
+    out.push({ id, tier, reason, guard: String(w.guard || "").trim() || null });
+  }
+  return out;
+}
+
+function validateProvenance(raw) {
+  if (raw == null) return null;
+  if (typeof raw !== "object" || Array.isArray(raw)) throw new ScorecardError("'review_provenance' must be an object.");
+  const method = String(raw.method || "").trim().toLowerCase();
+  if (method !== "dual-agent" && method !== "single-context") {
+    throw new ScorecardError("'review_provenance.method' must be 'dual-agent' or 'single-context'.");
+  }
+  const reason = String(raw.reason || "").trim() || null;
+  if (method === "single-context" && !reason) {
+    throw new ScorecardError("'single-context' review_provenance requires a non-empty 'reason'.");
+  }
+  return {
+    method,
+    reason,
+    agent_a: raw.agent_a ? String(raw.agent_a) : null,
+    agent_b: raw.agent_b ? String(raw.agent_b) : null,
+  };
+}
+
 export function compute(payload) {
   const auditType = payload?.type;
   const { pillars, presets } = getSchema(auditType);
   const validIds = pillars.flatMap(([, , cids]) => cids);
   const { profileName, weights } = resolveWeights(pillars, presets, payload.profile, payload.custom_weights);
   const findingSeverities = parseFindingSeverities(payload.finding_severities);
+  const waivers = validateWaivers(payload.waivers);
+  const reviewProvenance = validateProvenance(payload.review_provenance);
   const allowedNewFindings = new Set((payload.new_findings || []).map((x) => String(x).trim()).filter(Boolean));
   if (!payload.before) throw new ScorecardError("Input JSON must include 'before'.");
 
@@ -318,6 +359,8 @@ export function compute(payload) {
     type: auditType,
     profile: profileName,
     weights,
+    review_provenance: reviewProvenance,
+    waivers,
     phases,
     deltas,
     criterion_deltas: criterionDeltas,
@@ -329,6 +372,14 @@ export function renderMarkdown(res) {
   const hasA = Boolean(res.phases.after_track_a);
   const hasB = Boolean(res.phases.after_track_b);
   const lines = [`### Deterministic Weighted Scorecard (${res.type.toUpperCase()} · Profile: \`${res.profile}\`)`, ""];
+  if (res.review_provenance) {
+    const p = res.review_provenance;
+    if (p.method === "single-context") {
+      lines.push(`> ⚠️ DEGRADED: single-context (${p.reason})`, "");
+    } else {
+      lines.push(`> Method: dual-agent${p.agent_a || p.agent_b ? ` (A: ${p.agent_a || "visual"} · B: ${p.agent_b || "probes"})` : ""}`, "");
+    }
+  }
   const hdr = ["Pillar", "Weight", "Pts/Step (+1)", "Before"];
   if (hasA) hdr.push("Track A (Pragmatic)");
   if (hasB) hdr.push("Track B (North-Star)");
@@ -409,7 +460,25 @@ function runSelfTest() {
     })
   );
 
-  console.log("COMPUTE_SCORECARD_SELF_TEST_PASSED (usability + visual + system 3-band cap + blocker + cross-phase)");
+  // 5. 3-tier waiver enforcement & review provenance rendering
+  const cleanVisualBefore = Object.fromEntries(Array.from({ length: 11 }, (_, i) => [`V${String(i + 1).padStart(2, "0")}`, { score: 2, findings: [] }]));
+  assert.throws(() =>
+    compute({
+      type: "visual",
+      before: cleanVisualBefore,
+      waivers: [{ id: "dsaf/no-transition-all", tier: "floor", reason: "Legacy CSS library forces transition: all globally" }],
+    })
+  );
+  const waivedRes = compute({
+    type: "visual",
+    before: cleanVisualBefore,
+    waivers: [{ id: "dsaf/hardcoded-color", tier: "reflex", reason: "Partner co-brand SVG banner keeps locked external hex" }],
+    review_provenance: { method: "single-context", reason: "no subagent runner exposed" },
+  });
+  assert.equal(waivedRes.waivers.length, 1);
+  assert.match(renderMarkdown(waivedRes), /⚠️ DEGRADED: single-context/);
+
+  console.log("COMPUTE_SCORECARD_SELF_TEST_PASSED (usability + visual + system 3-band cap + blocker + cross-phase + waivers)");
   return 0;
 }
 

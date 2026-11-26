@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * DSAF v0.3.0 — Step 0 Read-Only Reconnaissance Scanner (zero external deps).
+ * DSAF v0.4.0 — Step 0 Read-Only Reconnaissance Scanner (zero external deps).
  * Scans a local repository or records a URL stub strictly read-only to classify
  * target topology (Mode S / C / P), tech stack, cloud-isolation risks (T2-Mock),
  * and recommended Step 0 clarification defaults.
@@ -171,7 +171,7 @@ export function analyzeDirectory(inputDir) {
   const rootHtml = relFiles.filter((r) => r === "index.html" || /^[^/]+\/index\.html$/.test(r));
   const styleFiles = relFiles.filter((r) => /\.(css|scss)$/.test(r));
   const aiRuleFiles = relFiles.filter((r) => /(^|\/)(AGENTS\.md|CLAUDE\.md|DESIGN\.md|llms\.txt|\.cursorrules)$/i.test(r));
-  const governanceFiles = relFiles.filter((r) => /(^|\/)(CHANGELOG\.md|CONTRIBUTING\.md|CODEOWNERS|rfcs?\/)/i.test(r));
+  const governanceFiles = relFiles.filter((r) => /(^|\/)(CHANGELOG\.md|RELEASE_NOTES\.md|CONTRIBUTING\.md|CODEOWNERS|rfcs?\/)/i.test(r));
   const testFiles = relFiles.filter((r) => /(\.test\.|\.spec\.|\/tests?\/|playwright)/i.test(r));
 
   let hasTailwindTheme = false;

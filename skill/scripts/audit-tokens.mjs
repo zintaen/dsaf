@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 /**
- * DSAF v0.3.0 — Deterministic W3C DTCG Token Validator & Codebase Drift Scanner.
+ * DSAF v0.4.0 — Deterministic W3C DTCG Token Validator & Codebase Drift Scanner.
  * Zero external dependencies. Validates $value/$type/{alias}/$ref tokens, Light/Dark
  * mode parity, token-level WCAG 2.2 + APCA-W3 contrast, and scans stylesheets/UI
  * components for hardcoded color drift, property-scoped spacing drift, !important
- * overrides, authored orphan CSS variables (excluding Tailwind @theme & JS refs), and
- * Tailwind arbitrary/primitive drift.
+ * overrides, authored orphan CSS variables (excluding Tailwind @theme & JS refs),
+ * Tailwind arbitrary/primitive drift, and emits SARIF 2.1.0 / GitHub annotations.
  */
 
 import assert from "node:assert/strict";
@@ -14,6 +14,15 @@ import { tmpdir } from "node:os";
 import { dirname, extname, join, relative, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { apcaContrast, wcagContrast } from "./audit-runtime.mjs";
+import {
+  applyIgnores,
+  CI_REPORT_VERSION,
+  formatGithubAnnotations,
+  formatSarif,
+  offsetToLine,
+  stripCommentsPreservingLines,
+  stripTokenBlocksPreservingLines,
+} from "./ci-report.mjs";
 
 const SKIP_DIRS = new Set([
   ".git",
@@ -476,13 +485,18 @@ export function scanTarget(targetPath, options = {}) {
   // 1. Validate W3C DTCG files
   const dtcgReports = [];
   const mergedTokens = [];
+  const dtcgFileByPath = new Map();
   for (const tf of tokenJsonFiles.sort()) {
     try {
       const json = JSON.parse(readFileSync(tf, "utf8"));
       const flat = flattenTokens(json);
       if (flat.length === 0) continue;
       const single = validateDtcgTokens(flat);
-      dtcgReports.push({ file: st.isDirectory() ? relative(resolved, tf) : tf, ...single });
+      const relTf = st.isDirectory() ? relative(resolved, tf) : tf;
+      dtcgReports.push({ file: relTf, ...single });
+      for (const tok of flat) {
+        if (!dtcgFileByPath.has(tok.path)) dtcgFileByPath.set(tok.path, relTf);
+      }
       mergedTokens.push(...flat);
     } catch {
       // Skip non-token package/tooling JSON files
@@ -493,6 +507,7 @@ export function scanTarget(targetPath, options = {}) {
 
   // 2. Codebase Drift Scan
   const definedVars = new Set();
+  const varDefLocations = new Map();
   const usedVars = new Set();
   const themeVars = new Set();
   const seenUtilityClasses = new Set();
@@ -507,10 +522,39 @@ export function scanTarget(targetPath, options = {}) {
   const hardcodedHexSet = new Set();
   const serverImageFiles = [];
   const sampleViolations = [];
+  const ciActive = [];
+  const ciWaived = [];
+  const ciUnusedIgnores = [];
+
+  if (combinedDtcg) {
+    for (const issue of combinedDtcg.blockingIssues) {
+      const ruleId = issue.type === "circular_reference" ? "dsaf/dtcg-circular-ref" : "dsaf/dtcg-unresolved-ref";
+      ciActive.push({
+        file: dtcgFileByPath.get(issue.path) || dtcgReports[0]?.file || "tokens.json",
+        line: 1,
+        ruleId,
+        tier: "floor",
+        severity: "error",
+        message: `${issue.type} on token '${issue.path}' -> '${issue.target}'`,
+      });
+    }
+  }
+  if (dtcgModes?.contrast?.wcagFailures > 0) {
+    for (const p of dtcgModes.contrast.samplePairs.filter((x) => !x.wcagPassAA)) {
+      ciActive.push({
+        file: dtcgFileByPath.get(p.fg) || dtcgReports[0]?.file || "tokens.json",
+        line: 1,
+        ruleId: "dsaf/dtcg-contrast-fail",
+        tier: "floor",
+        severity: "error",
+        message: `DTCG contrast fail (${p.mode}): ${p.fg} on ${p.bg} = ${p.wcagRatio}:1 (< 4.5:1)`,
+      });
+    }
+  }
 
   for (const cf of codeFiles.sort()) {
     const raw = readFileSync(cf, "utf8");
-    const rel = st.isDirectory() ? relative(resolved, cf) : cf;
+    const rel = st.isDirectory() ? relative(resolved, cf).replace(/\\/g, "/") : cf;
     // Skip single-line compiled/minified bundles even without .min. suffix
     if (raw.length > 100_000 && raw.split("\n").length < 5) continue;
     // Skip server-side raster OG/icon generators (e.g. next/og ImageResponse) that cannot read CSS var()
@@ -525,7 +569,10 @@ export function scanTarget(targetPath, options = {}) {
     }
     for (const m of raw.matchAll(/--([a-zA-Z0-9_-]+)\s*:/g)) {
       const name = `--${m[1]}`;
-      if (!isFrameworkInternalVar(name)) definedVars.add(name);
+      if (!isFrameworkInternalVar(name)) {
+        definedVars.add(name);
+        if (!varDefLocations.has(name)) varDefLocations.set(name, { file: rel, line: offsetToLine(raw, m.index) });
+      }
     }
     for (const m of raw.matchAll(/var\(\s*--([a-zA-Z0-9_-]+)/g)) {
       const name = `--${m[1]}`;
@@ -571,6 +618,96 @@ export function scanTarget(targetPath, options = {}) {
     twArbitraryColors += fileTwArbColors;
     twArbitrarySpacing += fileTwArbSpacing;
     twPrimitiveColors += fileTwPrimColors;
+
+    // Line-accurate CI findings & inline waiver resolution
+    const linePreservingSurface = isStyle ? stripTokenBlocksPreservingLines(raw) : stripCommentsPreservingLines(raw);
+    const linePreservingNonVar = linePreservingSurface.replace(/--[a-zA-Z0-9_-]+\s*:[^;}\n]+;?/g, (seg) => seg.replace(/[^\n]/g, " "));
+    const linePreservingNonTw = linePreservingNonVar.replace(/-\[#[^\]\s]+\]/g, (seg) => seg.replace(/[^\n]/g, " "));
+    const fileCiFindings = [];
+
+    for (const m of linePreservingNonTw.matchAll(/#[0-9a-fA-F]{3,8}\b/g)) {
+      fileCiFindings.push({
+        file: rel,
+        line: offsetToLine(linePreservingNonTw, m.index),
+        ruleId: "dsaf/hardcoded-color",
+        tier: "reflex",
+        severity: "warning",
+        message: `Hardcoded hex color \`${m[0]}\` outside token definitions.`,
+      });
+    }
+    for (const m of linePreservingNonTw.matchAll(/\b(?:rgba?|hsla?|oklch|lab|oklab)\([^)]+\)/gi)) {
+      fileCiFindings.push({
+        file: rel,
+        line: offsetToLine(linePreservingNonTw, m.index),
+        ruleId: "dsaf/hardcoded-color",
+        tier: "reflex",
+        severity: "warning",
+        message: `Hardcoded functional color \`${m[0]}\` outside token definitions.`,
+      });
+    }
+    for (const m of linePreservingSurface.matchAll(/!important\b/g)) {
+      fileCiFindings.push({
+        file: rel,
+        line: offsetToLine(linePreservingSurface, m.index),
+        ruleId: "dsaf/important-override",
+        tier: "reflex",
+        severity: "warning",
+        message: "Disallowed `!important` override.",
+      });
+    }
+    if (isStyle) {
+      for (const m of linePreservingNonVar.matchAll(/([a-zA-Z-]+)\s*:\s*([^;{}\n]+)/g)) {
+        if (!SPACING_RADIUS_CSS_PROP_RE.test(m[1])) continue;
+        for (const pxm of m[2].matchAll(/\b(\d+)px\b/g)) {
+          const n = parseInt(pxm[1], 10);
+          if (n > 4 && n < 200 && n % 4 !== 0 && n !== 6 && n !== 10 && n !== 14) {
+            fileCiFindings.push({
+              file: rel,
+              line: offsetToLine(linePreservingNonVar, m.index),
+              ruleId: "dsaf/off-grid-spacing",
+              tier: "reflex",
+              severity: "warning",
+              message: `Off-grid spacing \`${m[1]}: ${n}px\`; use 4px/8px grid token.`,
+            });
+          }
+        }
+      }
+    } else {
+      for (const m of linePreservingNonVar.matchAll(SPACING_RADIUS_JS_PROP_RE)) {
+        for (const pxm of m[2].matchAll(/\b(\d+)px\b/g)) {
+          const n = parseInt(pxm[1], 10);
+          if (n > 4 && n < 200 && n % 4 !== 0 && n !== 6 && n !== 10 && n !== 14) {
+            fileCiFindings.push({
+              file: rel,
+              line: offsetToLine(linePreservingNonVar, m.index),
+              ruleId: "dsaf/off-grid-spacing",
+              tier: "reflex",
+              severity: "warning",
+              message: `Off-grid inline spacing \`${n}px\`; use 4px/8px grid token.`,
+            });
+          }
+        }
+      }
+    }
+    for (const m of linePreservingSurface.matchAll(
+      /(?:^|[\s"'`])(?:(?:bg|text|border|fill|stroke|ring|from|to|via|accent|outline|decoration)-\[#[^\]\s]+\]|(?:p|px|py|pt|pr|pb|pl|ps|pe|m|mx|my|mt|mr|mb|ml|ms|me|gap|gap-x|gap-y|space-x|space-y|rounded(?:-[a-z]+)?)-\[\d+(?:\.\d+)?px\])/g
+    )) {
+      fileCiFindings.push({
+        file: rel,
+        line: offsetToLine(linePreservingSurface, m.index),
+        ruleId: "dsaf/tailwind-arbitrary",
+        tier: "reflex",
+        severity: "warning",
+        message: `Tailwind arbitrary bracket utility \`${m[0].trim()}\`.`,
+      });
+    }
+
+    const ignored = applyIgnores(fileCiFindings, raw, rel, {
+      reportUnusedIgnores: Boolean(options.reportUnusedIgnores),
+    });
+    ciActive.push(...ignored.active);
+    ciWaived.push(...ignored.waived);
+    ciUnusedIgnores.push(...ignored.unusedIgnores);
 
     if ((fileColorDrift > 0 || impMatches.length > 0 || fileOffGrid > 0 || fileTwArbColors > 0 || fileTwArbSpacing > 0) && sampleViolations.length < 25) {
       sampleViolations.push({
@@ -631,6 +768,28 @@ export function scanTarget(targetPath, options = {}) {
   const totalColorDecls = colorTokenRefs + hardcodedColorHits + twArbitraryColors;
   const tokenCompliancePct = totalColorDecls > 0 ? Number(((colorTokenRefs / totalColorDecls) * 100).toFixed(1)) : null;
 
+  for (const ov of semanticOrphans.slice(0, 50)) {
+    const loc = varDefLocations.get(ov);
+    if (loc) {
+      ciActive.push({
+        file: loc.file,
+        line: loc.line,
+        ruleId: "dsaf/semantic-orphan-var",
+        tier: "finish",
+        severity: "note",
+        message: `Unused semantic CSS custom property \`${ov}\`.`,
+      });
+    }
+  }
+
+  const ciCounts = {
+    floor: ciActive.filter((x) => x.tier === "floor").length,
+    reflex: ciActive.filter((x) => x.tier === "reflex").length,
+    finish: ciActive.filter((x) => x.tier === "finish").length,
+    waived: ciWaived.length,
+    unusedIgnores: ciUnusedIgnores.length,
+  };
+
   return {
     schema: "dsaf-tokens/2",
     generated: new Date().toISOString(),
@@ -664,6 +823,12 @@ export function scanTarget(targetPath, options = {}) {
         primitiveColors: twPrimitiveColors,
       },
       sampleViolations,
+    },
+    ciFindings: {
+      active: ciActive,
+      waived: ciWaived,
+      unusedIgnores: ciUnusedIgnores,
+      counts: ciCounts,
     },
   };
 }
@@ -790,7 +955,28 @@ function runSelfTest() {
     const monoWithDemos = scanTarget(monoRoot, { includeDemos: true });
     assert.ok(monoWithDemos.drift.hardcodedColorHits >= 1, "--include-demos must scan demo/ files");
 
-    console.log("AUDIT_TOKENS_SELF_TEST_PASSED (DTCG + scoped CSS/@theme/Tailwind + fixture/OG + demo/scale)");
+    // 8. Inline reflex waiver + unused-ignore + SARIF 2.1.0 + GitHub annotation checks (v0.4.0)
+    const ciRoot = join(scratch, "ci-root");
+    mkdirSync(ciRoot, { recursive: true });
+    writeFileSync(
+      join(ciRoot, "styles.css"),
+      [
+        ":root { --brand: #1d4ed8; }",
+        "/* dsaf-ignore dsaf/hardcoded-color -- brand gradient fallback for legacy canvas */",
+        ".legacy { color: #ff00aa; }",
+        "/* dsaf-ignore dsaf/important-override -- stale waiver after cleanup */",
+        ".clean { color: var(--brand); }",
+      ].join("\n")
+    );
+    const ciRes = scanTarget(ciRoot, { reportUnusedIgnores: true });
+    assert.equal(ciRes.ciFindings.counts.waived, 1, "Concrete reflex waiver must waive hardcoded color");
+    assert.equal(ciRes.ciFindings.counts.unusedIgnores, 1, "Must detect stale dsaf-ignore");
+    assert.ok(ciRes.ciFindings.active.some((f) => f.ruleId === "dsaf/unused-ignore"), "Must emit unused-ignore finding");
+    const sarifDoc = formatSarif(ciRes.ciFindings.active, { toolVersion: CI_REPORT_VERSION });
+    assert.equal(sarifDoc.version, "2.1.0");
+    assert.match(formatGithubAnnotations(ciRes.ciFindings.active), /^::warning .*dsaf\/unused-ignore/m);
+
+    console.log("AUDIT_TOKENS_SELF_TEST_PASSED (DTCG + scoped CSS/@theme/Tailwind + fixture/OG + demo/scale + SARIF/waivers)");
     return 0;
   } finally {
     rmSync(scratch, { recursive: true, force: true });
@@ -802,7 +988,11 @@ function main() {
     allowPositionals: true,
     options: {
       json: { type: "boolean", default: false },
+      format: { type: "string" },
       out: { type: "string" },
+      sarif: { type: "string" },
+      github: { type: "boolean", default: false },
+      "report-unused-ignores": { type: "boolean", default: false },
       "include-demos": { type: "boolean", default: false },
       scope: { type: "string" },
       "self-test": { type: "boolean", default: false },
@@ -811,7 +1001,9 @@ function main() {
   });
 
   if (values.help) {
-    console.log("Usage: node skill/scripts/audit-tokens.mjs <dir-or-tokens-json> [--scope <subdir>] [--include-demos] [--json] [--out <file>] [--self-test]");
+    console.log(
+      "Usage: node skill/scripts/audit-tokens.mjs <dir-or-tokens-json> [--scope <subdir>] [--include-demos] [--json] [--out <file>] [--sarif <file>] [--format json|sarif] [--github] [--report-unused-ignores] [--self-test]"
+    );
     process.exit(0);
   }
   if (values["self-test"]) {
@@ -823,16 +1015,34 @@ function main() {
     process.exit(2);
   }
 
-  const result = scanTarget(target, { includeDemos: values["include-demos"], scope: values.scope });
+  const result = scanTarget(target, {
+    includeDemos: values["include-demos"],
+    scope: values.scope,
+    reportUnusedIgnores: values["report-unused-ignores"],
+  });
   const outJson = JSON.stringify(result, null, 2) + "\n";
   if (values.out) {
     mkdirSync(dirname(resolve(values.out)), { recursive: true });
     writeFileSync(resolve(values.out), outJson, "utf8");
   }
-  if (values.json) {
+
+  const repoRoot = statSync(resolve(target)).isDirectory() ? resolve(target) : dirname(resolve(target));
+  const sarifObj = formatSarif(result.ciFindings.active, { toolVersion: CI_REPORT_VERSION, repoRoot });
+  if (values.sarif) {
+    mkdirSync(dirname(resolve(values.sarif)), { recursive: true });
+    writeFileSync(resolve(values.sarif), JSON.stringify(sarifObj, null, 2) + "\n", "utf8");
+  }
+
+  if (values.format === "sarif") {
+    process.stdout.write(JSON.stringify(sarifObj, null, 2) + "\n");
+  } else if (values.github) {
+    const ann = formatGithubAnnotations(result.ciFindings.active, { repoRoot });
+    if (ann) process.stdout.write(ann + "\n");
+  } else if (values.json || values.format === "json") {
     process.stdout.write(outJson);
   } else {
     const d = result.drift;
+    const cf = result.ciFindings.counts;
     console.log(`Target: ${result.target}`);
     console.log(`Files scanned: tokenJson=${result.filesScanned.tokenJson}, ui/style=${result.filesScanned.uiAndStyle}`);
     if (result.dtcg) {
@@ -853,6 +1063,9 @@ function main() {
     const scopeNote = d.recommendedScope ? ` | scopeHint=${d.recommendedScope}` : "";
     console.log(
       `CSS Drift: compliance=${d.tokenCompliancePct ?? "N/A"}% (varRefs=${d.colorTokenRefs} vs hardcoded=${d.hardcodedColorHits}) | orphans=${d.orphanCssVariableCount} (semantic=${d.semanticOrphanCount}, scale=${d.paletteScaleUnusedCount}) | !important=${d.importantOverrides} | offGridPx=${d.offGridSpacingHits} | nearDupHexClusters=${d.nearDuplicateHexClusters.length} | twArbColor=${d.tailwind.arbitraryColors} twArbPx=${d.tailwind.arbitrarySpacing} twPrim=${d.tailwind.primitiveColors}${ogNote}${demoNote}${scopeNote}`
+    );
+    console.log(
+      `CI Gate Tiers: floor=${cf.floor} reflex=${cf.reflex} finish=${cf.finish} waived=${cf.waived} unusedIgnores=${cf.unusedIgnores}`
     );
   }
 }

@@ -20,6 +20,7 @@ const COMMANDS = {
   scorecard: { script: "skill/scripts/compute-scorecard.mjs", desc: "Deterministic weighted scorecard & blocker calculator" },
   diff: { script: "skill/scripts/audit-diff.mjs", desc: "No-silent-regression diff verifier with override logging" },
   guardrails: { script: "skill/scripts/generate-guardrails.mjs", desc: "Generate runnable CI & AI-agent design guardrails" },
+  hook: { script: "skill/scripts/dsaf-hook.mjs", desc: "Edit-time agent Floor/Reflex hook checker & installer" },
   integrity: { script: "skill/scripts/check-integrity.mjs", desc: "Tier 1 skill integrity & self-test runner" },
   verify: { script: "evolve/scripts/validate-isolation.mjs", desc: "Full repo isolation, schema & version parity gate" },
   mine: { script: "evolve/scripts/mine-signals.mjs", desc: "Aggregate retro signals & calibration metrics" },
@@ -41,9 +42,11 @@ function printHelp() {
   console.log("  version      Print installed DSAF CLI version");
   console.log("  help         Show this help message\n");
   console.log("Examples:");
-  console.log("  dsaf audit ./my-app --out ./audit-output");
+  console.log("  dsaf audit ./my-app --out ./audit-output --sarif ./dsaf.sarif");
   console.log("  dsaf recon ./my-app");
-  console.log("  dsaf tokens ./my-app --json");
+  console.log("  dsaf tokens ./my-app --json --report-unused-ignores");
+  console.log("  dsaf hook check ./my-app/src --tier floor");
+  console.log("  dsaf hook install --agent claude --dir ./my-app");
   console.log("  dsaf guardrails --out ./my-app/.dsaf-guardrails --stack tailwind");
   console.log("  dsaf runtime ./draft/preview.html --screenshot ./preview.png --pins");
 }

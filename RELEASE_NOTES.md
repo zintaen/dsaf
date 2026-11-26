@@ -1,0 +1,48 @@
+# Release Notes
+
+Concise version highlights for **DSAF (`@zintaen/dsaf`)**. Follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+---
+
+## v0.4.0 (2026-11-26) — CI Native Gates, Edit-Time Hooks & Controlled Waivers
+
+- **SARIF 2.1.0 & GitHub Annotations (`--sarif`, `--github`):** `dsaf tokens`, `dsaf audit`, and `dsaf hook` now emit native SARIF 2.1.0 reports and PR-inline GitHub Actions annotations.
+- **Edit-Time Agent Hook (`dsaf hook`):** Runs a fast Floor/Reflex check on UI file edits via Claude Code, Cursor, or Codex `PostToolUse` hooks (`dsaf hook install`).
+- **3-Tier Gate & Waiver Engine (`Floor` · `Reflex` · `Finish`):** Floor rules cannot be suppressed; Reflex rules accept concrete `/* dsaf-ignore <rule> -- <reason> */` waivers; `--report-unused-ignores` flags stale waivers.
+- **Anti-Anchoring Review Provenance:** `compute-scorecard.mjs` records `dual-agent` vs `⚠️ DEGRADED: single-context` provenance and rejects Floor/boilerplate waivers.
+
+## v0.3.0 (2026-11-26) — One-Click Pipeline & Live Vertex 3
+
+- **Unified `dsaf audit` Pipeline:** Chains read-only `recon`, `tokens`, multi-route `runtime`, 3-vertex `figma-diff`, and `audit-diff` into `audit-summary.json` and Markdown.
+- **Live Vertex 3 (`Shipped`) Triangulation:** Captures live `:root` `computedVars`, multi-route `--routes`, and multi-stack Light↔Dark mode checks against Figma variables.
+- **Monorepo & Touch Precision:** Skips prototype `demo/` trees by default (`--include-demos` opt-in), separates semantic orphans from palette scales, and flags overlapping small mobile tap targets.
+
+## v0.2.2 (2026-11-26) — Zero-`NODE_PATH` Discovery & Trusted Publishing
+
+- **npm Scope & OIDC Publishing:** Published as `@zintaen/dsaf` with provenance via GitHub Actions OIDC on `v*` tags.
+- **Auto Runtime Discovery:** Automatically resolves `playwright` and `axe-core` from target/ancestor `node_modules` without `NODE_PATH`.
+- **Cleaner Codebase Noise Filtering:** Excludes test/fixture trees and server-side `ImageResponse` OG image generators from token drift counts.
+
+## v0.2.1 (2026-11-26) — Real-World Figma & Guardrail Separation
+
+- **SVG / Swatch Separation (`+SG`):** Guardrail scanner separates CSS/inline-style hexes and Tailwind arbitrary utilities from declarative `<svg>` colors and swatch constants.
+- **Code Connect v2 & CSS Alias Triangulation:** Resolves CSS `var()` aliases, dark blocks, `--prefix` auto-stripping, and batch Code Connect files.
+
+## v0.2.0 (2026-11-26) — Automated Figma Diff & Static Storybook
+
+- **Automated 3-Vertex `dsaf figma-diff`:** Compares Figma variables & Code Connect against DTCG/CSS tokens and runtime summaries.
+- **Local Static Storybook & Defect Fixtures:** Supports `--storybook <index.json>` locally alongside CI verification fixtures.
+
+## v0.1.1 (2026-11-26) — Accurate Topology & Tailwind v4 `@theme`
+
+- **Auth/Bundle Filtering:** Stops auth token routes, hidden agent folders, and mobile WebView bundles from skewing `Mode C` detection.
+- **Tailwind v4 `@theme` Resolution:** Tracks `@theme inline` utility consumption and JS `getPropertyValue` references accurately.
+
+## v0.1.0 (2026-11-26) — Single-Entry CLI & Executable Guardrails
+
+- **Unified `dsaf` CLI (`bin/dsaf.mjs`):** Exposed all core workflows under one command.
+- **Executable Guardrails & Keyboard Audit:** Added `+SG` (`check-design-discipline.mjs`, CI workflow, `AGENTS` rules), `keyboardMap`, APCA/WCAG DTCG pairs, and `--screenshot --pins`.
+
+## v0.0.1 (2026-11-26) — Initial Clean-Room Framework
+
+- Launched 3 auto-detected modes (`Mode S` System Core, `Mode C` Conformance & Drift, `Mode P` Product UX/UI), Step 0 Clarification Gate, Canonical Dual-Track Preview Shell, zero-dep Node ESM toolchain, and isolated `evolve/` closed-loop evolution.
