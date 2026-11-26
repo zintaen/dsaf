@@ -697,6 +697,11 @@ li {
 }
 
 .showcase-caption {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
   padding: var(--space-4) var(--space-5);
   border-block-start: 1px solid var(--border-subtle);
   color: var(--muted);

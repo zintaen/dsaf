@@ -4,6 +4,17 @@ Concise version highlights for **DSAF (`@zintaen/dsaf`)**. Follows [Semantic Ver
 
 ---
 
+## v0.6.0 (2026-11-26) — Zero-Clone Skill Install, GitHub Action & Field-Hardened Probes
+
+- **Zero-Clone Agent Skill Installer (`dsaf install-skill`):** Installs ONLY Tier 1 production skill files directly from npm/npx into Claude Code, Cursor, Codex, Antigravity, or `.agents` (`--agent`, `--scope user|project`, `--dir`, `--dry-run`).
+- **Official GitHub Action (`action.yml`):** Runs `dsaf audit`, optional `dsaf doctor`, uploads **SARIF 2.1.0**, posts sticky PR scorecards (`<!-- dsaf-audit-comment -->`), enforces Floor gates, and upgrades all CI workflows to Node 24-native action tags (`checkout@v7`, `setup-node@v7`, `upload-sarif@v4`).
+- **GitHub Pages Live Interactive Demo & Social Metadata (`docs/`):** Publishes live interactive Preview Shell demo (`docs/demo/preview-shell.html`), capability comparison table, favicon, `sitemap.xml`, and generated `1200x630` `og-card.png`.
+- **Field-Hardened Probes (`dsaf-evolve` Cycle):**
+  - Broadened cookie/consent hiding (`[aria-label*="cookie"]`, `[data-testid*="cookie"]`, `[class*="consent"]`), bounded `domcontentloaded` + `networkidle` fallback navigation, and in-viewport horizontal scroller exemptions for `clippedTargets`.
+  - Unified built/verification/mobile bundle exclusions (`_audit/`, `storybook-static/`, `src-tauri/`, `ios/App/App/public/`) across `recon`, `audit-tokens`, `dsaf-hook`, and `doctor` (eliminating DTCG duplicate counts and stale bundle hits).
+  - Refined `dsaf/no-outline-none-naked` to respect skip-link focus destinations, sibling `:focus-visible`, and parent `:focus-within` composite widgets, while integrating `dsaf-hook` Floor rules into `dsaf audit` and `--json` into `dsaf figma-diff`.
+  - Upgraded `recon.mjs` `detectSurfaceMode` (desktop/mobile shell + interactive component detection -> `operate`, `Mode S` libraries -> `read`) and `t2MockRequired` cloud BaaS SDK detection.
+
 ## v0.5.0 (2026-11-26) — Surface Modes, Runtime Hardening, Doctor & GitHub Pages
 
 - **Surface Mode Auto-Detection & No-Slop Guard:** `dsaf recon` classifies `Persuade` / `Operate` / `Read` / `Experience` surfaces so audits adapt to dashboards vs docs vs marketing; `Mode P` skips gratuitous redesigns on already-clean UIs and follows the 9-pass causal redline order.

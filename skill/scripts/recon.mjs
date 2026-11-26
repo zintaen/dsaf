@@ -17,6 +17,10 @@ const SKIP_DIRS = new Set([
   "node_modules",
   "dist",
   "build",
+  "storybook-static",
+  "_audit",
+  "_vendor",
+  "src-tauri",
   ".next",
   ".nuxt",
   ".svelte-kit",
@@ -114,32 +118,54 @@ function inspectEnvKeysOnly(rootDir, relFiles) {
  * - "operate": dashboards, tables, admins, editors, settings, workspaces
  * - "persuade": marketing, landing, pricing, product homepages
  */
-export function detectSurfaceMode({ relFiles = [], deps = new Set(), appRoutes = [], componentFiles = [] } = {}) {
+export function detectSurfaceMode({ relFiles = [], deps = new Set(), appRoutes = [], componentFiles = [], isDesignSystem = false } = {}) {
   const depSet = deps instanceof Set ? deps : new Set([...deps].map((d) => String(d).toLowerCase()));
   const docsDeps = ["docusaurus", "@docusaurus/core", "vitepress", "nextra", "fumadocs-core", "mintlify", "@astrojs/starlight"];
   const docsHits = relFiles.filter((r) => /(^|\/)(docs?|guides?|blog|articles?|reference|changelog)\//i.test(r)).length;
   const routeText = appRoutes.join("\n");
   const allText = relFiles.join("\n");
 
+  const expDeps = ["three", "@react-three/fiber", "pixi.js", "p5", "ogl"];
+  if (expDeps.some((d) => depSet.has(d)) || (!isDesignSystem && /(^|\/)(portfolio|gallery|showcase|exhibition)\b/i.test(allText))) {
+    return { surfaceMode: "experience", surfaceModeRationale: "Canvas/WebGL/showcase or portfolio experience signals detected." };
+  }
+
   if (
+    isDesignSystem ||
     docsDeps.some((d) => depSet.has(d)) ||
     (appRoutes.length >= 2 && appRoutes.filter((r) => /(docs?|guide|blog|article|changelog)/i.test(r)).length / appRoutes.length >= 0.5) ||
     (docsHits >= 5 && componentFiles.length <= 2)
   ) {
-    return { surfaceMode: "read", surfaceModeRationale: "Documentation/reading framework or docs-heavy route structure detected." };
+    return {
+      surfaceMode: "read",
+      surfaceModeRationale: isDesignSystem
+        ? "Design system / component documentation surface detected."
+        : "Documentation/reading framework or docs-heavy route structure detected.",
+    };
   }
 
-  const expDeps = ["three", "@react-three/fiber", "pixi.js", "p5", "ogl"];
-  if (expDeps.some((d) => depSet.has(d)) || /(^|\/)(portfolio|gallery|showcase|exhibition)\b/i.test(allText)) {
-    return { surfaceMode: "experience", surfaceModeRationale: "Canvas/WebGL/showcase or portfolio experience signals detected." };
-  }
-
-  const operateDeps = ["@tanstack/react-table", "@tanstack/react-query", "zustand", "@reduxjs/toolkit", "redux", "ag-grid-community", "recharts"];
+  const operateDeps = [
+    "@tanstack/react-table",
+    "@tanstack/react-query",
+    "zustand",
+    "@reduxjs/toolkit",
+    "redux",
+    "ag-grid-community",
+    "recharts",
+    "@tauri-apps/api",
+    "@tauri-apps/cli",
+    "electron",
+    "@capacitor/core",
+  ];
+  const interactiveComponentHits = componentFiles.filter((f) =>
+    /(modal|dialog|sidebar|drawer|panel|editor|table|ledger|settings|composer|workspace|picker|form|filter|toolbar)/i.test(f)
+  ).length;
   if (
     operateDeps.some((d) => depSet.has(d)) ||
-    /(dashboard|admin|settings|workspace|console|editor|billing|account|analytics|inbox|tables?)/i.test(routeText)
+    /(dashboard|admin|settings|workspace|console|editor|billing|account|analytics|inbox|tables?)/i.test(routeText) ||
+    interactiveComponentHits >= 3
   ) {
-    return { surfaceMode: "operate", surfaceModeRationale: "Interactive workspace, dashboard, table, or state-management app signals detected." };
+    return { surfaceMode: "operate", surfaceModeRationale: "Interactive workspace, desktop/mobile app shell, table, or multi-panel UI signals detected." };
   }
 
   return { surfaceMode: "persuade", surfaceModeRationale: "Defaulted to conversion/product presentation surface (landing/marketing/site)." };
@@ -228,7 +254,12 @@ export function analyzeDirectory(inputDir) {
   const hasShadcnMarkers = relFiles.some((r) => r.endsWith("components.json")) || relFiles.some((r) => /(^|\/)components\/ui\/.+\.(tsx|jsx)$/.test(r));
 
   const envCheck = inspectEnvKeysOnly(root, relFiles);
-  const t2MockRequired = envCheck.cloudKeys.length > 0;
+  const cloudSdkDeps = [...runtimeDeps]
+    .filter((d) =>
+      /^(?:@supabase\/supabase-js|firebase|firebase-admin|@firebase\/firestore|convex|appwrite|mongodb|pg|prisma|@prisma\/client|@aws-sdk\/client-dynamodb)$/i.test(d)
+    )
+    .sort();
+  const t2MockRequired = envCheck.cloudKeys.length > 0 || cloudSdkDeps.length > 0;
 
   // Determine Topology: Mode S vs Mode C vs Mode P
   let isAppLike = appRoutes.length > 0 || hasDevAppScripts || rootHtml.length > 0;
@@ -285,7 +316,13 @@ export function analyzeDirectory(inputDir) {
     hasTailwindTheme,
     hasDtcgTokens,
   };
-  const { surfaceMode, surfaceModeRationale } = detectSurfaceMode({ relFiles, deps, appRoutes, componentFiles });
+  const { surfaceMode, surfaceModeRationale } = detectSurfaceMode({
+    relFiles,
+    deps,
+    appRoutes,
+    componentFiles,
+    isDesignSystem: recommendedMode === "S",
+  });
 
   return {
     schema: "dsaf-recon/1",
@@ -301,6 +338,7 @@ export function analyzeDirectory(inputDir) {
     recommendedDataTier: t2MockRequired ? "T2 + T2-Mock" : "T2",
     t2MockRequired,
     cloudEnvKeysDetected: envCheck.cloudKeys,
+    cloudSdkDeps,
     stack,
     counts: {
       packages: pkgInfos.length,
@@ -430,13 +468,21 @@ function runSelfTest() {
     assert.equal(resTw.stack.hasTailwindTheme, true, "Must detect @theme inline");
     assert.equal(resTw.recommendedMode, "C", "Expected Mode C on Tailwind @theme inline");
 
-    // 7. URL & Surface Mode classification (v0.5.0)
+    // 7. URL & Surface Mode classification + cloud SDK fallback
     assert.equal(analyzeUrlTarget("https://prod.example.com").recommendedDataTier, "T0");
     assert.match(analyzeUrlTarget("http://localhost:3000").recommendedDataTier, /^T2/);
     assert.equal(detectSurfaceMode({ deps: new Set(["vitepress"]) }).surfaceMode, "read");
+    assert.equal(detectSurfaceMode({ isDesignSystem: true }).surfaceMode, "read");
+    assert.equal(detectSurfaceMode({ deps: new Set(["@tauri-apps/api"]) }).surfaceMode, "operate");
     assert.equal(detectSurfaceMode({ appRoutes: ["src/pages/dashboard/index.tsx"] }).surfaceMode, "operate");
     assert.equal(detectSurfaceMode({ deps: new Set(["three"]), relFiles: ["src/gallery/Scene.tsx"] }).surfaceMode, "experience");
     assert.equal(detectSurfaceMode({ relFiles: ["index.html", "styles.css"] }).surfaceMode, "persuade");
+
+    const dirSdk = join(scratch, "sdk-only-app");
+    mkdirSync(join(dirSdk, "app"), { recursive: true });
+    writeFileSync(join(dirSdk, "package.json"), JSON.stringify({ name: "sdk-app", dependencies: { next: "^16.0.0", react: "^19.0.0", "@supabase/supabase-js": "^2.0.0" } }));
+    writeFileSync(join(dirSdk, "app/page.tsx"), "export default function Page() { return null; }");
+    assert.equal(analyzeDirectory(dirSdk).t2MockRequired, true, "Must detect cloud BaaS SDK even without .env");
 
     console.log("RECON_SELF_TEST_PASSED (Mode S/C/P + Surface Modes + @theme + auth/hidden-dir exclusion + URL safety)");
     return 0;

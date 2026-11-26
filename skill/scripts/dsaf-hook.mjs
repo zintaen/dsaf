@@ -28,6 +28,11 @@ const SKIP_DIRS = new Set([
   "node_modules",
   "dist",
   "build",
+  "storybook-static",
+  "_audit",
+  "_vendor",
+  "_site",
+  "src-tauri",
   ".next",
   ".nuxt",
   ".svelte-kit",
@@ -150,13 +155,56 @@ export function scanUiContent(raw, filePath, options = {}) {
       });
     }
 
-    // 4. Floor: outline: none / 0 without visible focus replacement in the same block
-    for (const blk of extractCssRuleBlocks(slice.text)) {
+    // 4. Floor: outline: none / 0 without visible focus replacement or accessible composite pattern
+    const cssBlocks = extractCssRuleBlocks(slice.text);
+    const hasVisibleFocusIndicator = (body) =>
+      /\b(?:box-shadow|border(?:-color|-width)?|outline-offset)\s*:|\boutline\s*:\s*(?!none\b|0\b)[^;}\n]+/i.test(body);
+    const hasSiblingFocusVisible = (selStr) => {
+      const parts = selStr.split(",").map((s) => s.trim()).filter(Boolean);
+      return parts.some((p) => {
+        const targetSel = `${p}:focus-visible`.toLowerCase();
+        return cssBlocks.some(
+          (other) =>
+            hasVisibleFocusIndicator(other.body) &&
+            other.selector.split(",").some((os) => os.trim().toLowerCase() === targetSel)
+        );
+      });
+    };
+    const hasParentFocusWithin = (selStr) => {
+      const parts = selStr.split(",").map((s) => s.trim()).filter(Boolean);
+      for (const p of parts) {
+        const idx = p.search(/[\s>~+]+[^\s>~+]+$/);
+        if (idx <= 0) continue;
+        const ancestor = p.slice(0, idx).trim().toLowerCase();
+        const tokens = ancestor.match(/[#.][a-zA-Z0-9_-]+/g) || [];
+        for (const tok of [ancestor, ...tokens]) {
+          const targetWithin = `${tok.toLowerCase()}:focus-within`;
+          if (
+            cssBlocks.some(
+              (other) =>
+                hasVisibleFocusIndicator(other.body) &&
+                other.selector.split(",").some((os) => os.trim().toLowerCase().includes(targetWithin))
+            )
+          ) {
+            return true;
+          }
+        }
+      }
+      return false;
+    };
+
+    for (const blk of cssBlocks) {
       if (/:focus:not\(:focus-visible\)/i.test(blk.selector)) continue;
+      if (/(?:^|[\s,])(?:#(?:main|content|main-content|app)|main|\[tabindex\s*=\s*["']?-1["']?\])(?::focus(?:-visible)?|$)/i.test(blk.selector)) {
+        continue;
+      }
       const outMatch = /\boutline\s*:\s*(?:none|0)\b/i.exec(blk.body);
       if (outMatch) {
         const hasReplacement = /\b(?:box-shadow|border(?:-color|-width)?|outline-offset)\s*:/i.test(blk.body);
-        if (!hasReplacement) {
+        const siblingOrParentSafe =
+          (!/:focus\b/i.test(blk.selector) && hasSiblingFocusVisible(blk.selector)) ||
+          (/:focus(?:-visible)?\b/i.test(blk.selector) && hasParentFocusWithin(blk.selector));
+        if (!hasReplacement && !siblingOrParentSafe) {
           findings.push({
             file: filePath,
             line: offsetToLine(cleanComments, slice.baseOffset + blk.bodyStart + outMatch.index),
@@ -308,7 +356,11 @@ function collectUiFiles(targetPath) {
       if (e.isDirectory()) walk(full);
       else if (UI_EXTS.has(extname(e.name).toLowerCase())) {
         const rel = relative(abs, full).replace(/\\/g, "/");
-        if (!/(\.test\.|\.spec\.|__tests__\/|(^|\/)(?:tests?|fixtures|evolve)\/|\.min\.|\.bundle\.)/i.test(rel)) {
+        if (
+          !/(\.test\.|\.spec\.|__tests__\/|(^|\/)(?:tests?|fixtures|__fixtures__|storybook-static|_audit|_vendor|demos?|demo\d+|examples?|samples?|ios\/App\/App\/public|android\/app\/src\/main\/assets\/public|src-tauri\/target)\/|\.min\.(css|js)$|\.bundle\.(css|js|mjs)$)/i.test(
+            rel
+          )
+        ) {
           out.push({ full, rel });
         }
       }
@@ -428,14 +480,34 @@ function runSelfTest() {
     assert.equal(htmlRes.active.length, 1);
     assert.equal(htmlRes.active[0].ruleId, "dsaf/no-autoplay-unmuted");
 
-    // 3. Clean CSS passes with 0 findings (including @starting-style)
+    // 3. Clean CSS passes with 0 findings (including @starting-style, skip-link target, sibling :focus-visible & parent :focus-within)
     const cleanCss = join(scratch, "clean.css");
     writeFileSync(
       cleanCss,
-      `:root { --accent: #1d4ed8; }\n.btn { color: var(--accent); transition: transform 150ms ease; }\n.btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }\n@starting-style { .reveal { opacity: 0; } }\n`
+      [
+        ":root { --accent: #1d4ed8; }",
+        ".btn { color: var(--accent); transition: transform 150ms ease; }",
+        ".btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }",
+        "#main-content:focus { outline: none; }",
+        ".editor { outline: none; }",
+        ".editor:focus-visible { outline: 2px solid var(--accent); }",
+        ".picker:focus-within { outline: 2px solid var(--accent); }",
+        ".picker select:focus { outline: none; }",
+        "@starting-style { .reveal { opacity: 0; } }",
+      ].join("\n")
     );
     const cleanRes = checkFile(cleanCss, { tier: "all", displayPath: "clean.css" });
-    assert.equal(cleanRes.active.length, 0, "Clean CSS must pass --tier all cleanly");
+    assert.equal(cleanRes.active.length, 0, "Clean CSS + valid focus patterns must pass --tier all cleanly");
+
+    // 3b. checkTarget must exclude ios/App/App/public, _audit, storybook-static
+    const subProj = join(scratch, "sub-proj");
+    mkdirSync(join(subProj, "web/ios/App/App/public/assets"), { recursive: true });
+    mkdirSync(join(subProj, "_audit"), { recursive: true });
+    mkdirSync(join(subProj, "web/src"), { recursive: true });
+    writeFileSync(join(subProj, "web/ios/App/App/public/assets/index.css"), ".x{transition:all 1s}");
+    writeFileSync(join(subProj, "_audit/probe.css"), ".x{transition:all 1s}");
+    writeFileSync(join(subProj, "web/src/ok.css"), ".x{transition:opacity 150ms}");
+    assert.equal(checkTarget(subProj, { tier: "floor" }).passed, true, "Must skip built WebView & _audit paths");
 
     // 4. Stdin hook payload
     const hookOut = runHookStdin(JSON.stringify({ tool_input: { file_path: badCss } }));
@@ -477,6 +549,41 @@ function parseFlagArgs(argv) {
   return { positionals, flags };
 }
 
+export function checkTarget(target, options = {}) {
+  const tier = options.tier || "floor";
+  const reportUnusedIgnores = Boolean(options.reportUnusedIgnores);
+  const files = collectUiFiles(target);
+  const allActive = [];
+  const allWaived = [];
+  const allUnused = [];
+  for (const f of files) {
+    const r = checkFile(f.full, {
+      tier,
+      displayPath: f.rel,
+      reportUnusedIgnores,
+    });
+    allActive.push(...r.active);
+    allWaived.push(...r.waived);
+    allUnused.push(...r.unusedIgnores);
+  }
+  const counts = {
+    floor: allActive.filter((x) => x.tier === "floor").length,
+    reflex: allActive.filter((x) => x.tier === "reflex").length,
+    finish: allActive.filter((x) => x.tier === "finish").length,
+    waived: allWaived.length,
+    unusedIgnores: allUnused.length,
+  };
+  const blockingCount = tier === "all" ? counts.floor + counts.reflex : counts.floor;
+  return {
+    filesScanned: files.length,
+    passed: blockingCount === 0,
+    counts,
+    active: allActive,
+    waived: allWaived,
+    unusedIgnores: allUnused,
+  };
+}
+
 function main() {
   const { positionals, flags } = parseFlagArgs(process.argv.slice(2));
   if (flags.help || (!flags.selfTest && positionals.length === 0)) {
@@ -509,30 +616,10 @@ function main() {
   }
 
   const target = sub === "check" ? rest[0] || "." : sub;
-  const files = collectUiFiles(target);
-  const allActive = [];
-  const allWaived = [];
-  const allUnused = [];
-  for (const f of files) {
-    const r = checkFile(f.full, {
-      tier: flags.tier,
-      displayPath: f.rel,
-      reportUnusedIgnores: flags.reportUnusedIgnores,
-    });
-    allActive.push(...r.active);
-    allWaived.push(...r.waived);
-    allUnused.push(...r.unusedIgnores);
-  }
-
-  const counts = {
-    floor: allActive.filter((x) => x.tier === "floor").length,
-    reflex: allActive.filter((x) => x.tier === "reflex").length,
-    finish: allActive.filter((x) => x.tier === "finish").length,
-    waived: allWaived.length,
-    unusedIgnores: allUnused.length,
-  };
-  const blockingCount = flags.tier === "all" ? counts.floor + counts.reflex : counts.floor;
-  const passed = blockingCount === 0;
+  const { filesScanned, passed, counts, active: allActive, waived: allWaived, unusedIgnores: allUnused } = checkTarget(target, {
+    tier: flags.tier,
+    reportUnusedIgnores: flags.reportUnusedIgnores,
+  });
 
   if (flags.sarif) {
     const outPath = resolve(flags.sarif);
@@ -546,7 +633,7 @@ function main() {
   } else if (flags.json) {
     console.log(JSON.stringify({ schema: "dsaf-hook/1", target, tier: flags.tier, passed, counts, active: allActive, waived: allWaived, unusedIgnores: allUnused }, null, 2));
   } else {
-    console.log(`DSAF_HOOK_CHECK: files=${files.length} floor=${counts.floor} reflex=${counts.reflex} waived=${counts.waived} unusedIgnores=${counts.unusedIgnores}`);
+    console.log(`DSAF_HOOK_CHECK: files=${filesScanned} floor=${counts.floor} reflex=${counts.reflex} waived=${counts.waived} unusedIgnores=${counts.unusedIgnores}`);
     for (const f of allActive.slice(0, 30)) {
       console.log(`  [${f.tier.toUpperCase()}] ${f.file}:${f.line} ${f.ruleId} — ${f.message}`);
     }

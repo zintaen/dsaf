@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * DSAF v0.5.0 — Unified Tier 0 Read-Only One-Click Audit Pipeline (Node ESM).
+ * DSAF v0.6.0 — Unified Tier 0 Read-Only One-Click Audit Pipeline (Node ESM).
  * Chains `recon` (incl. Surface Mode), `tokens`, optional live/Storybook/CDP `runtime`,
  * optional 3-vertex `figma-diff`, and optional `audit-diff` into `audit-summary.json` + Markdown + SARIF 2.1.0.
  * Strictly Tier 0 Read-Only on target repos; writes only inside explicit `--out`.
@@ -14,6 +14,7 @@ import { dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { scanTarget } from "./audit-tokens.mjs";
 import { compareVertices, renderMarkdown as renderFigmaMarkdown } from "./audit-figma-diff.mjs";
+import { checkTarget } from "./dsaf-hook.mjs";
 import { CI_REPORT_VERSION, formatGithubAnnotations, formatSarif } from "./ci-report.mjs";
 
 const SCRIPT_DIR = dirname(decodeURIComponent(new URL(import.meta.url).pathname));
@@ -114,8 +115,30 @@ export function runAuditPipeline(opts = {}) {
     };
   }
 
-  const ciGate = tokens.ciFindings?.counts || { floor: 0, reflex: 0, finish: 0, waived: 0, unusedIgnores: 0 };
-  const ciFindingsList = tokens.ciFindings?.active || [];
+  const hookTarget = opts.scope ? join(target, opts.scope) : target;
+  const hookRes = checkTarget(hookTarget, {
+    tier: "floor",
+    reportUnusedIgnores: Boolean(opts.reportUnusedIgnores),
+  });
+  const tokenCounts = tokens.ciFindings?.counts || { floor: 0, reflex: 0, finish: 0, waived: 0, unusedIgnores: 0 };
+  const rawFindings = [...(tokens.ciFindings?.active || [])];
+  const seenKeys = new Set(rawFindings.map((f) => `${f.file}:${f.line}:${f.ruleId}`));
+  const normScope = opts.scope ? String(opts.scope).replace(/\/+$/, "") : "";
+  for (const hf of [...(hookRes.active || []), ...(hookRes.unusedIgnores || [])]) {
+    const relFile = normScope && !String(hf.file).startsWith(normScope + "/") ? `${normScope}/${hf.file}` : hf.file;
+    const key = `${relFile}:${hf.line}:${hf.ruleId}`;
+    if (seenKeys.has(key)) continue;
+    seenKeys.add(key);
+    rawFindings.push({ ...hf, file: relFile });
+  }
+  const ciFindingsList = rawFindings;
+  const ciGate = {
+    floor: ciFindingsList.filter((f) => f.tier === "floor").length,
+    reflex: ciFindingsList.filter((f) => f.tier === "reflex").length,
+    finish: ciFindingsList.filter((f) => f.tier === "finish").length,
+    waived: (tokenCounts.waived || 0) + (hookRes.waived?.length || 0),
+    unusedIgnores: Math.max(tokenCounts.unusedIgnores || 0, hookRes.unusedIgnores?.length || 0),
+  };
   if (opts.sarifPath) {
     const absSarif = resolve(opts.sarifPath);
     mkdirSync(dirname(absSarif), { recursive: true });
@@ -128,7 +151,7 @@ export function runAuditPipeline(opts = {}) {
 
   const summary = {
     schema: "dsaf-audit/1",
-    engine_version: "0.5.0",
+    engine_version: "0.6.0",
     generated: new Date().toISOString(),
     dataTier: "tier_0_readonly",
     target,
@@ -186,7 +209,7 @@ export function renderAuditMarkdown(summary) {
   const r = summary.recon;
   const cg = summary.ciGate || { floor: 0, reflex: 0, finish: 0, waived: 0, unusedIgnores: 0 };
   const lines = [
-    "# DSAF Unified Audit Summary (`v0.5.0` · Tier 0 Read-Only)",
+    "# DSAF Unified Audit Summary (`v0.6.0` · Tier 0 Read-Only)",
     "",
     `- **Target:** \`${summary.target}\``,
     `- **Topology / Surface / Maturity:** \`Mode ${r.recommendedMode}\` (${r.topologyLabel}) | Surface: \`${r.surfaceMode || "persuade"}\` | \`${r.estimatedMaturity}\` | \`T2-Mock required: ${r.t2MockRequired}\``,
@@ -264,7 +287,7 @@ function runSelfTest() {
       sarifPath: sarifOut,
     });
     assert.equal(summary.schema, "dsaf-audit/1");
-    assert.equal(summary.engine_version, "0.5.0");
+    assert.equal(summary.engine_version, "0.6.0");
     assert.equal(summary.passed, true);
     assert.equal(summary.tokens.drift.hardcodedColorHits, 0);
     assert.deepEqual(summary.tokens.drift.demoFilesSkipped, ["demo/old-prototype.html"]);
@@ -276,6 +299,16 @@ function runSelfTest() {
     assert.ok(existsSync(join(outDir, "recon.json")));
     assert.ok(existsSync(join(outDir, "tokens.json")));
     assert.ok(existsSync(join(outDir, "figma-diff.json")));
+
+    // Floor findings from dsaf-hook (e.g. transition: all) must propagate into ciGate + SARIF
+    const floorApp = join(scratch, "floor-app");
+    mkdirSync(join(floorApp, "src"), { recursive: true });
+    writeFileSync(join(floorApp, "package.json"), JSON.stringify({ name: "floor-app", dependencies: { react: "^19.0.0" } }));
+    writeFileSync(join(floorApp, "src/app.css"), `:root { --accent: #1d4ed8; }\n.card { transition: all 200ms ease; }\n`);
+    const floorSummary = runAuditPipeline({ target: floorApp, outDir: join(scratch, "floor-out") });
+    assert.equal(floorSummary.passed, false, "Active Floor rule must fail pipeline passed check");
+    assert.ok(floorSummary.ciGate.floor >= 1, "Hook Floor finding must propagate into ciGate.floor");
+    assert.ok(floorSummary.ciFindings.some((f) => f.ruleId === "dsaf/no-transition-all"));
 
     console.log("AUDIT_PIPELINE_SELF_TEST_PASSED (recon + scoped tokens + figma-diff + SARIF + markdown summary)");
     return 0;

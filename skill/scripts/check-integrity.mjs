@@ -37,6 +37,7 @@ const REQUIRED_FILES = [
   "scripts/generate-guardrails.mjs",
   "scripts/ci-report.mjs",
   "scripts/dsaf-hook.mjs",
+  "scripts/install-skill.mjs",
   "scripts/doctor.mjs",
   "scripts/check-integrity.mjs",
 ];
@@ -129,6 +130,7 @@ function main() {
     "recon.mjs",
     "ci-report.mjs",
     "dsaf-hook.mjs",
+    "install-skill.mjs",
     "doctor.mjs",
     "audit-tokens.mjs",
     "audit-figma-diff.mjs",
@@ -147,7 +149,7 @@ function main() {
     }
   }
 
-  console.log("SKILL_INTEGRITY_ALL_PASSED (v0.5.0)");
+  console.log("SKILL_INTEGRITY_ALL_PASSED (v0.6.0)");
 }
 
 main();

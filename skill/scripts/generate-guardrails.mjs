@@ -12,7 +12,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 
-export const GENERATOR_VERSION = "0.5.0";
+export const GENERATOR_VERSION = "0.6.0";
 
 function buildDisciplineChecker(stack) {
   const checkTailwind = stack === "tailwind" || stack === "react";
@@ -295,12 +295,12 @@ on:
   push:
     branches: [main]
 
-jobs:
+  jobs:
   design-discipline:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
       - name: Run zero-dep DSAF discipline scanner
@@ -315,7 +315,7 @@ jobs:
       #     npx -y @zintaen/dsaf tokens . --sarif dsaf.sarif --report-unused-ignores
       # - name: Upload SARIF to GitHub Code Scanning
       #   if: always()
-      #   uses: github/codeql-action/upload-sarif@v3
+      #   uses: github/codeql-action/upload-sarif@v4
       #   with:
       #     sarif_file: dsaf.sarif
 `;

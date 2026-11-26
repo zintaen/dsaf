@@ -20,6 +20,7 @@ const COMMANDS = {
   scorecard: { script: "skill/scripts/compute-scorecard.mjs", desc: "Deterministic weighted scorecard & blocker calculator" },
   diff: { script: "skill/scripts/audit-diff.mjs", desc: "No-silent-regression diff verifier with override logging" },
   guardrails: { script: "skill/scripts/generate-guardrails.mjs", desc: "Generate runnable CI & AI-agent design guardrails" },
+  "install-skill": { script: "skill/scripts/install-skill.mjs", desc: "Install Tier 1 DSAF skill into Claude/Cursor/Codex/Antigravity" },
   hook: { script: "skill/scripts/dsaf-hook.mjs", desc: "Edit-time agent Floor/Reflex hook checker & installer" },
   doctor: { script: "skill/scripts/doctor.mjs", desc: "Inspect guardrail/token/hook/waiver drift & runtime setup" },
   integrity: { script: "skill/scripts/check-integrity.mjs", desc: "Tier 1 skill integrity & self-test runner" },
@@ -48,6 +49,7 @@ function printHelp() {
   console.log("  dsaf tokens ./my-app --json --report-unused-ignores");
   console.log("  dsaf hook check ./my-app/src --tier floor");
   console.log("  dsaf hook install --agent claude --dir ./my-app");
+  console.log("  dsaf install-skill --agent claude --scope user");
   console.log("  dsaf doctor ./my-app");
   console.log("  dsaf guardrails --out ./my-app/.dsaf-guardrails --stack tailwind");
   console.log("  dsaf runtime ./draft/preview.html --screenshot ./preview.png --pins");

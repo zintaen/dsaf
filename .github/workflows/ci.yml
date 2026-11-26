@@ -13,8 +13,8 @@ jobs:
       matrix:
         node-version: [22, 24]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: ${{ matrix.node-version }}
       - run: npm test
@@ -22,9 +22,12 @@ jobs:
       - run: node bin/dsaf.mjs audit --self-test
       - run: node skill/scripts/ci-report.mjs --self-test
       - run: node bin/dsaf.mjs hook --self-test
+      - run: node bin/dsaf.mjs install-skill --self-test
       - run: node bin/dsaf.mjs doctor --self-test
       - run: node bin/dsaf.mjs figma-diff --self-test
       - run: node bin/dsaf.mjs guardrails --self-test
+      - name: Verify live Preview Shell demo matches canonical skill shell
+        run: cmp -s skill/resources/preview-shell.html docs/demo/preview-shell.html
       - name: Dogfood DSAF static checks on GitHub Pages site (docs/)
         run: |
           node bin/dsaf.mjs hook check docs/styles.css --tier all --report-unused-ignores
@@ -50,8 +53,8 @@ jobs:
   runtime-playwright:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
       - name: Install Playwright & axe-core into isolated temp dir
@@ -64,6 +67,7 @@ jobs:
           NODE_PATH: /tmp/dsaf-pw/node_modules
         run: |
           node bin/dsaf.mjs runtime skill/resources/preview-shell.html --axe /tmp/dsaf-pw/node_modules/axe-core/axe.min.js
+          node bin/dsaf.mjs runtime docs/demo/preview-shell.html --axe /tmp/dsaf-pw/node_modules/axe-core/axe.min.js
           node bin/dsaf.mjs runtime docs/index.html --live --skip-shell-check --extended-viewports --axe /tmp/dsaf-pw/node_modules/axe-core/axe.min.js
           node bin/dsaf.mjs runtime evolve/fixtures/synthetic/mode-p-app/index.html --live --axe /tmp/dsaf-pw/node_modules/axe-core/axe.min.js
           node bin/dsaf.mjs runtime --storybook evolve/fixtures/synthetic/storybook-static/index.json --axe /tmp/dsaf-pw/node_modules/axe-core/axe.min.js

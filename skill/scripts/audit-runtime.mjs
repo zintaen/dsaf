@@ -127,7 +127,13 @@ export const OVERLAY_SELECTORS = [
   "#CybotCookiebotDialog",
   ".cc-window",
   "[data-consent-banner]",
-  '[aria-label*="cookie" i][role="dialog"]',
+  '[aria-label*="cookie" i]',
+  '[aria-label*="consent" i]',
+  '[data-testid*="cookie" i]',
+  '[data-testid*="consent" i]',
+  '[class*="consent" i]',
+  '[id*="consent" i]',
+  '[role="dialog"][aria-label*="privacy" i]',
   '[id*="cookie-banner" i]',
 ];
 
@@ -186,6 +192,14 @@ export function evaluateRtlDiagnostics(snapshot) {
     samples: spacingBad.slice(0, 8),
     passed: !missingDirRtl && spacingBad.length === 0,
   };
+}
+
+export function isMobileTargetClipped(rect, viewportWidth, horizontalScrollers = []) {
+  const inHorizontalScroller = horizontalScrollers.some(
+    (s) => s.left >= -0.5 && s.right <= viewportWidth + 0.5
+  );
+  if (inHorizontalScroller) return false;
+  return rect.right > viewportWidth + 0.5 || rect.left < -0.5;
 }
 
 function parseArgs(argv) {
@@ -1141,6 +1155,12 @@ async function runSelfTest() {
       elements: [{ tag: "p", letterSpacingPx: 0, textAlign: "right", hasRtlScriptText: true }],
     });
     assert.equal(rtlClean.passed, true);
+    assert.equal(isMobileTargetClipped({ left: 310, right: 410 }, 375, [{ left: 16, right: 359 }]), false);
+    assert.equal(isMobileTargetClipped({ left: 310, right: 410 }, 375, []), true);
+    assert.equal(isMobileTargetClipped({ left: 310, right: 410 }, 375, [{ left: 16, right: 420 }]), true);
+    assert.ok(OVERLAY_SELECTORS.some((s) => s.includes('aria-label*="cookie"')), "Must match non-dialog cookie aria-label");
+    assert.ok(OVERLAY_SELECTORS.some((s) => s.includes('data-testid*="cookie"')), "Must match cookie data-testid");
+    assert.ok(OVERLAY_SELECTORS.some((s) => s.includes('class*="consent"')), "Must match consent class overlays");
   } finally {
     rmSync(scratch, { recursive: true, force: true });
   }
@@ -1227,7 +1247,11 @@ async function main() {
         : await browser.newPage({ viewport: { width: 1440, height: 900 } });
       page.on("pageerror", (err) => pageErrors.push(err.message || String(err)));
       if (!isCdpAttached) {
-        await page.goto(toUrl(target), { waitUntil: "networkidle" });
+        const targetUrl = toUrl(target);
+        await page.goto(targetUrl, { waitUntil: "domcontentloaded", timeout: 30000 });
+        await page.waitForLoadState("load", { timeout: 10000 }).catch(() => null);
+        await page.waitForLoadState("networkidle", { timeout: 3500 }).catch(() => null);
+        if (/^https?:\/\//i.test(targetUrl)) await page.waitForTimeout(300);
       }
       const hiddenOverlaysCount = (args.live || isCdpAttached) && !args.noHideOverlays ? await hideConsentOverlays(page) : 0;
 
@@ -1283,9 +1307,43 @@ async function main() {
           await page.setViewportSize({ width: m.width, height: m.height });
         }
         await page.emulateMedia({ colorScheme: m.theme });
+        if ((args.live || isCdpAttached) && !args.noHideOverlays) {
+          fileRes.hiddenOverlaysCount += await hideConsentOverlays(page);
+        }
+        const applyDomThemeFallback = async (theme) => {
+          await page.evaluate((th) => {
+            const root = document.documentElement;
+            if (root.classList.contains("dark") || root.classList.contains("light")) {
+              root.classList.toggle("dark", th === "dark");
+              root.classList.toggle("light", th === "light");
+            } else if (root.hasAttribute("data-theme")) {
+              root.setAttribute("data-theme", th);
+            } else if (root.hasAttribute("data-mode")) {
+              root.setAttribute("data-mode", th);
+            }
+          }, theme);
+        };
+        const safeThemeClick = async (btn) => {
+          try {
+            await btn.click({ timeout: 4000 });
+            return true;
+          } catch {
+            if (!args.noHideOverlays) {
+              fileRes.hiddenOverlaysCount += await hideConsentOverlays(page);
+              try {
+                await btn.click({ timeout: 2500 });
+                return true;
+              } catch {
+                return false;
+              }
+            }
+            return false;
+          }
+        };
         const themeBtn = await page.$(`[data-theme="${m.theme}"]`);
         if (themeBtn) {
-          await themeBtn.click();
+          const clicked = await safeThemeClick(themeBtn);
+          if (!clicked) await applyDomThemeFallback(m.theme);
         } else if (args.themeToggle) {
           const curTheme = await page.evaluate(() =>
             document.documentElement.classList.contains("dark") ||
@@ -1296,20 +1354,13 @@ async function main() {
           );
           if (curTheme !== m.theme) {
             const tog = await page.$(args.themeToggle);
-            if (tog) await tog.click();
+            if (tog) {
+              const clicked = await safeThemeClick(tog);
+              if (!clicked) await applyDomThemeFallback(m.theme);
+            }
           }
         } else if (args.live) {
-          await page.evaluate((theme) => {
-            const root = document.documentElement;
-            if (root.classList.contains("dark") || root.classList.contains("light")) {
-              root.classList.toggle("dark", theme === "dark");
-              root.classList.toggle("light", theme === "light");
-            } else if (root.hasAttribute("data-theme")) {
-              root.setAttribute("data-theme", theme);
-            } else if (root.hasAttribute("data-mode")) {
-              root.setAttribute("data-mode", theme);
-            }
-          }, m.theme);
+          await applyDomThemeFallback(m.theme);
         }
         await page.waitForTimeout(150);
 

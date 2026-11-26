@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://zintaen.github.io/dsaf/sitemap.xml

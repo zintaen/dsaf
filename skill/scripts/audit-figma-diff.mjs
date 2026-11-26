@@ -771,6 +771,7 @@ function main() {
       "code-connect": { type: "string" },
       runtime: { type: "string" },
       format: { type: "string", default: "json" },
+      json: { type: "boolean", default: false },
       out: { type: "string" },
       "self-test": { type: "boolean", default: false },
       help: { type: "boolean", short: "h", default: false },
@@ -779,7 +780,7 @@ function main() {
 
   if (values.help) {
     console.log(
-      "Usage: node skill/scripts/audit-figma-diff.mjs --figma <figma-vars.json> --tokens <tokens.json|dir|tokens-report.json> [--prefix <str>] [--code-connect <dir>] [--runtime <runtime.json>] [--format json|markdown] [--out <file>] [--self-test]"
+      "Usage: node skill/scripts/audit-figma-diff.mjs --figma <figma-vars.json> --tokens <tokens.json|dir|tokens-report.json> [--prefix <str>] [--code-connect <dir>] [--runtime <runtime.json>] [--json] [--format json|markdown] [--out <file>] [--self-test]"
     );
     process.exit(0);
   }
@@ -796,7 +797,8 @@ function main() {
     runtimePath: values.runtime || null,
     prefix: values.prefix || null,
   });
-  const output = values.format === "markdown" ? renderMarkdown(res) + "\n" : JSON.stringify(res, null, 2) + "\n";
+  const fmt = values.json ? "json" : values.format;
+  const output = fmt === "markdown" ? renderMarkdown(res) + "\n" : JSON.stringify(res, null, 2) + "\n";
   if (values.out) {
     mkdirSync(dirname(resolve(values.out)), { recursive: true });
     writeFileSync(resolve(values.out), output, "utf8");

@@ -29,6 +29,11 @@ const SKIP_DIRS = new Set([
   "node_modules",
   "dist",
   "build",
+  "storybook-static",
+  "_audit",
+  "_vendor",
+  "_site",
+  "src-tauri",
   ".next",
   ".nuxt",
   ".svelte-kit",
@@ -461,13 +466,13 @@ export function scanTarget(targetPath, options = {}) {
         }
         const rel = relative(resolved, full).replace(/\\/g, "/");
         if (
-          /(\.test\.|\.spec\.|__tests__\/|(^|\/)(?:tests?|fixtures|__fixtures__)\/|\.min\.(css|js)$|\.bundle\.(css|js|mjs)$|(^|\/)(public\/assets|static\/chunks|vendor|ios\/App\/App\/public|android\/app\/src\/main\/assets\/public)\/)/i.test(
+          /(\.test\.|\.spec\.|__tests__\/|(^|\/)(?:tests?|fixtures|__fixtures__|_audit|_vendor|storybook-static|src-tauri\/target)\/|\.min\.(css|js)$|\.bundle\.(css|js|mjs)$|(^|\/)(public\/assets|static\/chunks|vendor|ios\/App\/App\/public|android\/app\/src\/main\/assets\/public)\/)/i.test(
             rel
           )
         ) {
           continue;
         }
-        if (!options.includeDemos && /(^|\/)(?:demos?|examples?|samples?|docs\/status)\//i.test(rel)) {
+        if (!options.includeDemos && /(^|\/)(?:demos?|demo\d+|examples?|samples?|docs\/status)\//i.test(rel)) {
           demoFilesSkipped.push(rel);
           continue;
         }
@@ -742,11 +747,15 @@ export function scanTarget(targetPath, options = {}) {
       usedVars.add(tv);
     } else if (tv.startsWith("--text-") && seenUtilityClasses.has("text-" + tv.slice(7))) {
       usedVars.add(tv);
+    } else if (tv.startsWith("--animate-") && seenUtilityClasses.has("animate-" + tv.slice(10))) {
+      usedVars.add(tv);
+    } else if (tv.startsWith("--ease-") && seenUtilityClasses.has("ease-" + tv.slice(7))) {
+      usedVars.add(tv);
     }
   }
 
   const isPaletteScaleVar = (name) =>
-    /^--(color-|palette-|primitive-|raw-)?(gray|grey|slate|zinc|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose|gold|jade|bronze|ivory|ink|surface|space|spacing|size|radius|font-size|text|shadow|z|duration|ease|bp|breakpoint)[_-]?(?:50|[1-9]00|[0-9]{1,3}|2xs|xs|sm|md|lg|xl|2xl|3xl|4xl)$/i.test(
+    /^--(?:[a-z0-9]{1,8}-)?(?:color-|palette-|primitive-|raw-)?(gray|grey|slate|zinc|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose|gold|jade|bronze|ivory|ink|surface|space|spacing|size|radius|font-size|text|shadow|z|duration|ease|bp|breakpoint)[_-]?(?:50|[1-9]00|[0-9]{1,3}|2xs|xs|sm|md|lg|xl|2xl|3xl|4xl|phone|tablet|desktop)$/i.test(
       name
     );
 
@@ -975,6 +984,25 @@ function runSelfTest() {
     const sarifDoc = formatSarif(ciRes.ciFindings.active, { toolVersion: CI_REPORT_VERSION });
     assert.equal(sarifDoc.version, "2.1.0");
     assert.match(formatGithubAnnotations(ciRes.ciFindings.active), /^::warning .*dsaf\/unused-ignore/m);
+
+    // 7. Exclude _audit/ and storybook-static/ (no DTCG double-count) + resolve @theme animate/ease + prefixed breakpoint scale vars
+    const cleanRoot = join(scratch, "clean-ds");
+    mkdirSync(join(cleanRoot, "tokens"), { recursive: true });
+    mkdirSync(join(cleanRoot, "storybook-static/tokens"), { recursive: true });
+    mkdirSync(join(cleanRoot, "_audit"), { recursive: true });
+    mkdirSync(join(cleanRoot, "src"), { recursive: true });
+    const dtcgSample = JSON.stringify({ color: { brand: { $type: "color", $value: "#1d4ed8" } } });
+    writeFileSync(join(cleanRoot, "tokens/tokens.dtcg.json"), dtcgSample);
+    writeFileSync(join(cleanRoot, "storybook-static/tokens/tokens.dtcg.json"), dtcgSample);
+    writeFileSync(join(cleanRoot, "_audit/probe.html"), `<div style="color:#ff00aa;padding:13px;">probe</div>`);
+    writeFileSync(join(cleanRoot, "src/styles.css"), `@theme { --animate-fade-in: fade 200ms; --ds-breakpoint-sm: 640px; }\n.ok { color: #1d4ed8; }\n`);
+    writeFileSync(join(cleanRoot, "src/App.tsx"), `<div className="animate-fade-in" />`);
+    const dsScan = scanTarget(cleanRoot);
+    assert.equal(dsScan.filesScanned.tokenJson, 1, "Must exclude storybook-static DTCG duplicate");
+    assert.equal(dsScan.dtcg.tokenCount, 1);
+    assert.equal(dsScan.drift.offGridSpacingHits, 0, "Must exclude _audit verification HTML");
+    assert.ok(!dsScan.drift.semanticOrphansSample.includes("--animate-fade-in"), "Must resolve @theme --animate-* utility classes");
+    assert.ok(!dsScan.drift.semanticOrphansSample.includes("--ds-breakpoint-sm"), "Must treat prefixed breakpoint vars as scale tokens");
 
     console.log("AUDIT_TOKENS_SELF_TEST_PASSED (DTCG + scoped CSS/@theme/Tailwind + fixture/OG + demo/scale + SARIF/waivers)");
     return 0;

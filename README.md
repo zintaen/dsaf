@@ -1,4 +1,4 @@
-# DSAF — Design System & UX/UI Audit Framework (`v0.5.0`)
+# DSAF — Design System & UX/UI Audit Framework (`v0.6.0`)
 
 [![Website](https://img.shields.io/badge/site-zintaen.github.io%2Fdsaf-1d4ed8)](https://zintaen.github.io/dsaf/)
 [![CI](https://github.com/zintaen/dsaf/actions/workflows/ci.yml/badge.svg)](https://github.com/zintaen/dsaf/actions/workflows/ci.yml)
@@ -7,7 +7,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Node.js >= 20](https://img.shields.io/badge/node-%3E%3D20-brightgreen.svg)](package.json)
 
-**Documentation & Live Showcase:** [https://zintaen.github.io/dsaf/](https://zintaen.github.io/dsaf/)
+**Documentation & Live Showcase:** [https://zintaen.github.io/dsaf/](https://zintaen.github.io/dsaf/) · **Interactive Preview Shell Demo:** [Live Comparison Shell](https://zintaen.github.io/dsaf/demo/preview-shell.html)
 
 **DSAF** is a single, agent-native, clean-room audit framework that evaluates both **established design systems** and **live software products that do not yet have a design system** — pairing AI coding agents with deterministic Node ESM measurement scripts rather than static prose guesswork.
 
@@ -56,6 +56,7 @@ node bin/dsaf.mjs figma-diff --figma ./figma-vars.json --tokens ./your-app [--pr
 node bin/dsaf.mjs runtime --storybook ./storybook-static/index.json [--routes /,/about --extended-viewports --out ./runtime.json]
 node bin/dsaf.mjs runtime --cdp 9222 --target Dashboard
 node bin/dsaf.mjs hook install --agent claude --dir ./your-app
+node bin/dsaf.mjs install-skill --agent claude --scope user
 node bin/dsaf.mjs doctor ./your-app
 node bin/dsaf.mjs guardrails --out ./your-app/.dsaf-guardrails --stack tailwind
 ```
@@ -64,17 +65,35 @@ node bin/dsaf.mjs guardrails --out ./your-app/.dsaf-guardrails --stack tailwind
 > - **Automatic `playwright` & `axe-core` discovery (`dsaf runtime`):** Automatically searches `process.cwd()` and the target file/directory's ancestor `node_modules/` folders cleanly with no `NODE_PATH` needed (override with `NODE_PATH` or `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH` if using an isolated browser dir).
 > - **`+SG` gate targets & env caps (`check-design-discipline.mjs`):** Accepts either a directory (`app`, `src`) or a single file (`app/globals.css`). Configure budgets with `DSAF_MAX_HARDCODED_COLORS`, `DSAF_MAX_IMPORTANT`, `DSAF_MAX_TW_ARBITRARY`, plus optional `DSAF_MAX_SVG_COLORS` and `DSAF_MAX_SWATCH_COLORS`.
 
-Or install/link via `npm link` / `npm install -g @zintaen/dsaf` (or `npx @zintaen/dsaf` — `package.json` configures a strict `"files"` whitelist excluding maintainer-only `evolve/`; releases publish automatically via GitHub Actions OIDC `.github/workflows/publish.yml` on `v*` tags) to invoke `dsaf <command>` anywhere (`audit`, `recon`, `tokens`, `figma-diff`, `runtime`, `scorecard`, `diff`, `guardrails`, `hook`, `doctor`, `integrity`, `verify`, `mine`, `sync`, `version`). See [RELEASE_NOTES.md](RELEASE_NOTES.md) for concise highlights per release.
+Or install/link via `npm link` / `npm install -g @zintaen/dsaf` (or `npx @zintaen/dsaf` — `package.json` configures a strict `"files"` whitelist excluding maintainer-only `evolve/`; releases publish automatically via GitHub Actions OIDC `.github/workflows/publish.yml` on `v*` tags) to invoke `dsaf <command>` anywhere (`audit`, `recon`, `tokens`, `figma-diff`, `runtime`, `scorecard`, `diff`, `guardrails`, `hook`, `install-skill`, `doctor`, `integrity`, `verify`, `mine`, `sync`, `version`). See [RELEASE_NOTES.md](RELEASE_NOTES.md) for concise highlights per release.
 
-### 3. Install `dsaf` (and Optional Maintainer `dsaf-evolve`) into AI Coding Agents
+### 3. Install `dsaf` (Zero-Clone) into AI Coding Agents
 
 ```bash
+# Install Tier 1 skill without cloning this repository
+npx @zintaen/dsaf install-skill --agent claude --scope user
+# Or install into all detected/supported agent roots (Claude, Cursor, Codex, Antigravity, .agents)
+npx @zintaen/dsaf install-skill --agent all
+
+# From a cloned DSAF repo (maintainer sync incl. dsaf-evolve):
 npm run sync:skills
 ```
 
-Or copy [skill/](skill/) manually into your agent's skill directory (`~/.gemini/config/skills/dsaf`, `~/.agents/skills/dsaf`, `~/.claude/skills/dsaf`, or `~/.codex/skills/dsaf`). Never copy `evolve/` into user-facing production skills unless you are maintaining DSAF itself.
+Or copy [skill/](skill/) manually into your agent's skill directory (`~/.gemini/config/skills/dsaf`, `~/.agents/skills/dsaf`, `~/.claude/skills/dsaf`, `~/.cursor/skills/dsaf`, or `~/.codex/skills/dsaf`). Never copy `evolve/` into user-facing production skills unless you are maintaining DSAF itself.
 
-### 4. Invoke the Skill
+### 4. GitHub Action CI Integration (`action.yml`)
+
+```yaml
+- uses: actions/checkout@v7
+- uses: zintaen/dsaf@v0.6.0
+  with:
+    target: apps/web
+    sarif-file: dsaf.sarif
+    comment-pr: "true"
+    fail-on-floor: "true"
+```
+
+### 5. Invoke the Skill
 
 ```text
 /dsaf https://your-app.example.com
@@ -97,6 +116,7 @@ Always start at **Step 0**: the agent runs a fast ~30-second Tier 0 read-only `r
 | `dsaf recon <target>` (`skill/scripts/recon.mjs`) | 30s read-only scan detecting stack, routes, Storybook, DTCG tokens, Figma Code Connect, cloud DB risk (`T2-Mock`), Surface Mode (`Persuade/Operate/Read/Experience`), and recommended Mode `S/C/P` | Yes |
 | `dsaf tokens <dir-or-json>` (`skill/scripts/audit-tokens.mjs`) | Validates W3C DTCG tokens (`$value`, `$type`, `{alias}`, `$ref`, cycles), Light/Dark parity & contrast, separates semantic orphans vs palette scale vars, skips `fixtures/`/`demo/`/`ImageResponse`, tracks Tailwind `@theme`/arbitrary/primitive drift, and enforces `dsaf-ignore` waivers + `--sarif` / `--github` / `--report-unused-ignores` | Yes |
 | `dsaf hook <check\|stdin\|install>` (`skill/scripts/dsaf-hook.mjs`) | Edit-time Floor/Reflex checker for Claude Code, Cursor & Codex `PostToolUse` hooks plus CI `--sarif` / `--github` file gate | Yes |
+| `dsaf install-skill` (`skill/scripts/install-skill.mjs`) | Zero-clone Tier 1 skill installer for Claude, Cursor, Codex, Antigravity & `.agents` (`--agent`, `--scope user\|project`, `--dir`) | Yes |
 | `dsaf doctor [dir]` (`skill/scripts/doctor.mjs`) | 6-point read-only check for stale guardrails, token mtimes, hook setup, CI gate presence, Playwright/axe availability & stale waivers | Yes |
 | `dsaf figma-diff --figma <f> --tokens <t>` (`skill/scripts/audit-figma-diff.mjs`) | Automates full 3-vertex `Designed <-> Defined <-> Shipped` triangulation across Figma variables (`@collection` / `*_primitives`), CSS custom properties (`var()`, dark `@media`, `--prefix` auto-strip, `px`/`rem`), Code Connect (`*.figma.*` & batch JSON), and live `computedVars` (`--runtime`) | Yes |
 | `dsaf runtime <draft-or-url>` (`skill/scripts/audit-runtime.mjs`) | Verifies Canonical Preview Shell (`preview-shell.html`), `--routes`, `--cdp` desktop/auth attachment, `--extended-viewports` (`320px`/`1920px`), consent overlay hiding, `coveredText`, RTL tracking, `pixelBehind`, APCA-W3 `Lc`, WCAG `3.00:1` UI borders, `>= 44.0px` targets + `overlapsChildOverflow`, `N-of-1` clusters, `LCP`/`CLS`, `axe-core`, and Kept Wiring diff | Pure-JS self-tests yes; live checks require Playwright |
@@ -122,18 +142,20 @@ DSAF separates **production auditing (`skill/`)** from **framework self-evolutio
 
 ```text
 dsaf/
+├── action.yml              # Official GitHub Action (SARIF 2.1.0 + PR summary + Floor gate)
 ├── bin/
 │   └── dsaf.mjs            # Single-entry `dsaf` CLI wrapper
 ├── docs/
-│   ├── index.html          # Zero-slop GitHub Pages promo & interactive showcase
-│   └── assets/             # Showcase visuals rendered from canonical shell
+│   ├── index.html          # Zero-slop GitHub Pages promo & showcase
+│   ├── demo/               # Live interactive Canonical Preview Shell demo
+│   └── assets/             # Showcase visuals & og-card rendered from Chromium
 ├── examples/
 │   └── sample-mode-c-report.md
 ├── skill/                  # Portable Tier 1 production agent skill (no evolve/ files)
 │   ├── SKILL.md
 │   ├── references/         # Progressive-loaded SOPs (Step 0, Modes S/C/P, Shell, Retro)
 │   ├── resources/          # Canonical Before/Track A/Track B preview shell HTML
-│   └── scripts/            # 8 deterministic Node ESM CLI tools & self-tests
+│   └── scripts/            # Deterministic Node ESM CLI tools & self-tests
 ├── evolve/                 # Tier 2 maintainer-only closed-loop evolution workspace
 │   ├── SKILL.md
 │   ├── references/         # Evolution gates, blind eval SOP, feedback JSON Schema

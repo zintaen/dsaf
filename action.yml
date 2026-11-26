@@ -1,0 +1,190 @@
+name: "DSAF — Design System & UX/UI Audit"
+description: "Run deterministic DSAF token, Figma drift, Floor/Reflex gate, SARIF 2.1.0 upload, and PR summary comments."
+branding:
+  icon: "check-circle"
+  color: "blue"
+
+inputs:
+  target:
+    description: "Target directory or package path to audit"
+    required: false
+    default: "."
+  scope:
+    description: "Optional monorepo sub-directory scope relative to target (e.g. apps/web)"
+    required: false
+    default: ""
+  out-dir:
+    description: "Directory where audit-summary.json and Markdown reports are written"
+    required: false
+    default: "dsaf-audit-output"
+  sarif-file:
+    description: "Output SARIF 2.1.0 file path (relative to out-dir or repo root)"
+    required: false
+    default: "dsaf.sarif"
+  fail-on-floor:
+    description: "Fail the workflow if unwaivable Floor findings are active"
+    required: false
+    default: "true"
+  run-doctor:
+    description: "Also run read-only dsaf doctor diagnostic checks"
+    required: false
+    default: "false"
+  upload-sarif:
+    description: "Upload generated SARIF 2.1.0 report to GitHub Code Scanning"
+    required: false
+    default: "true"
+  comment-pr:
+    description: "Post or update a sticky DSAF summary comment on Pull Requests"
+    required: false
+    default: "true"
+  node-version:
+    description: "Node.js version to use when running DSAF"
+    required: false
+    default: "22"
+  dsaf-version:
+    description: "Version or npm tag of @zintaen/dsaf to execute"
+    required: false
+    default: "latest"
+
+outputs:
+  summary-json:
+    description: "Path to generated audit-summary.json"
+    value: ${{ steps.audit.outputs.summary-json }}
+  summary-md:
+    description: "Path to generated audit-summary.md"
+    value: ${{ steps.audit.outputs.summary-md }}
+  sarif-path:
+    description: "Path to generated SARIF 2.1.0 file"
+    value: ${{ steps.audit.outputs.sarif-path }}
+  floor-count:
+    description: "Active unwaivable Floor defect count"
+    value: ${{ steps.audit.outputs.floor-count }}
+  reflex-count:
+    description: "Active Reflex defect count"
+    value: ${{ steps.audit.outputs.reflex-count }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Setup Node.js
+      uses: actions/setup-node@v7
+      with:
+        node-version: ${{ inputs.node-version }}
+
+    - name: Run DSAF Audit Pipeline
+      id: audit
+      shell: bash
+      env:
+        DSAF_TARGET: ${{ inputs.target }}
+        DSAF_SCOPE: ${{ inputs.scope }}
+        DSAF_OUT_DIR: ${{ inputs.out-dir }}
+        DSAF_SARIF_FILE: ${{ inputs.sarif-file }}
+        DSAF_VERSION: ${{ inputs.dsaf-version }}
+      run: |
+        set +e
+        mkdir -p "$DSAF_OUT_DIR"
+        ARGS=(audit "$DSAF_TARGET" --out "$DSAF_OUT_DIR" --sarif "$DSAF_SARIF_FILE" --github --report-unused-ignores)
+        if [ -n "$DSAF_SCOPE" ]; then
+          ARGS+=(--scope "$DSAF_SCOPE")
+        fi
+        if [ -n "${DSAF_CLI_BIN:-}" ] && [ -f "${DSAF_CLI_BIN}" ]; then
+          node "$DSAF_CLI_BIN" "${ARGS[@]}"
+        else
+          npx --yes "@zintaen/dsaf@${DSAF_VERSION}" "${ARGS[@]}"
+        fi
+        AUDIT_EXIT=$?
+        set -e
+
+        SUMMARY_JSON="${DSAF_OUT_DIR}/audit-summary.json"
+        SUMMARY_MD="${DSAF_OUT_DIR}/audit-summary.md"
+        SARIF_PATH="${DSAF_SARIF_FILE}"
+        if [ ! -f "$SARIF_PATH" ] && [ -f "${DSAF_OUT_DIR}/${DSAF_SARIF_FILE}" ]; then
+          SARIF_PATH="${DSAF_OUT_DIR}/${DSAF_SARIF_FILE}"
+        fi
+
+        echo "audit-exit=${AUDIT_EXIT}" >> "$GITHUB_OUTPUT"
+        echo "summary-json=${SUMMARY_JSON}" >> "$GITHUB_OUTPUT"
+        echo "summary-md=${SUMMARY_MD}" >> "$GITHUB_OUTPUT"
+        echo "sarif-path=${SARIF_PATH}" >> "$GITHUB_OUTPUT"
+
+        node - "$SUMMARY_JSON" "$GITHUB_OUTPUT" <<'EOF'
+        const fs = require("node:fs");
+        const [summaryPath, outPath] = process.argv.slice(2);
+        let floor = 0;
+        let reflex = 0;
+        if (fs.existsSync(summaryPath)) {
+          const data = JSON.parse(fs.readFileSync(summaryPath, "utf8"));
+          const counts = data.ci?.counts || data.tokens?.ciFindings?.counts || {};
+          floor = Number(counts.floor || 0);
+          reflex = Number(counts.reflex || 0);
+        }
+        fs.appendFileSync(outPath, `floor-count=${floor}\nreflex-count=${reflex}\n`);
+        EOF
+
+    - name: Run DSAF Doctor (optional)
+      if: inputs.run-doctor == 'true'
+      shell: bash
+      env:
+        DSAF_TARGET: ${{ inputs.target }}
+        DSAF_OUT_DIR: ${{ inputs.out-dir }}
+        DSAF_VERSION: ${{ inputs.dsaf-version }}
+      run: |
+        set +e
+        if [ -n "${DSAF_CLI_BIN:-}" ] && [ -f "${DSAF_CLI_BIN}" ]; then
+          node "$DSAF_CLI_BIN" doctor "$DSAF_TARGET" --out "${DSAF_OUT_DIR}/doctor.json"
+        else
+          npx --yes "@zintaen/dsaf@${DSAF_VERSION}" doctor "$DSAF_TARGET" --out "${DSAF_OUT_DIR}/doctor.json"
+        fi
+        DOCTOR_EXIT=$?
+        set -e
+        if [ "$DOCTOR_EXIT" -ne 0 ] && [ "${{ inputs.fail-on-floor }}" = "true" ]; then
+          echo "DSAF Doctor reported active Floor defects."
+          exit 1
+        fi
+
+    - name: Upload SARIF 2.1.0 to GitHub Code Scanning
+      if: inputs.upload-sarif == 'true' && hashFiles(steps.audit.outputs.sarif-path) != ''
+      continue-on-error: true
+      uses: github/codeql-action/upload-sarif@v4
+      with:
+        sarif_file: ${{ steps.audit.outputs.sarif-path }}
+        category: dsaf-audit
+
+    - name: Post Sticky Pull Request Summary
+      if: github.event_name == 'pull_request' && inputs.comment-pr == 'true'
+      continue-on-error: true
+      uses: actions/github-script@v9
+      env:
+        SUMMARY_MD: ${{ steps.audit.outputs.summary-md }}
+        FLOOR_COUNT: ${{ steps.audit.outputs.floor-count }}
+        REFLEX_COUNT: ${{ steps.audit.outputs.reflex-count }}
+      with:
+        script: |
+          const fs = require("node:fs");
+          const marker = "<!-- dsaf-audit-comment -->";
+          const mdPath = process.env.SUMMARY_MD;
+          if (!mdPath || !fs.existsSync(mdPath)) return;
+          const raw = fs.readFileSync(mdPath, "utf8");
+          const clipped = raw.length > 60000 ? raw.slice(0, 60000) + "\n\n*(Truncated by DSAF Action)*" : raw;
+          const body = `${marker}\n### DSAF Audit Summary (Floor: ${process.env.FLOOR_COUNT}, Reflex: ${process.env.REFLEX_COUNT})\n\n${clipped}`;
+          const { owner, repo } = context.repo;
+          const issue_number = context.issue.number;
+          const comments = await github.paginate(github.rest.issues.listComments, { owner, repo, issue_number });
+          const existing = comments.find((c) => (c.body || "").includes(marker));
+          if (existing) {
+            await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
+          } else {
+            await github.rest.issues.createComment({ owner, repo, issue_number, body });
+          }
+
+    - name: Enforce Floor Gate
+      if: inputs.fail-on-floor == 'true'
+      shell: bash
+      env:
+        AUDIT_EXIT: ${{ steps.audit.outputs.audit-exit }}
+        FLOOR_COUNT: ${{ steps.audit.outputs.floor-count }}
+      run: |
+        if [ "${FLOOR_COUNT:-0}" -gt 0 ] || [ "${AUDIT_EXIT:-0}" -ne 0 ]; then
+          echo "::error::DSAF Floor gate failed (audit-exit=${AUDIT_EXIT}, floor=${FLOOR_COUNT})."
+          exit 1
+        fi

@@ -13,18 +13,23 @@
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, extname, join, relative, resolve } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { probeRuntimeDeps } from "./audit-runtime.mjs";
-import { checkFile, installAgentHook } from "./dsaf-hook.mjs";
+import { checkTarget, installAgentHook } from "./dsaf-hook.mjs";
 
-export const DOCTOR_VERSION = "0.5.0";
+export const DOCTOR_VERSION = "0.6.0";
 
 const SKIP_DIRS = new Set([
   ".git",
   "node_modules",
   "dist",
   "build",
+  "storybook-static",
+  "_audit",
+  "_vendor",
+  "_site",
+  "src-tauri",
   ".next",
   ".nuxt",
   ".svelte-kit",
@@ -36,7 +41,6 @@ const SKIP_DIRS = new Set([
   "__pycache__",
   ".venv",
 ]);
-const UI_EXTS = new Set([".css", ".scss", ".html", ".tsx", ".jsx", ".vue", ".svelte", ".astro"]);
 
 function walkRepo(root, maxFiles = 1500) {
   const files = [];
@@ -56,6 +60,8 @@ function walkRepo(root, maxFiles = 1500) {
         continue;
       }
       const full = join(dir, e.name);
+      const rel = relative(root, full).replace(/\\/g, "/");
+      if (/(^|\/)(?:ios\/App\/App\/public|android\/app\/src\/main\/assets\/public)\//i.test(rel)) continue;
       if (e.isDirectory()) queue.push(full);
       else files.push(full);
     }
@@ -109,7 +115,7 @@ export function runDoctor(targetDir = ".", options = {}) {
   }
 
   // 2. Token & DESIGN/AGENTS doc freshness
-  const tokenFiles = relFiles.filter((r) => /(\.tokens\.json|(^|\/)(?:tokens?|variables)[^/]*\.(?:css|scss|json))$/i.test(r) && !/(^|\/)(?:tests?|fixtures|evolve)\//i.test(r));
+  const tokenFiles = relFiles.filter((r) => /(\.tokens\.json|(^|\/)(?:tokens?|variables)[^/]*\.(?:css|scss|json))$/i.test(r) && !/(^|\/)(?:tests?|fixtures|_audit|storybook-static)\//i.test(r));
   const designDoc = [".dsaf-guardrails/AGENTS-dsaf-rules.md", "DESIGN.md", "AGENTS.md"].find((p) => existsSync(join(root, p)));
   if (tokenFiles.length === 0) {
     checks.push({
@@ -212,28 +218,26 @@ export function runDoctor(targetDir = ".", options = {}) {
         }
   );
 
-  // 6. Waiver & Floor hygiene across up to 100 UI files
-  const uiFiles = relFiles
-    .filter((r) => UI_EXTS.has(extname(r).toLowerCase()) && !/(\.test\.|\.spec\.|__tests__\/|(^|\/)(?:tests?|fixtures|demos?|examples?|samples?|evolve)\/|\.min\.|\.bundle\.)/i.test(r))
-    .slice(0, 100);
+  // 6. Waiver & Floor hygiene via shared dsaf-hook checkTarget
+  const hookRes = checkTarget(root, { tier: "floor", reportUnusedIgnores: true });
   let floorHits = 0;
-  let unusedIgnores = 0;
+  let unusedIgnores = hookRes.counts.unusedIgnores || 0;
   let rejectedWaivers = 0;
   const sampleIssues = [];
-  for (const uf of uiFiles) {
-    const res = checkFile(join(root, uf), { tier: "floor", displayPath: uf, reportUnusedIgnores: true });
-    for (const f of res.active) {
-      if (f.ruleId === "dsaf/floor-waiver-rejected") rejectedWaivers++;
-      if (f.ruleId === "dsaf/unused-ignore") unusedIgnores++;
-      else if (f.tier === "floor") floorHits++;
-      if (sampleIssues.length < 8) sampleIssues.push(`${f.file}:${f.line} ${f.ruleId}`);
+  for (const f of hookRes.active) {
+    if (f.ruleId === "dsaf/floor-waiver-rejected") rejectedWaivers++;
+    if (f.ruleId === "dsaf/unused-ignore") {
+      if (!hookRes.unusedIgnores?.length) unusedIgnores++;
+    } else if (f.tier === "floor") {
+      floorHits++;
     }
+    if (sampleIssues.length < 8) sampleIssues.push(`${f.file}:${f.line} ${f.ruleId}`);
   }
   if (floorHits > 0 || rejectedWaivers > 0) {
     checks.push({
       id: "waiver_and_floor_hygiene",
       status: "ACTION",
-      detail: `Scanned ${uiFiles.length} UI file(s): ${floorHits} Floor finding(s), ${rejectedWaivers} rejected Floor waiver(s), ${unusedIgnores} unused ignore(s).`,
+      detail: `Scanned ${hookRes.filesScanned} UI file(s): ${floorHits} Floor finding(s), ${rejectedWaivers} rejected Floor waiver(s), ${unusedIgnores} unused ignore(s).`,
       samples: sampleIssues,
       fix: "npx @zintaen/dsaf hook check . --tier floor --report-unused-ignores",
     });
@@ -241,7 +245,7 @@ export function runDoctor(targetDir = ".", options = {}) {
     checks.push({
       id: "waiver_and_floor_hygiene",
       status: "WARN",
-      detail: `Scanned ${uiFiles.length} UI file(s): 0 Floor findings, ${unusedIgnores} unused dsaf-ignore directive(s).`,
+      detail: `Scanned ${hookRes.filesScanned} UI file(s): 0 Floor findings, ${unusedIgnores} unused dsaf-ignore directive(s).`,
       samples: sampleIssues,
       fix: "Remove stale dsaf-ignore directives flagged by --report-unused-ignores",
     });
@@ -249,7 +253,7 @@ export function runDoctor(targetDir = ".", options = {}) {
     checks.push({
       id: "waiver_and_floor_hygiene",
       status: "OK",
-      detail: `Scanned ${uiFiles.length} UI file(s): 0 Floor findings, 0 stale waivers.`,
+      detail: `Scanned ${hookRes.filesScanned} UI file(s): 0 Floor findings, 0 stale waivers.`,
       fix: null,
     });
   }
