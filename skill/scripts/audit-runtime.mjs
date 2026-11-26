@@ -1,14 +1,14 @@
 #!/usr/bin/env node
 /**
- * DSAF v0.1.0 — Runtime Browser, APCA-W3, Keyboard, Screenshot & N-of-1 Verifier.
+ * DSAF v0.2.0 — Runtime Browser, APCA-W3, Keyboard, Screenshot & N-of-1 Verifier.
  * Pure-JS self-tests run with zero dependencies. Live browser/draft audits lazily
  * require Playwright (`playwright` or `@playwright/test`) and Chromium.
  */
 
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -222,7 +222,7 @@ function findAxe(explicitPath) {
 }
 
 function toUrl(target) {
-  if (/^https?:\/\//i.test(target)) return target;
+  if (/^(?:https?|file):\/\//i.test(target)) return target;
   return pathToFileURL(resolve(target)).href;
 }
 
@@ -244,7 +244,10 @@ async function resolveStorybookUrls(storybookArg, maxStories) {
     }
     if (!indexData) return [storybookArg];
   } else {
-    indexData = JSON.parse(readFileSync(resolve(storybookArg), "utf8"));
+    const absJson = resolve(storybookArg);
+    indexData = JSON.parse(readFileSync(absJson, "utf8"));
+    const siblingIframe = join(dirname(absJson), "iframe.html");
+    if (existsSync(siblingIframe)) baseUrl = pathToFileURL(dirname(absJson)).href;
   }
   const entries = Object.values(indexData.entries || indexData.stories || {}).filter((e) => (e.type || "story") === "story");
   const picked = entries.slice(0, maxStories);
@@ -255,7 +258,7 @@ async function resolveStorybookUrls(storybookArg, maxStories) {
 function collectHtmlFiles(targets) {
   const files = [];
   for (const t of targets) {
-    if (/^https?:\/\//i.test(t)) {
+    if (/^(?:https?|file):\/\//i.test(t)) {
       files.push(t);
       continue;
     }
@@ -814,7 +817,7 @@ function diffWiring(before, after) {
   };
 }
 
-function runSelfTest() {
+async function runSelfTest() {
   assert.equal(Number(wcagContrast([0, 0, 0], [255, 255, 255]).toFixed(2)), 21.0);
   const lcBow = apcaContrast([0, 0, 0], [255, 255, 255]);
   const lcWob = apcaContrast([255, 255, 255], [0, 0, 0]);
@@ -840,7 +843,18 @@ function runSelfTest() {
   assert.equal(kbd.positiveTabindexCount, 1);
   assert.equal(kbd.unnamedInteractiveCount, 1);
 
-  console.log("AUDIT_RUNTIME_SELF_TEST_PASSED (APCA-W3 0.1.9 + WCAG 2.2 + keyboard map + N-of-1 clustering)");
+  const scratch = mkdtempSync(join(tmpdir(), "dsaf-sb-test-"));
+  try {
+    writeFileSync(join(scratch, "index.json"), JSON.stringify({ entries: { "btn--primary": { id: "btn--primary", type: "story" } } }));
+    writeFileSync(join(scratch, "iframe.html"), "<html></html>");
+    const sbUrls = await resolveStorybookUrls(join(scratch, "index.json"), 4);
+    assert.equal(sbUrls.length, 1);
+    assert.match(sbUrls[0], /^file:\/\/\/.*iframe\.html\?id=btn--primary&viewMode=story$/);
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+
+  console.log("AUDIT_RUNTIME_SELF_TEST_PASSED (APCA-W3 0.1.9 + WCAG 2.2 + keyboard map + Storybook + N-of-1 clustering)");
   return 0;
 }
 
@@ -852,7 +866,7 @@ async function main() {
     );
     process.exit(0);
   }
-  if (args.selfTest) process.exit(runSelfTest());
+  if (args.selfTest) process.exit(await runSelfTest());
 
   const targets = [...args.targets];
   if (args.storybook) {
@@ -883,7 +897,7 @@ async function main() {
     for (const target of urlsOrFiles) {
       const pageErrors = [];
       const fileRes = {
-        file: /^https?:\/\//i.test(target) ? target : basename(target),
+        file: /^(?:https?|file):\/\//i.test(target) ? target.replace(/^file:\/\/\/.*\//, "") : basename(target.split("?")[0]),
         pageErrors,
         webVitals: null,
         shell: null,

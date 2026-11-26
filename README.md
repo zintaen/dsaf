@@ -1,4 +1,9 @@
-# DSAF — Design System & UX/UI Audit Framework (`v0.1.1`)
+# DSAF — Design System & UX/UI Audit Framework (`v0.2.0`)
+
+[![CI](https://github.com/zintaen/dsaf/actions/workflows/ci.yml/badge.svg)](https://github.com/zintaen/dsaf/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/zintaen/dsaf)](https://github.com/zintaen/dsaf/releases)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Node.js >= 20](https://img.shields.io/badge/node-%3E%3D20-brightgreen.svg)](package.json)
 
 **DSAF** is a single, agent-native, clean-room audit framework that evaluates both **established design systems** and **live software products that do not yet have a design system** — pairing AI coding agents with deterministic Node ESM measurement scripts rather than static prose guesswork.
 
@@ -42,10 +47,12 @@ npm test
 node bin/dsaf.mjs help
 node bin/dsaf.mjs recon ./your-app
 node bin/dsaf.mjs tokens ./your-app
+node bin/dsaf.mjs figma-diff --figma ./figma-vars.json --tokens ./your-app
+node bin/dsaf.mjs runtime --storybook ./storybook-static/index.json
 node bin/dsaf.mjs guardrails --out ./your-app/.dsaf-guardrails --stack tailwind
 ```
 
-Or link globally via `npm link` inside the repo to invoke `dsaf <command>` anywhere (`recon`, `tokens`, `runtime`, `scorecard`, `diff`, `guardrails`, `integrity`, `verify`, `mine`, `sync`, `version`).
+Or install/link via `npm link` (or `npx dsaf` once published to npm — `package.json` configures a strict `"files"` whitelist excluding maintainer-only `evolve/`) to invoke `dsaf <command>` anywhere (`recon`, `tokens`, `figma-diff`, `runtime`, `scorecard`, `diff`, `guardrails`, `integrity`, `verify`, `mine`, `sync`, `version`).
 
 ### 3. Install `dsaf` (and Optional Maintainer `dsaf-evolve`) into AI Coding Agents
 
@@ -75,8 +82,9 @@ Always start at **Step 0**: the agent runs a fast ~30-second Tier 0 read-only `r
 | Command / Script | Purpose | Zero-Dep Core |
 |---|---|---|
 | `dsaf recon <target>` (`skill/scripts/recon.mjs`) | 30s read-only scan detecting stack, routes, Storybook, DTCG tokens, Figma Code Connect, cloud DB risk (`T2-Mock`), and recommended Mode `S/C/P` | Yes |
-| `dsaf tokens <dir-or-json>` (`skill/scripts/audit-tokens.mjs`) | Validates W3C DTCG tokens (`$value`, `$type`, `{alias}`, `$ref`, cycles), Light/Dark mode parity & token contrast, CSS/Tailwind arbitrary & primitive drift, near-duplicate hex clusters, `!important`, and authored orphan variables | Yes |
-| `dsaf runtime <draft-or-url>` (`skill/scripts/audit-runtime.mjs`) | Verifies Canonical Preview Shell (`preview-shell.html`), `keyboardMap` (tabbable count, `tabindex > 0`, unnamed controls), `--storybook` reduced-motion, `--screenshot [--pins]`, canvas-rasterized `oklch`/`lab`/`light-dark`, `pixelBehind` contrast, APCA-W3 `Lc`, WCAG `3.00:1` UI borders, `>= 44.0px` mobile tap targets, `N-of-1` clusters, `LCP`/`CLS`, `axe-core`, and Kept Wiring diff | Pure-JS self-tests yes; live checks require Playwright |
+| `dsaf tokens <dir-or-json>` (`skill/scripts/audit-tokens.mjs`) | Validates W3C DTCG tokens (`$value`, `$type`, `{alias}`, `$ref`, cycles), Light/Dark mode parity & token contrast, CSS/Tailwind `@theme` + arbitrary/primitive drift, near-duplicate hex clusters, `!important`, and authored orphan variables | Yes |
+| `dsaf figma-diff --figma <f> --tokens <t>` (`skill/scripts/audit-figma-diff.mjs`) | Automates 3-vertex `Designed <-> Defined <-> Shipped` comparison across Figma variables, Code Connect (`*.figma.*`), DTCG/CSS tokens, and runtime summaries | Yes |
+| `dsaf runtime <draft-or-url>` (`skill/scripts/audit-runtime.mjs`) | Verifies Canonical Preview Shell (`preview-shell.html`), `keyboardMap` (tabbable count, `tabindex > 0`, unnamed controls), local/live `--storybook` reduced-motion, `--screenshot [--pins]`, canvas-rasterized `oklch`/`lab`/`light-dark`, `pixelBehind` contrast, APCA-W3 `Lc`, WCAG `3.00:1` UI borders, `>= 44.0px` mobile tap targets, `N-of-1` clusters, `LCP`/`CLS`, `axe-core`, and Kept Wiring diff | Pure-JS self-tests yes; live checks require Playwright |
 | `dsaf scorecard --input <file>` (`skill/scripts/compute-scorecard.mjs`) | Deterministic validator & calculator (`dsaf-scores/2`) supporting `usability`, `visual`, and `system` rubrics, domain weight presets, Hard Floor caps, 3-band prose cap (`<= 40%`), and exact Before vs Track A vs Track B point deltas | Yes |
 | `dsaf diff --baseline <a> --current <b>` (`skill/scripts/audit-diff.mjs`) | Enforces **No-Silent-Regression** (`D-RT`, `OVRD-*`, `UNRESOLVED`); exits `1` on unapproved score drops | Yes |
 | `dsaf guardrails --out <dir>` (`skill/scripts/generate-guardrails.mjs`) | Emits runnable `check-design-discipline.mjs`, GitHub Actions `dsaf-regression-gate.yml`, and `AGENTS-dsaf-rules.md` (`+SG`) | Yes |
@@ -108,7 +116,7 @@ dsaf/
 │   ├── SKILL.md
 │   ├── references/         # Progressive-loaded SOPs (Step 0, Modes S/C/P, Shell, Retro)
 │   ├── resources/          # Canonical Before/Track A/Track B preview shell HTML
-│   └── scripts/            # 7 deterministic Node ESM CLI tools & self-tests
+│   └── scripts/            # 8 deterministic Node ESM CLI tools & self-tests
 ├── evolve/                 # Tier 2 maintainer-only closed-loop evolution workspace
 │   ├── SKILL.md
 │   ├── references/         # Evolution gates, blind eval SOP, feedback JSON Schema

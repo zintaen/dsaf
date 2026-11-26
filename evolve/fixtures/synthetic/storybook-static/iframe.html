@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Synthetic Storybook Static Fixture</title>
+  <style>
+    :root {
+      --sb-bg: #ffffff;
+      --sb-ink: #0f172a;
+      --sb-muted: #334155;
+      --sb-border: #475569;
+      --sb-accent: #1d4ed8;
+      --sb-accent-hover: #1e40af;
+      --sb-accent-ink: #ffffff;
+    }
+    html[data-theme="dark"] {
+      --sb-bg: #0f172a;
+      --sb-ink: #f8fafc;
+      --sb-muted: #cbd5e1;
+      --sb-border: #94a3b8;
+      --sb-accent: #38bdf8;
+      --sb-accent-hover: #7dd3fc;
+      --sb-accent-ink: #082f49;
+    }
+    body {
+      margin: 0;
+      padding: 20px;
+      background: var(--sb-bg);
+      color: var(--sb-ink);
+      font-family: system-ui, -apple-system, sans-serif;
+      font-size: 16px;
+      line-height: 1.5;
+      overflow-x: clip;
+    }
+    .story-shell {
+      max-width: 640px;
+      display: grid;
+      gap: 14px;
+    }
+    .story-btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 44px;
+      min-width: 44px;
+      padding: 10px 18px;
+      border-radius: 8px;
+      border: 1px solid var(--sb-accent);
+      background: var(--sb-accent);
+      color: var(--sb-accent-ink);
+      font-size: 15px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background-color 150ms ease;
+    }
+    .story-btn:hover {
+      background: var(--sb-accent-hover);
+      border-color: var(--sb-accent-hover);
+    }
+    .story-input {
+      min-height: 44px;
+      padding: 10px 12px;
+      border-radius: 8px;
+      border: 1px solid var(--sb-border);
+      background: var(--sb-bg);
+      color: var(--sb-ink);
+      font-size: 16px;
+      width: 100%;
+      box-sizing: border-box;
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after {
+        transition-duration: 0.01ms !important;
+        animation-duration: 0.01ms !important;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="story-shell" id="story-root">
+    <h1 id="story-title">Story</h1>
+    <p id="story-desc">Loading story...</p>
+    <div id="story-stage"></div>
+    <button type="button" class="story-btn" data-theme="light" onclick="document.documentElement.setAttribute('data-theme','light')">Light Mode</button>
+    <button type="button" class="story-btn" data-theme="dark" onclick="document.documentElement.setAttribute('data-theme','dark')">Dark Mode</button>
+  </main>
+  <script>
+    const params = new URLSearchParams(window.location.search);
+    const id = params.get("id") || "button--primary";
+    const title = document.getElementById("story-title");
+    const desc = document.getElementById("story-desc");
+    const stage = document.getElementById("story-stage");
+    if (id === "input--default") {
+      title.textContent = "Components / Input";
+      desc.textContent = "Accessible field story supporting Light, Dark, and reduced-motion verification.";
+      stage.innerHTML = '<label for="sb-email">Work email</label><input id="sb-email" class="story-input" type="email" placeholder="name@example.com" />';
+    } else {
+      title.textContent = "Components / Button";
+      desc.textContent = "Primary action story supporting Light, Dark, hover contrast, and >= 44px mobile touch.";
+      stage.innerHTML = '<button type="button" class="story-btn primary" data-primary-cta="true">Publish Token Release</button>';
+    }
+  </script>
+</body>
+</html>

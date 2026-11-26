@@ -1,0 +1,523 @@
+{
+  "schema": "dsaf-scores/2",
+  "engine_version": "0.2.0",
+  "generated": "2026-11-26T11:35:27.289Z",
+  "type": "visual",
+  "profile": "dev_b2b",
+  "weights": {
+    "P1": 20,
+    "P2": 20,
+    "P3": 18,
+    "P4": 20,
+    "P5": 10,
+    "P6": 12
+  },
+  "phases": {
+    "before": {
+      "pillars": [
+        {
+          "id": "P1",
+          "name": "Hierarchy & 3-Second Focal Clarity",
+          "weight": 20,
+          "scored_criteria": 2,
+          "total_criteria": 2,
+          "raw_sum": 4,
+          "max_raw": 4,
+          "pct": 100,
+          "weighted_points": 20,
+          "pts_per_step": 5
+        },
+        {
+          "id": "P2",
+          "name": "Typography & Reading Rhythm",
+          "weight": 20,
+          "scored_criteria": 1,
+          "total_criteria": 1,
+          "raw_sum": 2,
+          "max_raw": 2,
+          "pct": 100,
+          "weighted_points": 20,
+          "pts_per_step": 10
+        },
+        {
+          "id": "P3",
+          "name": "Color, WCAG & APCA (Hard Floor)",
+          "weight": 18,
+          "scored_criteria": 2,
+          "total_criteria": 2,
+          "raw_sum": 3,
+          "max_raw": 4,
+          "pct": 75,
+          "weighted_points": 13.5,
+          "pts_per_step": 4.5
+        },
+        {
+          "id": "P4",
+          "name": "Grid, Spacing & Alignment",
+          "weight": 20,
+          "scored_criteria": 2,
+          "total_criteria": 2,
+          "raw_sum": 3,
+          "max_raw": 4,
+          "pct": 75,
+          "weighted_points": 15,
+          "pts_per_step": 5
+        },
+        {
+          "id": "P5",
+          "name": "Brand Craft, Anti-Slop & Motion",
+          "weight": 10,
+          "scored_criteria": 2,
+          "total_criteria": 2,
+          "raw_sum": 3,
+          "max_raw": 4,
+          "pct": 75,
+          "weighted_points": 7.5,
+          "pts_per_step": 2.5
+        },
+        {
+          "id": "P6",
+          "name": "3-Tier Design System & Resilience",
+          "weight": 12,
+          "scored_criteria": 2,
+          "total_criteria": 2,
+          "raw_sum": 3,
+          "max_raw": 4,
+          "pct": 75,
+          "weighted_points": 9,
+          "pts_per_step": 3
+        }
+      ],
+      "scored_weight_sum": 100,
+      "total": 85,
+      "hard_floor_blockers": [],
+      "grade": "Grade B — Good / Targeted Upgrades",
+      "criterion_unit_points": {
+        "V01": {
+          "exact_step": 5,
+          "pts_per_step": 5,
+          "max_pts": 10
+        },
+        "V02": {
+          "exact_step": 5,
+          "pts_per_step": 5,
+          "max_pts": 10
+        },
+        "V03": {
+          "exact_step": 10,
+          "pts_per_step": 10,
+          "max_pts": 20
+        },
+        "V04": {
+          "exact_step": 4.5,
+          "pts_per_step": 4.5,
+          "max_pts": 9
+        },
+        "V05": {
+          "exact_step": 4.5,
+          "pts_per_step": 4.5,
+          "max_pts": 9
+        },
+        "V06": {
+          "exact_step": 5,
+          "pts_per_step": 5,
+          "max_pts": 10
+        },
+        "V07": {
+          "exact_step": 5,
+          "pts_per_step": 5,
+          "max_pts": 10
+        },
+        "V08": {
+          "exact_step": 2.5,
+          "pts_per_step": 2.5,
+          "max_pts": 5
+        },
+        "V09": {
+          "exact_step": 2.5,
+          "pts_per_step": 2.5,
+          "max_pts": 5
+        },
+        "V10": {
+          "exact_step": 3,
+          "pts_per_step": 3,
+          "max_pts": 6
+        },
+        "V11": {
+          "exact_step": 3,
+          "pts_per_step": 3,
+          "max_pts": 6
+        }
+      }
+    },
+    "after_track_a": {
+      "pillars": [
+        {
+          "id": "P1",
+          "name": "Hierarchy & 3-Second Focal Clarity",
+          "weight": 20,
+          "scored_criteria": 2,
+          "total_criteria": 2,
+          "raw_sum": 4,
+          "max_raw": 4,
+          "pct": 100,
+          "weighted_points": 20,
+          "pts_per_step": 5
+        },
+        {
+          "id": "P2",
+          "name": "Typography & Reading Rhythm",
+          "weight": 20,
+          "scored_criteria": 1,
+          "total_criteria": 1,
+          "raw_sum": 2,
+          "max_raw": 2,
+          "pct": 100,
+          "weighted_points": 20,
+          "pts_per_step": 10
+        },
+        {
+          "id": "P3",
+          "name": "Color, WCAG & APCA (Hard Floor)",
+          "weight": 18,
+          "scored_criteria": 2,
+          "total_criteria": 2,
+          "raw_sum": 4,
+          "max_raw": 4,
+          "pct": 100,
+          "weighted_points": 18,
+          "pts_per_step": 4.5
+        },
+        {
+          "id": "P4",
+          "name": "Grid, Spacing & Alignment",
+          "weight": 20,
+          "scored_criteria": 2,
+          "total_criteria": 2,
+          "raw_sum": 4,
+          "max_raw": 4,
+          "pct": 100,
+          "weighted_points": 20,
+          "pts_per_step": 5
+        },
+        {
+          "id": "P5",
+          "name": "Brand Craft, Anti-Slop & Motion",
+          "weight": 10,
+          "scored_criteria": 2,
+          "total_criteria": 2,
+          "raw_sum": 3,
+          "max_raw": 4,
+          "pct": 75,
+          "weighted_points": 7.5,
+          "pts_per_step": 2.5
+        },
+        {
+          "id": "P6",
+          "name": "3-Tier Design System & Resilience",
+          "weight": 12,
+          "scored_criteria": 2,
+          "total_criteria": 2,
+          "raw_sum": 4,
+          "max_raw": 4,
+          "pct": 100,
+          "weighted_points": 12,
+          "pts_per_step": 3
+        }
+      ],
+      "scored_weight_sum": 100,
+      "total": 97.5,
+      "hard_floor_blockers": [],
+      "grade": "Grade A — Excellent / Production-Ready",
+      "criterion_unit_points": {
+        "V01": {
+          "exact_step": 5,
+          "pts_per_step": 5,
+          "max_pts": 10
+        },
+        "V02": {
+          "exact_step": 5,
+          "pts_per_step": 5,
+          "max_pts": 10
+        },
+        "V03": {
+          "exact_step": 10,
+          "pts_per_step": 10,
+          "max_pts": 20
+        },
+        "V04": {
+          "exact_step": 4.5,
+          "pts_per_step": 4.5,
+          "max_pts": 9
+        },
+        "V05": {
+          "exact_step": 4.5,
+          "pts_per_step": 4.5,
+          "max_pts": 9
+        },
+        "V06": {
+          "exact_step": 5,
+          "pts_per_step": 5,
+          "max_pts": 10
+        },
+        "V07": {
+          "exact_step": 5,
+          "pts_per_step": 5,
+          "max_pts": 10
+        },
+        "V08": {
+          "exact_step": 2.5,
+          "pts_per_step": 2.5,
+          "max_pts": 5
+        },
+        "V09": {
+          "exact_step": 2.5,
+          "pts_per_step": 2.5,
+          "max_pts": 5
+        },
+        "V10": {
+          "exact_step": 3,
+          "pts_per_step": 3,
+          "max_pts": 6
+        },
+        "V11": {
+          "exact_step": 3,
+          "pts_per_step": 3,
+          "max_pts": 6
+        }
+      }
+    }
+  },
+  "deltas": {
+    "after_track_a": 12.5
+  },
+  "criterion_deltas": {
+    "after_track_a": {
+      "V01": 0,
+      "V02": 0,
+      "V03": 0,
+      "V04": 4.5,
+      "V05": 0,
+      "V06": 5,
+      "V07": 0,
+      "V08": 0,
+      "V09": 0,
+      "V10": 3,
+      "V11": 0
+    }
+  },
+  "criteria": {
+    "before": {
+      "V01": {
+        "score": 2,
+        "findings": [],
+        "reason": "",
+        "secondary_impact": false,
+        "volatility": "FIXED",
+        "bands": null,
+        "check_type": null
+      },
+      "V02": {
+        "score": 2,
+        "findings": [],
+        "reason": "",
+        "secondary_impact": false,
+        "volatility": "FIXED",
+        "bands": null,
+        "check_type": null
+      },
+      "V03": {
+        "score": 2,
+        "findings": [],
+        "reason": "",
+        "secondary_impact": false,
+        "volatility": "FIXED",
+        "bands": null,
+        "check_type": null
+      },
+      "V04": {
+        "score": 1,
+        "findings": [
+          "VIS-01"
+        ],
+        "reason": "",
+        "secondary_impact": false,
+        "volatility": "FIXED",
+        "bands": null,
+        "check_type": null
+      },
+      "V05": {
+        "score": 2,
+        "findings": [],
+        "reason": "",
+        "secondary_impact": false,
+        "volatility": "FIXED",
+        "bands": null,
+        "check_type": null
+      },
+      "V06": {
+        "score": 1,
+        "findings": [
+          "VIS-02"
+        ],
+        "reason": "",
+        "secondary_impact": false,
+        "volatility": "FIXED",
+        "bands": null,
+        "check_type": null
+      },
+      "V07": {
+        "score": 2,
+        "findings": [],
+        "reason": "",
+        "secondary_impact": false,
+        "volatility": "FIXED",
+        "bands": null,
+        "check_type": null
+      },
+      "V08": {
+        "score": 2,
+        "findings": [],
+        "reason": "",
+        "secondary_impact": false,
+        "volatility": "FIXED",
+        "bands": null,
+        "check_type": null
+      },
+      "V09": {
+        "score": 1,
+        "findings": [
+          "VIS-03"
+        ],
+        "reason": "",
+        "secondary_impact": false,
+        "volatility": "FIXED",
+        "bands": null,
+        "check_type": null
+      },
+      "V10": {
+        "score": 1,
+        "findings": [
+          "VIS-01"
+        ],
+        "reason": "",
+        "secondary_impact": false,
+        "volatility": "FIXED",
+        "bands": null,
+        "check_type": null
+      },
+      "V11": {
+        "score": 2,
+        "findings": [],
+        "reason": "",
+        "secondary_impact": false,
+        "volatility": "FIXED",
+        "bands": null,
+        "check_type": null
+      }
+    },
+    "after_track_a": {
+      "V01": {
+        "score": 2,
+        "findings": [],
+        "reason": "",
+        "secondary_impact": false,
+        "volatility": "FIXED",
+        "bands": null,
+        "check_type": null
+      },
+      "V02": {
+        "score": 2,
+        "findings": [],
+        "reason": "",
+        "secondary_impact": false,
+        "volatility": "FIXED",
+        "bands": null,
+        "check_type": null
+      },
+      "V03": {
+        "score": 2,
+        "findings": [],
+        "reason": "",
+        "secondary_impact": false,
+        "volatility": "FIXED",
+        "bands": null,
+        "check_type": null
+      },
+      "V04": {
+        "score": 2,
+        "findings": [],
+        "reason": "",
+        "secondary_impact": false,
+        "volatility": "FIXED",
+        "bands": null,
+        "check_type": null
+      },
+      "V05": {
+        "score": 2,
+        "findings": [],
+        "reason": "",
+        "secondary_impact": false,
+        "volatility": "FIXED",
+        "bands": null,
+        "check_type": null
+      },
+      "V06": {
+        "score": 2,
+        "findings": [],
+        "reason": "",
+        "secondary_impact": false,
+        "volatility": "FIXED",
+        "bands": null,
+        "check_type": null
+      },
+      "V07": {
+        "score": 2,
+        "findings": [],
+        "reason": "",
+        "secondary_impact": false,
+        "volatility": "FIXED",
+        "bands": null,
+        "check_type": null
+      },
+      "V08": {
+        "score": 2,
+        "findings": [],
+        "reason": "",
+        "secondary_impact": false,
+        "volatility": "FIXED",
+        "bands": null,
+        "check_type": null
+      },
+      "V09": {
+        "score": 1,
+        "findings": [
+          "VIS-03"
+        ],
+        "reason": "",
+        "secondary_impact": false,
+        "volatility": "FIXED",
+        "bands": null,
+        "check_type": null
+      },
+      "V10": {
+        "score": 2,
+        "findings": [],
+        "reason": "",
+        "secondary_impact": false,
+        "volatility": "FIXED",
+        "bands": null,
+        "check_type": null
+      },
+      "V11": {
+        "score": 2,
+        "findings": [],
+        "reason": "",
+        "secondary_impact": false,
+        "volatility": "FIXED",
+        "bands": null,
+        "check_type": null
+      }
+    }
+  }
+}

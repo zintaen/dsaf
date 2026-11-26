@@ -4,6 +4,17 @@ All notable changes to **DSAF (Design System Audit Framework)** will be document
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2026-11-26
+
+### Added
+- **Automated 3-Vertex Figma Triangulation CLI (`skill/scripts/audit-figma-diff.mjs`, `dsaf figma-diff`):** Compares Figma variables (`Designed`) and optional Code Connect (`*.figma.{ts,tsx,js,jsx}`) files against W3C DTCG / CSS tokens (`Defined`) and runtime summaries (`Shipped`), reporting match coverage %, value drift, design-only / code-only tokens, and mapped components.
+- **Local Static Storybook & Reduced-Motion Verification:** `audit-runtime.mjs --storybook <index.json>` now resolves sibling local `iframe.html?id=...` URLs cleanly over `file://`; added synthetic `storybook-static/` (`button--primary`, `input--default`) and negative `mode-p-defects/` test fixtures under `evolve/fixtures/synthetic/`.
+- **Expanded 6-Scenario Calibration Corpus (`evolve/fixtures/calibration/`):** Added `mode-p-app-mature.scores.json`, `mode-c-tailwind.scores.json`, and `mode-p-usability.scores.json` alongside updated `mode-s-ds`, `mode-c-app`, and `mode-p-app` baselines (`engine_version: "0.2.0"`).
+- **npm Distribution Readiness & Extended CI:** Configured `"files"` whitelist (`bin/`, `skill/`, `README.md`, `CHANGELOG.md`, `LICENSE` — excluding `evolve/`), package keywords/metadata, `npm pack --dry-run` check, Storybook static pass, and negative defect-fixture failure assertion in `.github/workflows/ci.yml`.
+
+### Changed
+- **Documentation & Spec Sync (`v0.2.0`):** Updated `README.md` with GitHub Actions/Release/License/Node badges, `dsaf figma-diff` CLI docs, local Storybook verification usage, and `npx dsaf` instructions; wired `audit-figma-diff.mjs` into `skill/SKILL.md`, `mode-conformance.md`, and `mode-system.md`.
+
 ## [0.1.1] - 2026-11-26
 
 ### Fixed

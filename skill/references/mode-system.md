@@ -1,4 +1,4 @@
-# Mode S — Design System Core Audit (`v0.1.1`)
+# Mode S — Design System Core Audit (`v0.2.0`)
 
 Load this playbook when Step 0 confirms **`Mode S` (Design System Core)** — auditing an existing design system library, token package, or component system repository. Pair with [scoring-model.md](./scoring-model.md) and always follow the user's conversation language.
 
@@ -6,7 +6,7 @@ Load this playbook when Step 0 confirms **`Mode S` (Design System Core)** — au
 
 ## 1. Operating Discipline (`SCAN -> AWAITING_REVIEW -> FIX -> VERIFY`)
 
-1. **`SCAN` Mode (No Product Source Edits):** Collect deterministic token, build, Storybook, runtime a11y, and governance evidence; score `DS01–DS12` (`system` scorecard with 3-band evidence cap); enumerate findings tagged `@Agent[fix]`, `@Agent[research]`, `@Human[decide]`, or `@Human[manual]`. **PAUSE at `AWAITING_REVIEW`** for owner triage (`approve` / `reject` / `defer`).
+1. **`SCAN` Mode (No Product Source Edits):** Collect deterministic token, build, Storybook, runtime a11y, optional Figma 3-vertex diff (`audit-figma-diff.mjs`), and governance evidence; score `DS01–DS12` (`system` scorecard with 3-band evidence cap); enumerate findings tagged `@Agent[fix]`, `@Agent[research]`, `@Human[decide]`, or `@Human[manual]`. **PAUSE at `AWAITING_REVIEW`** for owner triage (`approve` / `reject` / `defer`).
 2. **`FIX` Mode (Only After Owner Approval):** Apply approved token/doc/lint/component fixes within confirmed permissions, rebuild derived outputs (token builds, Storybook static build, manifests), re-run deterministic scripts, recompute `scores.json`, and run `audit-diff.mjs` to enforce **No-Silent-Regression**.
 
 ---

@@ -1,4 +1,4 @@
-<!-- Version 0.1.1 (2026-11-26). English canonical specification for DSAF Visual UI, Tokens & Design-System Upgrade Audits (Mode P & Mode C Round 2). Automatically mirror the user's conversation language across reports, UI copy, and previews unless explicitly overridden. -->
+<!-- Version 0.2.0 (2026-11-26). English canonical specification for DSAF Visual UI, Tokens & Design-System Upgrade Audits (Mode P & Mode C Round 2). Automatically mirror the user's conversation language across reports, UI copy, and previews unless explicitly overridden. -->
 
 # Visual Design, Layout, 3-Tier Design System & Craft Audit with a Weighted Rubric
 

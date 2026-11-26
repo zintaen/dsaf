@@ -1,0 +1,17 @@
+{
+  "v": 5,
+  "entries": {
+    "button--primary": {
+      "type": "story",
+      "id": "button--primary",
+      "name": "Primary",
+      "title": "Components/Button"
+    },
+    "input--default": {
+      "type": "story",
+      "id": "input--default",
+      "name": "Default",
+      "title": "Components/Input"
+    }
+  }
+}

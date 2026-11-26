@@ -14,6 +14,7 @@ const REPO_ROOT = resolve(BIN_DIR, "..");
 const COMMANDS = {
   recon: { script: "skill/scripts/recon.mjs", desc: "Read-only topology & T2-Mock recon (Mode S / C / P)" },
   tokens: { script: "skill/scripts/audit-tokens.mjs", desc: "W3C DTCG validator, Light/Dark parity & CSS/Tailwind drift" },
+  "figma-diff": { script: "skill/scripts/audit-figma-diff.mjs", desc: "Compare Figma MCP variables & Code Connect against DTCG/CSS" },
   runtime: { script: "skill/scripts/audit-runtime.mjs", desc: "Playwright APCA/WCAG, keyboard map, Storybook, screenshot & N-of-1 verifier" },
   scorecard: { script: "skill/scripts/compute-scorecard.mjs", desc: "Deterministic weighted scorecard & blocker calculator" },
   diff: { script: "skill/scripts/audit-diff.mjs", desc: "No-silent-regression diff verifier with override logging" },

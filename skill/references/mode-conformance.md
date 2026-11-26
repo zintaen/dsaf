@@ -1,4 +1,4 @@
-# Mode C — Product Conformance & Drift Audit (`v0.1.1`)
+# Mode C — Product Conformance & Drift Audit (`v0.2.0`)
 
 Load this playbook when Step 0 confirms **`Mode C` (Product-on-DS Conformance & Drift)** — auditing a live product or application codebase that already consumes a design system, token library, or structured styling architecture. Pair with [scoring-model.md](./scoring-model.md), [mode-product-ux.md](./mode-product-ux.md), and [mode-product-ui.md](./mode-product-ui.md).
 
@@ -23,7 +23,7 @@ node ./scripts/audit-tokens.mjs <app-src-dir> --json --out <audit-output/conform
 Capture exact objective drift metrics (never estimate counts):
 - **Token Compliance Ratio (%):** Percentage of color references using semantic `var(--*)` tokens vs raw hardcoded `#hex`, `rgb()`, `hsl()`, un-tokenized `oklch()` literals, or Tailwind arbitrary color classes (`bg-[#...]`) outside token definition blocks.
 - **Primitive Token Leakage:** Direct usage of raw palette steps (e.g., `--gray-700`, Tailwind raw `bg-slate-600`) where semantic tokens (e.g., `--surface-elevated`, `--text-muted`) are defined and expected.
-- **Orphan & Near-Duplicate Clusters:** Authored unused CSS/DTCG variables (framework internals like `--tw-*` / `--radix-*` excluded) plus near-duplicate hardcoded colors (`deltaRGB < 18`) creeping into feature styles.
+- **Orphan & Near-Duplicate Clusters:** Authored unused CSS/DTCG variables (framework internals like `--tw-*` / `--radix-*` and consumed Tailwind `@theme` utilities excluded) plus near-duplicate hardcoded colors (`deltaRGB < 18`) creeping into feature styles.
 - **Scoped Off-Grid Spacing & `!important` Overrides:** Property-scoped `padding`/`margin`/`gap`/`border-radius` literals outside the 4px/8px scale, Tailwind arbitrary `p-[Npx]` utilities, and density of `!important` override hacks fighting system styles.
 - **Light/Dark DTCG Mode Parity & Contrast:** Missing Light vs Dark semantic keys plus resolved token-pair WCAG/APCA compliance when DTCG files are present.
 
@@ -35,8 +35,12 @@ node ./scripts/audit-runtime.mjs <app-url> --live [--axe <path>] --json --out <a
 Evaluate:
 - **N-of-1 Component Signatures:** Inspect `componentInventory` reported by `audit-runtime.mjs` for `buttons` and `inputs` — surface every rogue local clone whose rendered `(height, borderRadius, fontSize, borderWidth)` diverges from canonical DS components (for example `"6 distinct button height×radius signatures across 19 rendered buttons"`).
 - **Computed Fidelity & Keyboard Map:** Verify whether live buttons, inputs, dialogs, and typography resolve cleanly across Light/Dark themes without broken contrast (`< 4.5:1` / `< 3.00:1` UI borders / low APCA `Lc`), `< 44.0 px` mobile tap targets, `tabindex > 0` traps, or unnamed interactive controls (`keyboardMap`).
-- **Figma MCP & Code Connect 3-Vertex Triangulation SOP:**
-  1. When Figma MCP context (`get_variable_defs`, `get_design_context`) or Code Connect mappings (`*.figma.ts` / `*.figma.tsx`) are available, align each key primitive/component across **Designed (`Figma`) <-> Defined (`Tokens/Code`) <-> Shipped (`Live DOM`)** and report unmapped tokens, stale variable values, renamed variant props, and detached component instances.
+- **Figma MCP & Code Connect 3-Vertex Triangulation SOP (`audit-figma-diff.mjs`):**
+  1. When Figma MCP context (`get_variable_defs`, `get_design_context`) or exported Figma variable JSON plus Code Connect mappings (`*.figma.ts` / `*.figma.tsx`) exist alongside codebase/runtime artifacts, run:
+     ```bash
+     node ./scripts/audit-figma-diff.mjs --figma <figma-vars.json> --tokens <audit-output/conformance/tokens-drift.json> [--code-connect <app-src-dir>] [--runtime <audit-output/conformance/runtime.json>] --format markdown
+     ```
+     Report exact `triangulationCoveragePct`, value drift (`Designed` vs `Defined`), design-only / code-only tokens, and Code Connect mapped components.
   2. When Figma specs or Code Connect files are absent, never fabricate a design vertex — state explicitly: `"3-vertex status: 2-vertex Defined <-> Shipped verified; Designed (Figma MCP / Code Connect): not tested (not supplied)"`.
 
 ### Step 3. Chain with Product UX (`U01–U18`) & Visual Craft (`V01–V11`)

@@ -1,7 +1,7 @@
 {
   "schema": "dsaf-scores/2",
-  "engine_version": "0.1.0",
-  "generated": "2026-11-26T11:13:40.582Z",
+  "engine_version": "0.2.0",
+  "generated": "2026-11-26T11:35:27.182Z",
   "type": "visual",
   "profile": "balanced",
   "weights": {

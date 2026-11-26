@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * DSAF v0.1.0 — Full Repo Isolation, Integrity & Schema Validation Gate (Node ESM).
+ * DSAF v0.2.0 — Full Repo Isolation, Integrity & Schema Validation Gate (Node ESM).
  * Verifies Tier 1 (`skill/`) integrity, Tier 2 (`evolve/`) isolation, CLI parity,
  * example retro records, leak guards (`/Users/`, `file:///`, private terms), zero
  * `.DS_Store`, and optional host `~/.gitconfig` SHA-256 preservation.

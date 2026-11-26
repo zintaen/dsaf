@@ -19,7 +19,9 @@ jobs:
           node-version: ${{ matrix.node-version }}
       - run: npm test
       - run: node bin/dsaf.mjs version
+      - run: node bin/dsaf.mjs figma-diff --self-test
       - run: node bin/dsaf.mjs guardrails --self-test
+      - run: npm pack --dry-run
       - run: node evolve/scripts/mine-signals.mjs --input evolve/fixtures/example-feedback.jsonl --scores-dir evolve/fixtures/calibration --format markdown
 
   runtime-playwright:
@@ -34,9 +36,15 @@ jobs:
           mkdir -p /tmp/dsaf-pw
           npm install --prefix /tmp/dsaf-pw --no-save playwright axe-core
           /tmp/dsaf-pw/node_modules/.bin/playwright install chromium --with-deps
-      - name: Verify Canonical Preview Shell & Synthetic Runtime Fixture
+      - name: Verify Canonical Preview Shell, Storybook Static, Product App & Defect Detection
         env:
           NODE_PATH: /tmp/dsaf-pw/node_modules
         run: |
           node bin/dsaf.mjs runtime skill/resources/preview-shell.html --axe /tmp/dsaf-pw/node_modules/axe-core/axe.min.js
           node bin/dsaf.mjs runtime evolve/fixtures/synthetic/mode-p-app/index.html --live --axe /tmp/dsaf-pw/node_modules/axe-core/axe.min.js
+          node bin/dsaf.mjs runtime --storybook evolve/fixtures/synthetic/storybook-static/index.json --axe /tmp/dsaf-pw/node_modules/axe-core/axe.min.js
+          if node bin/dsaf.mjs runtime evolve/fixtures/synthetic/mode-p-defects/index.html --live --axe /tmp/dsaf-pw/node_modules/axe-core/axe.min.js; then
+            echo "ERROR: defect fixture unexpectedly passed!"
+            exit 1
+          fi
+          echo "DEFECT_FIXTURE_FAILED_AS_EXPECTED"

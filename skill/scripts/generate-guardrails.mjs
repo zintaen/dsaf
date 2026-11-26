@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * DSAF v0.1.0 — CI & AI-Agent Design Guardrail Generator (+SG).
+ * DSAF v0.2.0 — CI & AI-Agent Design Guardrail Generator (+SG).
  * Emits zero-dependency discipline checker script, GitHub Actions workflow template,
  * and concise AI agent coding rules for downstream repos.
  */
