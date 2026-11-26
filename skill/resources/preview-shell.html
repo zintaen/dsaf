@@ -574,6 +574,27 @@
         grid-template-columns: minmax(0, 1fr);
       }
     }
+    @media (max-width: 720px) {
+      .uxs-toolbar {
+        position: relative;
+        padding: 8px 12px;
+        gap: 6px;
+      }
+      .uxs-toolbar-controls {
+        width: 100%;
+        flex-wrap: nowrap;
+        overflow-x: auto;
+        max-width: 100%;
+        padding-bottom: 2px;
+        scrollbar-width: thin;
+      }
+      .uxs-group, .uxs-tbtn, .uxs-select {
+        flex: none;
+      }
+      [data-uxs-group="viewport"] {
+        display: none;
+      }
+    }
   </style>
 </head>
 <body>
