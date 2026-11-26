@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * DSAF v0.9.0 — Zero-Dependency Stdio MCP Server (`dsaf mcp`).
+ * DSAF v0.9.1 — Zero-Dependency Stdio MCP Server (`dsaf mcp`).
  * Exposes 9 read-only audit tools over JSON-RPC 2.0 stdio (supporting both
  * Content-Length LSP framing and newline-delimited JSON-RPC messages).
  */
@@ -20,7 +20,7 @@ import { planFloorFixes } from "./fix-floor.mjs";
 import { readGovernanceStatus } from "./evolve-runner.mjs";
 import { generatePersonas } from "./generate-personas.mjs";
 
-export const MCP_SERVER_VERSION = "0.9.0";
+export const MCP_SERVER_VERSION = "0.9.1";
 export const MCP_PROTOCOL_VERSION = "2024-11-05";
 
 export const TOOL_DEFINITIONS = [
@@ -130,12 +130,14 @@ export const TOOL_DEFINITIONS = [
   },
   {
     name: "dsaf_personas",
-    description: "Deterministic read-only Multi-Axis Persona Matrix generator seeded from repository topology and surface mode.",
+    description: "Uncapped signal-driven Multi-Axis Persona Matrix generator seeded from repository topology, surface mode, and optional .dsaf/personas.custom.json.",
     inputSchema: {
       type: "object",
       properties: {
         target: { type: "string", description: "Target repository directory." },
-        depth: { type: "string", enum: ["quick", "deep"], description: "Persona depth: quick (5) or deep (8)." },
+        depth: { type: "string", enum: ["auto", "quick", "deep"], description: "Persona depth: auto (uncapped signal-driven), quick (5 baseline), or deep (full signal scan)." },
+        customPath: { type: "string", description: "Optional custom personas JSON file overriding .dsaf/personas.custom.json." },
+        max: { type: "number", description: "Optional ceiling if caller wants a cap (default uncapped)." },
       },
       required: ["target"],
     },
@@ -209,7 +211,11 @@ function executeTool(name, args = {}) {
     case "dsaf_evolve_status":
       return readGovernanceStatus(resolve(args.target || "."));
     case "dsaf_personas":
-      return generatePersonas(resolve(args.target || "."), { depth: args.depth || "deep" });
+      return generatePersonas(resolve(args.target || "."), {
+        depth: args.depth || "auto",
+        customPath: args.customPath || undefined,
+        max: typeof args.max === "number" ? args.max : null,
+      });
     default:
       throw new Error(`Unknown tool: ${name}`);
   }
@@ -439,7 +445,8 @@ function runSelfTest() {
 
     const persRes = JSON.parse(JSON.parse(responses[8]).result.content[0].text);
     assert.equal(persRes.schema, "dsaf-personas/1");
-    assert.equal(persRes.personaCount, 8);
+    assert.equal(persRes.uncapped, true);
+    assert.ok(persRes.personaCount >= 6);
 
     const unknownRes = JSON.parse(responses[9]);
     assert.equal(unknownRes.error.code, -32601);

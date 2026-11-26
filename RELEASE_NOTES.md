@@ -4,6 +4,12 @@ Concise version highlights for **DSAF (`@zintaen/dsaf`)**. Follows [Semantic Ver
 
 ---
 
+## v0.9.1 (2026-11-27) — Uncapped Signal-Driven Personas & Container-Query Preview Shell
+
+- **Uncapped Persona Scaling (`dsaf personas` / `dsaf init` / `dsaf_personas`):** Removed the `if/else` 8-persona branch cap; `generate-personas.mjs` (`--depth auto` default) now derives every applicable orthogonal persona from repo signals (`Mode S/C`, routes, forms, dense tables, docs/Storybook, dark mode, hybrid WebView shells, fault tolerance) and merges unlimited domain roles from `.dsaf/personas.custom.json` or `--custom <file>`.
+- **Container-Query Preview Shell (`preview-shell.html`):** Moved internal layout breakpoints inside `.uxs-canvas` (`@container uxs-stage`) and `.uxs-pane` (`@container uxs-pane`) so toggling `768px` or `390px` on a desktop monitor in `Compare` + `Pins` mode authentically stacks columns, KPIs, cards, and tables with zero text crushing or floating pin overflow.
+- **Simulated-Viewport Runtime Enforcement (`audit-runtime.mjs`):** `auditShellContract` now clicks `[data-viewport="tablet"]` and `[data-viewport="mobile"]` with `Compare` + `Pins (4)` active and fails if any child spills `.uxs-canvas`, crushes text, or overflows unstacked tables.
+
 ## v0.9.0 (2026-11-27) — Deterministic Personas (`dsaf personas`), Hardened Probes & Rebuilt UI
 
 - **Topology-Seeded Persona Generator (`dsaf personas`):** Added deterministic `generate-personas.mjs` generating `5` (`quick`) or `8` (`deep`) orthogonal multi-axis personas bound to detected routes, Surface Mode, and T2-Mock edge cases, automatically written to `.dsaf/personas.json` during `dsaf init` and exposed as the 9th MCP tool (`dsaf_personas`).

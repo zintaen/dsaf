@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * DSAF v0.9.0 — Universal Repo Auto-Evolution Bootstrap (`dsaf init`).
+ * DSAF v0.9.1 — Universal Repo Auto-Evolution Bootstrap (`dsaf init`).
  * Scaffolds `.dsaf/` governance (pinned STRATEGY.md, rules.json circuit breakers,
  * decision-queue.md, strategy-feedback.md, handoff.md, personas.json) plus optional
  * edit-time hooks, CI guardrails, and workflow files. Zero external dependencies.
@@ -16,7 +16,7 @@ import { installAgentHook } from "./dsaf-hook.mjs";
 import { generateGuardrails } from "./generate-guardrails.mjs";
 import { generatePersonas } from "./generate-personas.mjs";
 
-export const INIT_VERSION = "0.9.0";
+export const INIT_VERSION = "0.9.1";
 
 const RESOURCE_STRATEGY_PATH = decodeURIComponent(
   new URL("../resources/evolve-strategy.md", import.meta.url).pathname
@@ -114,7 +114,7 @@ function buildHandoff({ repoName, mode, surfaceMode, hooksInstalled, guardrailsE
     `- **Engine Version:** ${INIT_VERSION}`,
     `- **Detected Mode:** ${mode} | **Surface:** ${surfaceMode}`,
     `- **Loop Mode:** focused (create \`.dsaf/STOP\` to halt cleanly at next checkpoint)`,
-    `- **Persona Matrix:** ${personaCount > 0 ? `.dsaf/personas.json (${personaCount} seeded personas)` : "skipped (--skip-personas)"}`,
+    `- **Persona Matrix:** ${personaCount > 0 ? `.dsaf/personas.json (${personaCount} signal-driven personas; add unlimited domain roles via .dsaf/personas.custom.json)` : "skipped (--skip-personas)"}`,
     `- **Edit-Time Hooks:** ${hooksInstalled.length > 0 ? hooksInstalled.join(", ") : "not installed (pass --with-hook)"}`,
     `- **CI Guardrails:** ${guardrailsEnabled ? "enabled (.dsaf-guardrails/)" : "not generated (pass --with-guardrails)"}`,
     "",
@@ -240,7 +240,7 @@ export function initEvolve(options = {}) {
   );
   const personaReport = options.skipPersonas
     ? null
-    : generatePersonas(absTarget, { depth: options.depth || "deep", recon });
+    : generatePersonas(absTarget, { depth: options.depth || "auto", recon, relativeTarget: "." });
 
   writeManagedFile(
     join(dsafDir, "handoff.md"),
@@ -333,7 +333,9 @@ function runSelfTest() {
     assert.ok(full.created.includes(".github/workflows/dsaf-gate.yml"));
     const parsedPersonas = JSON.parse(readFileSync(join(scratch, ".dsaf/personas.json"), "utf8"));
     assert.equal(parsedPersonas.schema, "dsaf-personas/1");
-    assert.equal(parsedPersonas.personaCount, 8);
+    assert.equal(parsedPersonas.target, ".");
+    assert.equal(parsedPersonas.uncapped, true);
+    assert.ok(parsedPersonas.personaCount >= 6);
     assert.equal(full.guardrailFiles.length, 3);
     assert.equal(full.hookFiles.length, 1);
 
@@ -364,7 +366,7 @@ function runSelfTest() {
 
 function printUsage() {
   console.log(
-    "Usage: dsaf init [targetDir] [--with-hook] [--agent claude|cursor|codex|all] [--with-guardrails] [--with-workflow] [--mode auto|S|C|P] [--depth quick|deep] [--skip-personas] [--dry-run] [--force] [--json] [--self-test]"
+    "Usage: dsaf init [targetDir] [--with-hook] [--agent claude|cursor|codex|all] [--with-guardrails] [--with-workflow] [--mode auto|S|C|P] [--depth auto|quick|deep] [--skip-personas] [--dry-run] [--force] [--json] [--self-test]"
   );
 }
 
@@ -378,7 +380,7 @@ if (isEntrypoint) {
       "with-guardrails": { type: "boolean", default: false },
       "with-workflow": { type: "boolean", default: false },
       mode: { type: "string", default: "auto" },
-      depth: { type: "string", default: "deep" },
+      depth: { type: "string", default: "auto" },
       "skip-personas": { type: "boolean", default: false },
       "dry-run": { type: "boolean", default: false },
       force: { type: "boolean", default: false },

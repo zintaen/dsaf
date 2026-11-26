@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * DSAF v0.9.0 — Safe, Bounded Floor Auto-Remediator (`dsaf fix`).
+ * DSAF v0.9.1 — Safe, Bounded Floor Auto-Remediator (`dsaf fix`).
  * Deterministically patches verified Floor defects (`dsaf/no-transition-all`,
  * `dsaf/no-100vw`, `dsaf/no-outline-none-naked`, `dsaf/no-autoplay-unmuted`)
  * while respecting `.dsaf/rules.json` protectedFiles and dry-run previews.
@@ -15,7 +15,7 @@ import { parseArgs } from "node:util";
 import { offsetToLine, stripCommentsPreservingLines } from "./ci-report.mjs";
 import { checkTarget, collectUiFiles, extractCssRuleBlocks } from "./dsaf-hook.mjs";
 
-export const FIX_VERSION = "0.9.0";
+export const FIX_VERSION = "0.9.1";
 
 const ALLOWED_FIXED_RULES = new Set([
   "dsaf/no-transition-all",

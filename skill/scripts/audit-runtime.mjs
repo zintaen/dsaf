@@ -767,6 +767,27 @@ async function probePixelBehindElements(page) {
   return results;
 }
 
+export function validateSimulatedViewportSnapshot(viewport, snap) {
+  const failures = [];
+  if (!snap || !snap.canvasFound) {
+    failures.push(`Simulated ${viewport}: missing .uxs-canvas container`);
+    return failures;
+  }
+  if (snap.activeViewport && snap.activeViewport !== viewport) {
+    failures.push(`Clicking [data-viewport="${viewport}"] set data-uxs-viewport="${snap.activeViewport}"`);
+  }
+  for (const s of snap.spills || []) {
+    failures.push(`Simulated ${viewport} canvas overflow: ${s.tag}("${s.text}") right=${s.right} > canvasRight=${s.canvasRight}`);
+  }
+  for (const c of snap.crushed || []) {
+    failures.push(`Simulated ${viewport} crushed content: ${c.tag}("${c.text}") scrollW=${c.scrollW} > clientW=${c.clientW}`);
+  }
+  for (const t of snap.tableOverflows || []) {
+    failures.push(`Simulated ${viewport} unstacked table overflow: tableW=${t.tableW} > wrapW=${t.wrapW}`);
+  }
+  return failures;
+}
+
 async function auditShellContract(page) {
   const check = await page.evaluate(() => {
     const toolbar = document.querySelector("[data-ux-shell-toolbar]");
@@ -804,6 +825,67 @@ async function auditShellContract(page) {
     await pinsBtn.click();
     const pinsOn = await page.evaluate(() => document.documentElement.getAttribute("data-uxs-pins"));
     if (pinsOn !== "on") check.failures.push("Clicking #uxs-pins-btn did not toggle pins on");
+
+    // Verify simulated viewport toggles (tablet 768px & mobile 390px) while Compare + Pins Drawer are both active
+    const desktopWidth = await page.evaluate(() => window.innerWidth);
+    for (const vp of ["tablet", "mobile"]) {
+      const vpBtn = await page.$(`[data-vp-btn="${vp}"], [data-viewport="${vp}"]`);
+      if (!vpBtn) {
+        if (desktopWidth >= 1120) check.failures.push(`Missing simulated viewport switcher button for '${vp}'`);
+        continue;
+      }
+      if (await vpBtn.isVisible().catch(() => false)) {
+        await vpBtn.click();
+        await page.waitForTimeout(80);
+        const snap = await page.evaluate(() => {
+          const canvas = document.querySelector(".uxs-canvas");
+          if (!canvas) return { canvasFound: false };
+          const cRect = canvas.getBoundingClientRect();
+          const spills = [];
+          const crushed = [];
+          const tableOverflows = [];
+          for (const el of canvas.querySelectorAll(".uxs-kpi, .uxs-card, .uxs-kpi-val, button, h1, h2, h3")) {
+            const r = el.getBoundingClientRect();
+            const cs = getComputedStyle(el);
+            if (r.width === 0 || r.height === 0 || cs.display === "none") continue;
+            if (r.right > cRect.right + 2) {
+              spills.push({
+                tag: el.tagName.toLowerCase(),
+                text: (el.innerText || "").trim().slice(0, 28),
+                right: Math.round(r.right),
+                canvasRight: Math.round(cRect.right),
+              });
+            }
+            if (!["auto", "scroll"].includes(cs.overflowX) && el.scrollWidth > el.clientWidth + 2) {
+              crushed.push({
+                tag: el.tagName.toLowerCase(),
+                text: (el.innerText || "").trim().slice(0, 28),
+                scrollW: Math.round(el.scrollWidth),
+                clientW: Math.round(el.clientWidth),
+              });
+            }
+          }
+          for (const wrap of canvas.querySelectorAll(".uxs-table-wrap")) {
+            const tbl = wrap.querySelector("table");
+            if (!tbl) continue;
+            const wr = wrap.getBoundingClientRect();
+            if (wr.width > 0 && tbl.scrollWidth > wrap.clientWidth + 4) {
+              tableOverflows.push({ tableW: Math.round(tbl.scrollWidth), wrapW: Math.round(wrap.clientWidth) });
+            }
+          }
+          return {
+            canvasFound: true,
+            activeViewport: document.documentElement.getAttribute("data-uxs-viewport"),
+            spills: spills.slice(0, 6),
+            crushed: crushed.slice(0, 6),
+            tableOverflows: tableOverflows.slice(0, 6),
+          };
+        });
+        check.failures.push(...validateSimulatedViewportSnapshot(vp, snap));
+      }
+    }
+    const desktopBtn = await page.$('[data-vp-btn="desktop"], [data-viewport="desktop"]');
+    if (desktopBtn && (await desktopBtn.isVisible().catch(() => false))) await desktopBtn.click();
     await pinsBtn.click();
   }
   return check;
@@ -1493,6 +1575,25 @@ async function runSelfTest() {
     assert.ok(badLayout.headerBloat && badLayout.headerBloat.height === 340, "Must flag mobile header bloat");
     assert.equal(badLayout.crushedBadges.length, 1, "Must flag crushed multi-line pill badges");
     assert.equal(badLayout.clippedTables.length, 1, "Must flag clipped mobile tables");
+
+    const simFail = validateSimulatedViewportSnapshot("mobile", {
+      canvasFound: true,
+      activeViewport: "mobile",
+      spills: [{ tag: "button", text: "#4", right: 440, canvasRight: 390 }],
+      crushed: [{ tag: "p", text: "+24 pts", scrollW: 92, clientW: 60 }],
+      tableOverflows: [],
+    });
+    assert.equal(simFail.length, 2, "Must catch simulated mobile canvas spill & crushed KPI text");
+    assert.deepEqual(
+      validateSimulatedViewportSnapshot("mobile", {
+        canvasFound: true,
+        activeViewport: "mobile",
+        spills: [],
+        crushed: [],
+        tableOverflows: [],
+      }),
+      []
+    );
   } finally {
     rmSync(scratch, { recursive: true, force: true });
   }

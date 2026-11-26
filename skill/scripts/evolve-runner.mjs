@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * DSAF v0.9.0 — Supervised Repository Evolution Runner (`dsaf evolve`).
+ * DSAF v0.9.1 — Supervised Repository Evolution Runner (`dsaf evolve`).
  * Executes governance-checked verification and bounded Floor remediation loops
  * using `.dsaf/rules.json`, `.dsaf/STOP` kill switches, and circuit breakers.
  * Zero external dependencies.
@@ -16,7 +16,7 @@ import { checkTarget } from "./dsaf-hook.mjs";
 import { applyFloorFixes } from "./fix-floor.mjs";
 import { initEvolve } from "./init-evolve.mjs";
 
-export const EVOLVE_RUNNER_VERSION = "0.9.0";
+export const EVOLVE_RUNNER_VERSION = "0.9.1";
 
 function readJsonSafe(absPath) {
   if (!existsSync(absPath)) return null;

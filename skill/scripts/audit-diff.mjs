@@ -91,7 +91,7 @@ export function renderDiffMarkdown(diff) {
 function runSelfTest() {
   const makeDoc = (scores) => ({
     schema: "dsaf-scores/2",
-    engine_version: "0.9.0",
+    engine_version: "0.9.1",
     type: "system",
     phases: { before: { total: 80, grade: "L4" } },
     criteria: { before: scores },

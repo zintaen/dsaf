@@ -160,7 +160,7 @@ function main() {
     }
   }
 
-  console.log("SKILL_INTEGRITY_ALL_PASSED (v0.9.0)");
+  console.log("SKILL_INTEGRITY_ALL_PASSED (v0.9.1)");
 }
 
 main();

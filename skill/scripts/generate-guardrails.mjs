@@ -12,7 +12,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 
-export const GENERATOR_VERSION = "0.9.0";
+export const GENERATOR_VERSION = "0.9.1";
 
 function buildDisciplineChecker(stack) {
   const checkTailwind = stack === "tailwind" || stack === "react";

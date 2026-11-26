@@ -4,10 +4,10 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="color-scheme" content="light dark" />
-  <title>DSAF v0.9.0 — Design System &amp; Product UX/UI Audit Engine</title>
-  <meta name="description" content="Zero-dependency Node ESM &amp; Playwright audit engine for Design Systems, W3C DTCG tokens, WCAG 2.2 AA / APCA Lc, persona generation, safe Floor auto-remediation, and repo auto-evolution." />
+  <title>DSAF v0.9.1 — Design System &amp; Product UX/UI Audit Engine</title>
+  <meta name="description" content="Zero-dependency Node ESM &amp; Playwright audit engine for Design Systems, W3C DTCG tokens, WCAG 2.2 AA / APCA Lc, uncapped persona generation, safe Floor auto-remediation, and repo auto-evolution." />
   <meta property="og:type" content="website" />
-  <meta property="og:title" content="DSAF v0.9.0 — Design System &amp; Product UX/UI Audit Engine" />
+  <meta property="og:title" content="DSAF v0.9.1 — Design System &amp; Product UX/UI Audit Engine" />
   <meta property="og:description" content="Deterministic design system audit, Playwright + axe-core checks, dsaf personas, safe Floor remediation (dsaf fix), and repo auto-evolution (dsaf evolve)." />
   <meta property="og:image" content="https://zintaen.github.io/dsaf/assets/og-card.png" />
   <meta name="twitter:card" content="summary_large_image" />
@@ -30,7 +30,7 @@
             <path d="M8 8h5a4 4 0 0 1 0 8H8z"></path>
           </svg>
         </span>
-        <span class="brand-title">DSAF v0.9.0</span>
+        <span class="brand-title">DSAF v0.9.1</span>
       </a>
 
       <nav class="nav-links" aria-label="Primary navigation">
@@ -56,7 +56,7 @@
           <div>
             <p class="eyebrow">ZERO-DEPENDENCY DESIGN SYSTEM AUDIT ENGINE</p>
             <h1 class="hero-title">Measure every pixel, enforce every token, and evolve your UI automatically.</h1>
-            <p class="lead">DSAF v0.9.0 combines deterministic Node ESM scanners, Playwright + axe-core checks, topology-seeded personas (<code>dsaf personas</code>), safe Floor remediation (<code>dsaf fix</code>), and repo auto-evolution loops (<code>dsaf evolve</code>).</p>
+            <p class="lead">DSAF v0.9.1 combines deterministic Node ESM scanners, Playwright + axe-core checks, uncapped signal-driven personas (<code>dsaf personas</code>), safe Floor remediation (<code>dsaf fix</code>), and repo auto-evolution loops (<code>dsaf evolve</code>).</p>
             <div class="hero-cta">
               <a class="btn btn-primary" href="#cli-workbench">Install CLI &amp; MCP</a>
               <a class="btn btn-secondary" href="./demo/preview-shell.html">Open Live Preview Shell</a>
@@ -157,12 +157,12 @@
                   <span class="badge badge--mono">Shell</span>
                   <button type="button" class="copy-btn" data-copy-target="cmd-install">Copy</button>
                 </div>
-                <pre tabindex="0" aria-label="Quickstart and audit CLI commands"><code id="cmd-install">npx -y @zintaen/dsaf@0.9.0 recon . --json
-npx -y @zintaen/dsaf@0.9.0 hook check src --tier floor
-npx -y @zintaen/dsaf@0.9.0 tokens . --json
-npx -y @zintaen/dsaf@0.9.0 init .</code></pre>
+                <pre tabindex="0" aria-label="Quickstart and audit CLI commands"><code id="cmd-install">npx -y @zintaen/dsaf@0.9.1 recon . --json
+npx -y @zintaen/dsaf@0.9.1 hook check src --tier floor
+npx -y @zintaen/dsaf@0.9.1 tokens . --json
+npx -y @zintaen/dsaf@0.9.1 init .</code></pre>
               </div>
-              <p class="callout-info">Tip: Install the Claude Code / Agent Skill globally via <code>npx -y @zintaen/dsaf@0.9.0 install-skill --agent claude --scope user</code> to load SKILL.md and reference scripts automatically.</p>
+              <p class="callout-info">Tip: Install the Claude Code / Agent Skill globally via <code>npx -y @zintaen/dsaf@0.9.1 install-skill --agent claude --scope user</code> to load SKILL.md and reference scripts automatically.</p>
             </div>
           </div>
 
@@ -201,7 +201,7 @@ npx @zintaen/dsaf evolve . --verify --max-rounds 1 --dry-run
 npx @zintaen/dsaf doctor .</code></pre>
               </div>
               <ul class="list-clean">
-                <li>Generates 5 (<code>quick</code>) or 8 (<code>deep</code>) orthogonal personas bound to detected routes, Surface Mode, and T2 edge datasets.</li>
+                <li>Dynamically scales orthogonal personas from repo signals (5 baseline floor, uncapped <code>auto</code>/<code>deep</code>) and merges unlimited custom roles from <code>.dsaf/personas.custom.json</code>.</li>
                 <li>Halts immediately when <code>.dsaf/STOP</code> is present or <code>maxConsecutiveFailures</code> trips in <code>.dsaf/circuit-breaker.json</code>.</li>
               </ul>
             </div>
@@ -238,8 +238,8 @@ npx @zintaen/dsaf hook check src --sarif dsaf.sarif --github</code></pre>
         </div>
 
         <figure class="showcase-frame">
-          <img class="showcase-img showcase-img--light" src="./assets/preview-shell-showcase.png" alt="DSAF v0.9.0 Dual-Track Preview Shell Light mode displaying Ink and Gold v3 Pragmatic and Ink Dark North-Star panes with annotated rationale drawer" width="1440" height="900" decoding="async" />
-          <img class="showcase-img showcase-img--dark" src="./assets/preview-shell-showcase-dark.png" alt="DSAF v0.9.0 Dual-Track Preview Shell Dark mode displaying Ink and Gold v3 Pragmatic and North-Star panes with annotated rationale drawer" width="1440" height="900" decoding="async" />
+          <img class="showcase-img showcase-img--light" src="./assets/preview-shell-showcase.png" alt="DSAF v0.9.1 Dual-Track Preview Shell Light mode displaying Ink and Gold v3 Pragmatic and Ink Dark North-Star panes with annotated rationale drawer" width="1440" height="900" decoding="async" />
+          <img class="showcase-img showcase-img--dark" src="./assets/preview-shell-showcase-dark.png" alt="DSAF v0.9.1 Dual-Track Preview Shell Dark mode displaying Ink and Gold v3 Pragmatic and North-Star panes with annotated rationale drawer" width="1440" height="900" decoding="async" />
         </figure>
       </div>
     </section>
@@ -265,7 +265,12 @@ npx @zintaen/dsaf hook check src --sarif dsaf.sarif --github</code></pre>
             </thead>
             <tbody>
               <tr>
-                <td data-label="Version"><span class="badge badge--gold">v0.9.0</span></td>
+                <td data-label="Version"><span class="badge badge--gold">v0.9.1</span></td>
+                <td data-label="Key Upgrades">Removed persona ceiling in <code>dsaf personas</code> (uncapped signal-driven scaling + unlimited <code>.dsaf/personas.custom.json</code>); rebuilt Preview Shell internals with CSS Container Queries (<code>@container uxs-stage</code> / <code>uxs-pane</code>) so desktop <code>768px</code> / <code>390px</code> viewport switches stack cleanly without clipping; added automated simulated-viewport contract checks in <code>dsaf runtime</code>.</td>
+                <td data-label="Verification"><span class="pass-chip">Container + Playwright</span></td>
+              </tr>
+              <tr>
+                <td data-label="Version"><span class="badge badge--mono">v0.9.0</span></td>
                 <td data-label="Key Upgrades">Rebuilt compact mobile headers, 24px badges &amp; Light/Dark showcases; added <code>dsaf personas</code> + auto-seeded <code>.dsaf/personas.json</code> + 9th MCP tool; added Playwright probes for mobile header bloat, crushed pills, clipped tables &amp; pseudo <code>::before</code> touch targets; added CSS Nesting (<code>&amp;</code>), Base UI highlight &amp; monorepo <code>tokens/*.json</code> Mode S detection.</td>
                 <td data-label="Verification"><span class="pass-chip">Playwright + OIDC</span></td>
               </tr>
@@ -289,7 +294,7 @@ npx @zintaen/dsaf hook check src --sarif dsaf.sarif --github</code></pre>
   <footer class="site-footer">
     <div class="container footer-row">
       <div>
-        <strong>DSAF v0.9.0</strong> — MIT Licensed Zero-Dependency Design System Audit Toolkit
+        <strong>DSAF v0.9.1</strong> — MIT Licensed Zero-Dependency Design System Audit Toolkit
       </div>
       <div class="footer-links">
         <a href="https://github.com/zintaen/dsaf">GitHub Repository</a>
