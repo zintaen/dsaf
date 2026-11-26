@@ -1,4 +1,4 @@
-# DSAF — Design System & UX/UI Audit Framework (`v0.0.1`)
+# DSAF — Design System & UX/UI Audit Framework (`v0.1.0`)
 
 **DSAF** is a single, agent-native, clean-room audit framework that evaluates both **established design systems** and **live software products that do not yet have a design system** — pairing AI coding agents with deterministic Node ESM measurement scripts rather than static prose guesswork.
 
@@ -6,13 +6,21 @@ Written in international English as the canonical specification; the agent autom
 
 ---
 
+## Dual-Track Interactive Comparison Shell
+
+![DSAF Canonical Preview Shell — Side-by-Side Comparison with Finding Pins](docs/assets/preview-shell-showcase.png)
+
+Every UI refactor preview is built inside a self-contained single-file HTML comparison shell (`Before` · `Track A Pragmatic` · `Track B North-Star` · `Side-by-Side`, desktop/mobile viewports, Light/Dark switching, 4 UI states, and toggleable Finding Pins) and verified in headless Chromium. See [examples/sample-mode-c-report.md](examples/sample-mode-c-report.md) for a reproducible Mode C walkthrough.
+
+---
+
 ## One Framework, Three Auto-Detected Topologies
 
 | Topology Mode | Target | Core Rubric & Toolchain | Primary Deliverables |
 |---|---|---|---|
-| **`Mode S` — System Core** | Existing design system repository, Storybook, or token package | `DS01–DS12` (`25` core DSAF anchors), `audit-tokens.mjs` (W3C DTCG), `audit-runtime.mjs --storybook`, `L0–L5` maturity ladder with 3-band anti-prose cap (`prose <= 40%`) | 5-file audit dossier or `ANALYZED_DESIGN_REPORT.md`, `scores.json` (`dsaf-scores/2`), `audit-diff` regression baseline, `SCAN → Review → FIX` backlog |
-| **`Mode C` — Conformance & Drift** | Product consuming a design system or token package | Usability `U01–U18` + Visual `V01–V11` + Conformance `DS07–DS09`, token compliance %, hardcoded drift, `!important` overrides, live DOM `N-of-1` clustering | Multi-file audit dossier, Before/After Dual-Track `draft/*.html`, Drift & `N-of-1` remediation plan, executable lint/CI guardrails |
-| **`Mode P` — Product UX/UI (No DS)** | Live web app, mobile web, or prototype with no formal DS | Usability `U01–U18` (`5-axis` personas, 7-state edge matrix, 4 Data Mutation Tiers) + Visual `V01–V11` (WCAG 2.2 AA, APCA `Lc`, anti-"AI slop") | Multi-file dossier, Dual-Track `Pragmatic` vs `North-Star` `draft/*.html`, optional **Starter Design System Spec** + starter DTCG tokens + CI guardrails |
+| **`Mode S` — System Core** | Existing design system repository, Storybook, or token package | `DS01–DS12` (`25` core DSAF anchors), `audit-tokens.mjs` (W3C DTCG + Light/Dark contrast), `audit-runtime.mjs --storybook`, `L0–L5` maturity ladder with 3-band anti-prose cap (`prose <= 40%`) | 5-file audit dossier or `ANALYZED_DESIGN_REPORT.md`, `scores.json` (`dsaf-scores/2`), `audit-diff` regression baseline, `SCAN → Review → FIX` backlog |
+| **`Mode C` — Conformance & Drift** | Product consuming a design system or token package | Usability `U01–U18` + Visual `V01–V11` + Conformance `DS07–DS09`, token compliance %, hardcoded & Tailwind arbitrary drift, `!important` overrides, live DOM `N-of-1` clustering, Figma MCP / Code Connect 3-vertex SOP | Multi-file audit dossier, Before/After Dual-Track `draft/*.html`, Drift & `N-of-1` remediation plan, executable lint/CI guardrails (`+SG`) |
+| **`Mode P` — Product UX/UI (No DS)** | Live web app, mobile web, or prototype with no formal DS | Usability `U01–U18` (`5-axis` personas, 7-state edge matrix, 4 Data Mutation Tiers) + Visual `V01–V11` (WCAG 2.2 AA, APCA `Lc`, keyboard map, anti-"AI slop") | Multi-file dossier, Dual-Track `Pragmatic` vs `North-Star` `draft/*.html`, optional **Starter Design System Spec** + starter DTCG tokens + CI guardrails (`+SG`) |
 
 ---
 
@@ -26,17 +34,28 @@ cd dsaf
 npm test
 ```
 
-*(Install Playwright in your target project or globally only if you want `audit-runtime.mjs` to drive headless Chromium for live browser / `draft/*.html` verification; all static scripts, token/drift scanners, scorecard validators, diff gates, and pure-JS self-tests run with zero external dependencies.)*
+*(Install Playwright in your target project or globally only if you want `audit-runtime.mjs` to drive headless Chromium for live browser / `draft/*.html` verification; all static scripts, token/drift scanners, guardrail generators, scorecard validators, diff gates, and pure-JS self-tests run with zero external dependencies.)*
 
-### 2. Install `dsaf` (and Optional Maintainer `dsaf-evolve`) into AI Coding Agents
+### 2. Run the Single-Entry `dsaf` CLI (`bin/dsaf.mjs`)
+
+```bash
+node bin/dsaf.mjs help
+node bin/dsaf.mjs recon ./your-app
+node bin/dsaf.mjs tokens ./your-app
+node bin/dsaf.mjs guardrails --out ./your-app/.dsaf-guardrails --stack tailwind
+```
+
+Or link globally via `npm link` inside the repo to invoke `dsaf <command>` anywhere (`recon`, `tokens`, `runtime`, `scorecard`, `diff`, `guardrails`, `integrity`, `verify`, `mine`, `sync`, `version`).
+
+### 3. Install `dsaf` (and Optional Maintainer `dsaf-evolve`) into AI Coding Agents
 
 ```bash
 npm run sync:skills
 ```
 
-Or copy [skill/](file:///Users/stephencheng/Projects/Personal/dsaf/skill) manually into your agent's skill directory (`~/.gemini/config/skills/dsaf`, `~/.agents/skills/dsaf`, `~/.claude/skills/dsaf`, or `~/.codex/skills/dsaf`). Never copy `evolve/` into user-facing production skills unless you are maintaining DSAF itself.
+Or copy [skill/](skill/) manually into your agent's skill directory (`~/.gemini/config/skills/dsaf`, `~/.agents/skills/dsaf`, `~/.claude/skills/dsaf`, or `~/.codex/skills/dsaf`). Never copy `evolve/` into user-facing production skills unless you are maintaining DSAF itself.
 
-### 3. Invoke the Skill
+### 4. Invoke the Skill
 
 ```text
 /dsaf https://your-app.example.com
@@ -55,12 +74,13 @@ Always start at **Step 0**: the agent runs a fast ~30-second Tier 0 read-only `r
 
 | Command / Script | Purpose | Zero-Dep Core |
 |---|---|---|
-| `npm run recon -- <target>` (`skill/scripts/recon.mjs`) | 30s read-only scan detecting stack, routes, Storybook, DTCG tokens, Figma Code Connect, cloud DB risk (`T2-Mock`), and recommended Mode `S/C/P` | Yes |
-| `npm run audit:tokens -- <dir-or-json>` (`skill/scripts/audit-tokens.mjs`) | Validates W3C DTCG tokens (`$value`, `$type`, `{alias}`, `$ref`, cycles) and measures CSS/UI token compliance %, hardcoded color drift, near-duplicate hex clusters, `!important`, and orphan tokens | Yes |
-| `npm run audit:runtime -- <draft-or-url>` (`skill/scripts/audit-runtime.mjs`) | Verifies Canonical Preview Shell (`preview-shell.html`), canvas-rasterized `oklch`/`lab`/`light-dark`, `pixelBehind` contrast, real APCA-W3 `Lc`, WCAG `3.00:1` UI borders, `>= 44.0px` mobile tap targets, `N-of-1` component signature clustering, `LCP`/`CLS`, `axe-core`, and Kept Wiring diff | Pure-JS self-tests yes; live checks require Playwright |
-| `npm run scorecard -- --input <file>` (`skill/scripts/compute-scorecard.mjs`) | Deterministic validator & calculator (`dsaf-scores/2`) supporting `usability`, `visual`, and `system` rubrics, domain weight presets, Hard Floor caps, 3-band prose cap (`<= 40%`), and exact Before vs Track A vs Track B point deltas | Yes |
-| `npm run audit:diff -- --baseline <a> --current <b>` (`skill/scripts/audit-diff.mjs`) | Enforces **No-Silent-Regression** (`D-RT`, `OVRD-*`, `UNRESOLVED`); exits `1` on unapproved score drops | Yes |
-| `npm test` (`check-integrity.mjs` + `validate-isolation.mjs`) | Verifies markdown links, zero `evolve/` or private leaks inside `skill/`, Canonical Shell contract, schema validation, and all script self-tests | Yes |
+| `dsaf recon <target>` (`skill/scripts/recon.mjs`) | 30s read-only scan detecting stack, routes, Storybook, DTCG tokens, Figma Code Connect, cloud DB risk (`T2-Mock`), and recommended Mode `S/C/P` | Yes |
+| `dsaf tokens <dir-or-json>` (`skill/scripts/audit-tokens.mjs`) | Validates W3C DTCG tokens (`$value`, `$type`, `{alias}`, `$ref`, cycles), Light/Dark mode parity & token contrast, CSS/Tailwind arbitrary & primitive drift, near-duplicate hex clusters, `!important`, and authored orphan variables | Yes |
+| `dsaf runtime <draft-or-url>` (`skill/scripts/audit-runtime.mjs`) | Verifies Canonical Preview Shell (`preview-shell.html`), `keyboardMap` (tabbable count, `tabindex > 0`, unnamed controls), `--storybook` reduced-motion, `--screenshot [--pins]`, canvas-rasterized `oklch`/`lab`/`light-dark`, `pixelBehind` contrast, APCA-W3 `Lc`, WCAG `3.00:1` UI borders, `>= 44.0px` mobile tap targets, `N-of-1` clusters, `LCP`/`CLS`, `axe-core`, and Kept Wiring diff | Pure-JS self-tests yes; live checks require Playwright |
+| `dsaf scorecard --input <file>` (`skill/scripts/compute-scorecard.mjs`) | Deterministic validator & calculator (`dsaf-scores/2`) supporting `usability`, `visual`, and `system` rubrics, domain weight presets, Hard Floor caps, 3-band prose cap (`<= 40%`), and exact Before vs Track A vs Track B point deltas | Yes |
+| `dsaf diff --baseline <a> --current <b>` (`skill/scripts/audit-diff.mjs`) | Enforces **No-Silent-Regression** (`D-RT`, `OVRD-*`, `UNRESOLVED`); exits `1` on unapproved score drops | Yes |
+| `dsaf guardrails --out <dir>` (`skill/scripts/generate-guardrails.mjs`) | Emits runnable `check-design-discipline.mjs`, GitHub Actions `dsaf-regression-gate.yml`, and `AGENTS-dsaf-rules.md` (`+SG`) | Yes |
+| `npm test` (`check-integrity.mjs` + `validate-isolation.mjs`) | Verifies markdown links, zero `evolve/` or host `/Users/` / `file:///` leaks, version parity, CLI entry, Canonical Shell contract, schema validation, and all script self-tests | Yes |
 
 ---
 
@@ -69,7 +89,7 @@ Always start at **Step 0**: the agent runs a fast ~30-second Tier 0 read-only `r
 DSAF separates **production auditing (`skill/`)** from **framework self-evolution (`evolve/`, `/dsaf-evolve`)** so live audits never leak benchmark ground truth or mutate specs mid-run:
 
 1. **Field Retro (`retro`):** Logs strictly anonymized, domain-stripped friction signals (`false_positive`, `false_negative`, `ds_drift_signal`, `ambition_gap`, etc.) into `~/.dsaf/feedback-log.jsonl`.
-2. **Corpus & Signal Mining (`npm run evolve:mine`):** Clusters field retro signals alongside dead/saturated criteria and artifact probe gaps mined from calibration `scores.json` runs.
+2. **Corpus & Signal Mining (`npm run evolve:mine`):** Clusters field retro signals alongside dead/saturated criteria and artifact probe gaps mined from `evolve/fixtures/calibration/*.scores.json`.
 3. **One Atomic Hypothesis + Blind A/B Gates:** Every rule change goes through blind Evaluator subagents and independent Graders against hard guardrails (`G1–G8`, `T1–T10`, `VG1–VG9`, `V3-1..6`, `DS-1..5`) before human promotion and `npm run sync:skills`.
 
 ---
@@ -78,15 +98,21 @@ DSAF separates **production auditing (`skill/`)** from **framework self-evolutio
 
 ```text
 dsaf/
+├── bin/
+│   └── dsaf.mjs            # Single-entry `dsaf` CLI wrapper
+├── docs/
+│   └── assets/             # Showcase visuals rendered from canonical shell
+├── examples/
+│   └── sample-mode-c-report.md
 ├── skill/                  # Portable Tier 1 production agent skill (no evolve/ files)
 │   ├── SKILL.md
 │   ├── references/         # Progressive-loaded SOPs (Step 0, Modes S/C/P, Shell, Retro)
 │   ├── resources/          # Canonical Before/Track A/Track B preview shell HTML
-│   └── scripts/            # 6 deterministic Node ESM CLI tools & self-tests
+│   └── scripts/            # 7 deterministic Node ESM CLI tools & self-tests
 ├── evolve/                 # Tier 2 maintainer-only closed-loop evolution workspace
 │   ├── SKILL.md
 │   ├── references/         # Evolution gates, blind eval SOP, feedback JSON Schema
-│   ├── fixtures/           # Synthetic Mode S / C / P test targets & sample feedback
+│   ├── fixtures/           # Synthetic Mode S / C / P targets, calibration scores & retro log
 │   ├── benchmark.md        # Empirical verification & A/B evolution log
 │   └── scripts/            # Signal miner, isolation gate, local skill installer
 ├── package.json

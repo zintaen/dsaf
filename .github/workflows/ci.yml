@@ -11,10 +11,32 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        node-version: [20, 24]
+        node-version: [22, 24]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node-version }}
       - run: npm test
+      - run: node bin/dsaf.mjs version
+      - run: node bin/dsaf.mjs guardrails --self-test
+      - run: node evolve/scripts/mine-signals.mjs --input evolve/fixtures/example-feedback.jsonl --scores-dir evolve/fixtures/calibration --format markdown
+
+  runtime-playwright:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install Playwright & axe-core into isolated temp dir
+        run: |
+          mkdir -p /tmp/dsaf-pw
+          npm install --prefix /tmp/dsaf-pw --no-save playwright axe-core
+          /tmp/dsaf-pw/node_modules/.bin/playwright install chromium --with-deps
+      - name: Verify Canonical Preview Shell & Synthetic Runtime Fixture
+        env:
+          NODE_PATH: /tmp/dsaf-pw/node_modules
+        run: |
+          node bin/dsaf.mjs runtime skill/resources/preview-shell.html --axe /tmp/dsaf-pw/node_modules/axe-core/axe.min.js
+          node bin/dsaf.mjs runtime evolve/fixtures/synthetic/mode-p-app/index.html --live --axe /tmp/dsaf-pw/node_modules/axe-core/axe.min.js

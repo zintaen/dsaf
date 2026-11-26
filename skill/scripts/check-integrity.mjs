@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 /**
- * DSAF v0.0.1 — Tier 1 Skill Integrity & Self-Test Runner.
+ * DSAF v0.1.0 — Tier 1 Skill Integrity & Self-Test Runner.
  * Verifies required structure, YAML frontmatter, relative markdown links, Canonical
- * Preview Shell attributes, zero contamination in `skill/`, and all 5 CLI self-tests.
+ * Preview Shell attributes, zero contamination in `skill/`, and all 6 CLI self-tests.
  */
 
 import { spawnSync } from "node:child_process";
@@ -32,6 +32,7 @@ const REQUIRED_FILES = [
   "scripts/audit-runtime.mjs",
   "scripts/compute-scorecard.mjs",
   "scripts/audit-diff.mjs",
+  "scripts/generate-guardrails.mjs",
   "scripts/check-integrity.mjs",
 ];
 
@@ -119,7 +120,14 @@ function main() {
   }
 
   console.log("==> [4/4] Running deterministic CLI --self-test suites...");
-  for (const script of ["recon.mjs", "audit-tokens.mjs", "audit-runtime.mjs", "compute-scorecard.mjs", "audit-diff.mjs"]) {
+  for (const script of [
+    "recon.mjs",
+    "audit-tokens.mjs",
+    "audit-runtime.mjs",
+    "compute-scorecard.mjs",
+    "audit-diff.mjs",
+    "generate-guardrails.mjs",
+  ]) {
     const res = spawnSync(process.execPath, [join(SCRIPT_DIR, script), "--self-test"], { encoding: "utf8" });
     process.stdout.write(res.stdout || "");
     process.stderr.write(res.stderr || "");
@@ -129,7 +137,7 @@ function main() {
     }
   }
 
-  console.log("SKILL_INTEGRITY_ALL_PASSED (v0.0.1)");
+  console.log("SKILL_INTEGRITY_ALL_PASSED (v0.1.0)");
 }
 
 main();

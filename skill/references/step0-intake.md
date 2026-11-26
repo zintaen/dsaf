@@ -1,4 +1,4 @@
-# Step 0 — Fast Read-Only Recon & Clarification Gate (`v0.0.1`)
+# Step 0 — Fast Read-Only Recon & Clarification Gate (`v0.1.0`)
 
 Always execute this gate at the start of every DSAF run BEFORE creating `audit-output/`, scoring criteria, writing `draft/` previews, or running state-mutating interactions.
 
@@ -20,7 +20,7 @@ Run `node ./scripts/recon.mjs <repo-or-url> --out <tmp-dir/recon.json>` (plus re
 
 1. **Topology Detection (`Mode S` vs `Mode C` vs `Mode P`):**
    - **`Mode S` (Design System Core):** Repository exports UI components/tokens or ships a token catalog (`*.tokens.json`, `tokens.css`), Storybook (`.storybook/`, `*.stories.*`), component contracts/docs, and package exports without primary product routes.
-   - **`Mode C` (Product-on-DS Conformance & Drift):** Application repo consuming an internal/external design system dependency, structured token package, Tailwind `@theme` tokens, or Figma Code Connect files.
+   - **`Mode C` (Product-on-DS Conformance & Drift):** Application repo consuming an internal/external design system dependency, structured DTCG token package, Tailwind `@theme` tokens, Figma Code Connect files, or a dedicated token stylesheet (`tokens.css` / `variables.css`). *(Local feature CSS custom properties alone do NOT promote an ad-hoc app to `Mode C`.)*
    - **`Mode P` (Product UX/UI Without a Formal DS):** Application/website with routes and screens but ad-hoc styling and no formal design system or token pipeline.
 2. **Stack, Responsive Capabilities & Rendered Display Modes:**
    - Traverse live `cssRules` recursively (including nested `@layer` / `@supports`) when inspecting a live app.

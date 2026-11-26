@@ -1,8 +1,11 @@
 {
   "name": "dsaf",
-  "version": "0.0.1",
-  "description": "DSAF — Agent-native Design System & Product UX/UI Audit Framework with deterministic runtime verification, token drift analysis, Dual-Track drafts, and closed-loop evolution.",
+  "version": "0.1.0",
+  "description": "DSAF — Agent-native Design System & Product UX/UI Audit Framework with deterministic runtime verification, token drift analysis, Dual-Track drafts, CI guardrails, and closed-loop evolution.",
   "type": "module",
+  "bin": {
+    "dsaf": "./bin/dsaf.mjs"
+  },
   "license": "MIT",
   "author": "Stephen Cheng <zintaen@gmail.com>",
   "repository": {
@@ -20,6 +23,7 @@
     "audit:runtime": "node skill/scripts/audit-runtime.mjs",
     "scorecard": "node skill/scripts/compute-scorecard.mjs",
     "audit:diff": "node skill/scripts/audit-diff.mjs",
+    "guardrails": "node skill/scripts/generate-guardrails.mjs",
     "evolve:mine": "node evolve/scripts/mine-signals.mjs",
     "sync:skills": "node evolve/scripts/sync-skills.mjs --install-local"
   },

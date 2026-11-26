@@ -1,9 +1,11 @@
 #!/usr/bin/env node
 /**
- * DSAF v0.0.1 — Deterministic W3C DTCG Token Validator & Codebase Drift Scanner.
- * Zero external dependencies. Validates $value/$type/{alias}/$ref tokens and scans
- * stylesheets/UI components for hardcoded color/spacing drift, !important overrides,
- * orphan CSS variables, and near-duplicate hex color clusters.
+ * DSAF v0.1.0 — Deterministic W3C DTCG Token Validator & Codebase Drift Scanner.
+ * Zero external dependencies. Validates $value/$type/{alias}/$ref tokens, Light/Dark
+ * mode parity, token-level WCAG 2.2 + APCA-W3 contrast, and scans stylesheets/UI
+ * components for hardcoded color drift, property-scoped spacing drift, !important
+ * overrides, authored orphan CSS vars (excluding framework internals), and Tailwind
+ * arbitrary/primitive drift.
  */
 
 import assert from "node:assert/strict";
@@ -11,6 +13,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, 
 import { tmpdir } from "node:os";
 import { dirname, extname, join, relative, resolve } from "node:path";
 import { parseArgs } from "node:util";
+import { apcaContrast, wcagContrast } from "./audit-runtime.mjs";
 
 const SKIP_DIRS = new Set([
   ".git",
@@ -19,13 +22,26 @@ const SKIP_DIRS = new Set([
   "build",
   ".next",
   ".nuxt",
+  ".svelte-kit",
+  ".turbo",
+  ".vite",
   "coverage",
   "audit-output",
   "draft",
   "__pycache__",
+  ".venv",
 ]);
 
 const CODE_EXTS = new Set([".css", ".scss", ".tsx", ".jsx", ".vue", ".svelte", ".html"]);
+
+const isFrameworkInternalVar = (v) =>
+  /^--(tw|radix|next|vite|sb|storybook|chakra|mui|mantine|antd|wp|_+)-?|^--[a-z]{1,2}_/i.test(v);
+
+const SPACING_RADIUS_CSS_PROP_RE =
+  /^(?:padding|margin|gap|row-gap|column-gap|border-radius)(?:-(?:top|right|bottom|left|inline|block|start|end)(?:-[a-z]+)?)?$/i;
+
+const SPACING_RADIUS_JS_PROP_RE =
+  /\b(?:padding|paddingTop|paddingRight|paddingBottom|paddingLeft|paddingInline|paddingBlock|margin|marginTop|marginRight|marginBottom|marginLeft|marginInline|marginBlock|gap|rowGap|columnGap|borderRadius)\s*:\s*(["'`]?)([^"'`,}\n]+)\1/g;
 
 function flattenTokens(source) {
   const tokens = [];
@@ -42,6 +58,7 @@ function flattenTokens(source) {
         value: hasValue ? node.$value ?? node.value : null,
         ref: hasRef ? node.$ref : null,
         description: node.$description ?? node.description ?? null,
+        rawExtensions: node.$extensions ?? node.extensions ?? null,
       });
       return;
     }
@@ -178,11 +195,124 @@ function parseHexToRgb(hex) {
 }
 
 function normalizeHexKey(hex) {
+  if (typeof hex !== "string" || !hex.startsWith("#")) return null;
   const s = hex.slice(1).toLowerCase();
+  if (!/^[0-9a-f]+$/.test(s)) return null;
   if (s.length === 3) return `#${s[0]}${s[0]}${s[1]}${s[1]}${s[2]}${s[2]}`;
   if (s.length === 6) return `#${s}`;
   if (s.length === 8) return `#${s.slice(0, 6)}`;
   return null;
+}
+
+function resolveColorRgb(val, byPath, stack = []) {
+  if (typeof val === "string") {
+    const target = aliasTarget(val);
+    if (target && byPath.has(target) && !stack.includes(target)) {
+      return resolveColorRgb(byPath.get(target).value, byPath, [...stack, target]);
+    }
+    const hex = normalizeHexKey(val.trim());
+    return hex ? parseHexToRgb(hex) : null;
+  }
+  if (val && typeof val === "object") {
+    if (val.$ref) {
+      const pt = pointerTarget(val.$ref, byPath);
+      if (pt && byPath.has(pt) && !stack.includes(pt)) {
+        return resolveColorRgb(byPath.get(pt).value, byPath, [...stack, pt]);
+      }
+    }
+    if (Array.isArray(val.components) && val.components.length >= 3) {
+      const scale = val.components.every((n) => typeof n === "number" && n >= 0 && n <= 1) ? 255 : 1;
+      return [
+        Math.round(val.components[0] * scale),
+        Math.round(val.components[1] * scale),
+        Math.round(val.components[2] * scale),
+      ];
+    }
+  }
+  return null;
+}
+
+export function analyzeDtcgModesAndContrast(source) {
+  const tokens = Array.isArray(source) ? source : flattenTokens(source);
+  const byPath = new Map(tokens.map((t) => [t.path, t]));
+  const lightKeys = new Set();
+  const darkKeys = new Set();
+  const resolvedColors = [];
+
+  for (const tok of tokens) {
+    const extModes = tok.rawExtensions?.mode && typeof tok.rawExtensions.mode === "object" ? tok.rawExtensions.mode : null;
+    if (extModes) {
+      if (Object.prototype.hasOwnProperty.call(extModes, "light")) {
+        lightKeys.add(tok.path);
+        const rgb = resolveColorRgb(extModes.light, byPath, [tok.path]);
+        if (rgb) resolvedColors.push({ path: tok.path, mode: "light", rgb });
+      }
+      if (Object.prototype.hasOwnProperty.call(extModes, "dark")) {
+        darkKeys.add(tok.path);
+        const rgb = resolveColorRgb(extModes.dark, byPath, [tok.path]);
+        if (rgb) resolvedColors.push({ path: tok.path, mode: "dark", rgb });
+      }
+      continue;
+    }
+
+    const parts = tok.path.split(".");
+    const lightIdx = parts.findIndex((p) => p.toLowerCase() === "light");
+    const darkIdx = parts.findIndex((p) => p.toLowerCase() === "dark");
+    let mode = "default";
+    if (lightIdx !== -1) {
+      mode = "light";
+      lightKeys.add([...parts.slice(0, lightIdx), ...parts.slice(lightIdx + 1)].join("."));
+    } else if (darkIdx !== -1) {
+      mode = "dark";
+      darkKeys.add([...parts.slice(0, darkIdx), ...parts.slice(darkIdx + 1)].join("."));
+    }
+
+    const rgb = resolveColorRgb(tok.value, byPath, [tok.path]);
+    if (rgb) resolvedColors.push({ path: tok.path, mode, rgb });
+  }
+
+  const missingInDark = [...lightKeys].filter((k) => !darkKeys.has(k)).sort();
+  const missingInLight = [...darkKeys].filter((k) => !lightKeys.has(k)).sort();
+  const hasModes = lightKeys.size > 0 || darkKeys.size > 0;
+
+  const fgRe = /(^|\.)(text|fg|foreground|ink|on-?[a-z]+)(\.|$)/i;
+  const bgRe = /(^|\.)(bg|background|surface|canvas|card|panel)(\.|$)/i;
+  const pairs = [];
+  for (const fg of resolvedColors) {
+    if (!fgRe.test(fg.path)) continue;
+    for (const bg of resolvedColors) {
+      if (!bgRe.test(bg.path) || fg.mode !== bg.mode) continue;
+      if (pairs.length >= 36) break;
+      const wcagRatio = Number(wcagContrast(fg.rgb, bg.rgb).toFixed(2));
+      const apcaLc = apcaContrast(fg.rgb, bg.rgb);
+      pairs.push({
+        mode: fg.mode,
+        fg: fg.path,
+        bg: bg.path,
+        wcagRatio,
+        apcaLc,
+        wcagPassAA: wcagRatio >= 4.5,
+        apcaPassBody: Math.abs(apcaLc) >= 60,
+      });
+    }
+    if (pairs.length >= 36) break;
+  }
+
+  return {
+    parity: {
+      hasModes,
+      lightCount: lightKeys.size,
+      darkCount: darkKeys.size,
+      missingInDark,
+      missingInLight,
+    },
+    contrast: {
+      pairsEvaluated: pairs.length,
+      wcagFailures: pairs.filter((p) => !p.wcagPassAA).length,
+      apcaWarnings: pairs.filter((p) => !p.apcaPassBody).length,
+      samplePairs: pairs.slice(0, 12),
+    },
+  };
 }
 
 /**
@@ -247,6 +377,28 @@ function findNearDuplicateHexClusters(hexSet) {
   return clusters;
 }
 
+function countOffGridSpacing(text, isStyleFile) {
+  let hits = 0;
+  const scanValue = (valStr) => {
+    for (const m of valStr.matchAll(/\b(\d+)px\b/g)) {
+      const n = parseInt(m[1], 10);
+      if (n > 4 && n < 200 && n % 4 !== 0 && n !== 6 && n !== 10 && n !== 14) {
+        hits++;
+      }
+    }
+  };
+  if (isStyleFile) {
+    for (const m of text.matchAll(/([a-zA-Z-]+)\s*:\s*([^;{}\n]+)/g)) {
+      if (SPACING_RADIUS_CSS_PROP_RE.test(m[1])) scanValue(m[2]);
+    }
+  } else {
+    for (const m of text.matchAll(SPACING_RADIUS_JS_PROP_RE)) {
+      scanValue(m[2]);
+    }
+  }
+  return hits;
+}
+
 export function scanTarget(targetPath) {
   const resolved = resolve(targetPath);
   if (!existsSync(resolved)) throw new Error(`Path not found: ${resolved}`);
@@ -268,7 +420,13 @@ export function scanTarget(targetPath) {
           continue;
         }
         const rel = relative(resolved, full).replace(/\\/g, "/");
-        if (/(\.test\.|\.spec\.|__tests__\/|(^|\/)tests?\/)/i.test(rel)) continue;
+        if (
+          /(\.test\.|\.spec\.|__tests__\/|(^|\/)tests?\/|\.min\.(css|js)$|\.bundle\.(css|js|mjs)$|(^|\/)(public\/assets|static\/chunks|vendor)\/)/i.test(
+            rel
+          )
+        ) {
+          continue;
+        }
         const lower = entry.name.toLowerCase();
         if (lower.endsWith(".json") && (/\.tokens\.json$/.test(lower) || /tokens?[^/]*\.json$/.test(lower))) {
           tokenJsonFiles.push(full);
@@ -296,6 +454,7 @@ export function scanTarget(targetPath) {
     }
   }
   const combinedDtcg = mergedTokens.length > 0 ? validateDtcgTokens(mergedTokens) : null;
+  const dtcgModes = mergedTokens.length > 0 ? analyzeDtcgModesAndContrast(mergedTokens) : null;
 
   // 2. Codebase Drift Scan
   const definedVars = new Set();
@@ -305,34 +464,40 @@ export function scanTarget(targetPath) {
   let hardcodedColorHits = 0;
   let offGridSpacingHits = 0;
   let importantCount = 0;
+  let twArbitraryColors = 0;
+  let twArbitrarySpacing = 0;
+  let twPrimitiveColors = 0;
   const hardcodedHexSet = new Set();
   const sampleViolations = [];
 
   for (const cf of codeFiles.sort()) {
     const raw = readFileSync(cf, "utf8");
     const rel = st.isDirectory() ? relative(resolved, cf) : cf;
+    // Skip single-line compiled/minified bundles even without .min. suffix
+    if (raw.length > 100_000 && raw.split("\n").length < 5) continue;
     const isStyle = cf.endsWith(".css") || cf.endsWith(".scss");
 
     for (const m of raw.matchAll(/--([a-zA-Z0-9_-]+)\s*:/g)) {
-      definedVars.add(`--${m[1]}`);
+      const name = `--${m[1]}`;
+      if (!isFrameworkInternalVar(name)) definedVars.add(name);
     }
     for (const m of raw.matchAll(/var\(\s*--([a-zA-Z0-9_-]+)/g)) {
       const name = `--${m[1]}`;
-      usedVars.add(name);
+      if (!isFrameworkInternalVar(name)) usedVars.add(name);
       if (/^--(gray|slate|zinc|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose|palette|raw)-?\d+/i.test(name)) {
         primitiveVarsUsed.add(name);
       }
     }
 
     const driftSurface = isStyle ? extractNonTokenDeclarations(raw) : raw;
-    // Strip custom-property declarations outside :root too
     const nonVarDecls = driftSurface.replace(/--[a-zA-Z0-9_-]+\s*:[^;}\n]+;?/g, "");
 
     const varRefsInFile = (nonVarDecls.match(/var\(\s*--[a-zA-Z0-9_-]+/g) || []).length;
     colorTokenRefs += varRefsInFile;
 
-    const hexMatches = nonVarDecls.match(/#[0-9a-fA-F]{3,8}\b/g) || [];
-    const fnColorMatches = nonVarDecls.match(/\b(?:rgba?|hsla?|oklch|lab|oklab)\([^)]+\)/gi) || [];
+    const nonTwHexSurface = nonVarDecls.replace(/-\[#[^\]\s]+\]/g, "");
+    const hexMatches = nonTwHexSurface.match(/#[0-9a-fA-F]{3,8}\b/g) || [];
+    const fnColorMatches = nonTwHexSurface.match(/\b(?:rgba?|hsla?|oklch|lab|oklab)\([^)]+\)/gi) || [];
     const fileColorDrift = hexMatches.length + fnColorMatches.length;
     hardcodedColorHits += fileColorDrift;
 
@@ -344,37 +509,39 @@ export function scanTarget(targetPath) {
     const impMatches = driftSurface.match(/!important\b/g) || [];
     importantCount += impMatches.length;
 
-    const pxMatches = nonVarDecls.match(/\b(\d+)px\b/g) || [];
-    let fileOffGrid = 0;
-    for (const pxStr of pxMatches) {
-      const n = parseInt(pxStr, 10);
-      if (n > 4 && n < 200 && n % 4 !== 0 && n !== 6 && n !== 10 && n !== 14) {
-        fileOffGrid++;
-      }
-    }
+    const fileOffGrid = countOffGridSpacing(nonVarDecls, isStyle);
     offGridSpacingHits += fileOffGrid;
 
-    if ((fileColorDrift > 0 || impMatches.length > 0 || fileOffGrid > 0) && sampleViolations.length < 25) {
+    const fileTwArbColors = (raw.match(/(?:^|[\s"'`])(?:bg|text|border|fill|stroke|ring|from|to|via|accent|outline|decoration)-\[#[^\]\s]+\]/g) || []).length;
+    const fileTwArbSpacing = (raw.match(/(?:^|[\s"'`])(?:p|px|py|pt|pr|pb|pl|ps|pe|m|mx|my|mt|mr|mb|ml|ms|me|gap|gap-x|gap-y|space-x|space-y|rounded(?:-[a-z]+)?)-\[\d+(?:\.\d+)?px\]/g) || []).length;
+    const fileTwPrimColors = (raw.match(/(?:^|[\s"'`])(?:bg|text|border|ring)-(?:slate|gray|zinc|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose)-(?:50|[1-9]00)\b/g) || []).length;
+    twArbitraryColors += fileTwArbColors;
+    twArbitrarySpacing += fileTwArbSpacing;
+    twPrimitiveColors += fileTwPrimColors;
+
+    if ((fileColorDrift > 0 || impMatches.length > 0 || fileOffGrid > 0 || fileTwArbColors > 0 || fileTwArbSpacing > 0) && sampleViolations.length < 25) {
       sampleViolations.push({
         file: rel,
         hardcodedColors: fileColorDrift,
         importantOverrides: impMatches.length,
         offGridPx: fileOffGrid,
+        tailwindArbitrary: fileTwArbColors + fileTwArbSpacing,
       });
     }
   }
 
   const orphanCssVars = [...definedVars].filter((v) => !usedVars.has(v)).sort();
   const nearDuplicateHexClusters = findNearDuplicateHexClusters(hardcodedHexSet);
-  const totalColorDecls = colorTokenRefs + hardcodedColorHits;
+  const totalColorDecls = colorTokenRefs + hardcodedColorHits + twArbitraryColors;
   const tokenCompliancePct = totalColorDecls > 0 ? Number(((colorTokenRefs / totalColorDecls) * 100).toFixed(1)) : null;
 
   return {
-    schema: "dsaf-tokens/1",
+    schema: "dsaf-tokens/2",
     generated: new Date().toISOString(),
     target: resolved,
     filesScanned: { tokenJson: tokenJsonFiles.length, uiAndStyle: codeFiles.length },
     dtcg: combinedDtcg,
+    dtcgModes,
     dtcgFiles: dtcgReports,
     drift: {
       definedCssVariables: definedVars.size,
@@ -388,6 +555,11 @@ export function scanTarget(targetPath) {
       nearDuplicateHexClusters,
       importantOverrides: importantCount,
       offGridSpacingHits,
+      tailwind: {
+        arbitraryColors: twArbitraryColors,
+        arbitrarySpacing: twArbitrarySpacing,
+        primitiveColors: twPrimitiveColors,
+      },
       sampleViolations,
     },
   };
@@ -414,22 +586,50 @@ function runSelfTest() {
     assert.ok(broken.blockingIssues.some((i) => i.type === "circular_reference"), "Must detect circular ref");
     assert.ok(broken.blockingIssues.some((i) => i.type === "unresolved_reference"), "Must detect unresolved ref");
 
-    // 3. Drifted CSS scanner (:root tokens excluded, duplicate hex & !important & orphan var caught)
+    // 3. Light/Dark DTCG parity + token-level WCAG & APCA contrast
+    const themed = analyzeDtcgModesAndContrast({
+      light: {
+        surface: { default: { $type: "color", $value: "#ffffff" } },
+        text: {
+          primary: { $type: "color", $value: "#111827" },
+          muted: { $type: "color", $value: "#a3a3a3" },
+        },
+      },
+      dark: {
+        surface: { default: { $type: "color", $value: "#0b0f19" } },
+        text: { primary: { $type: "color", $value: "#f8fafc" } },
+      },
+    });
+    assert.equal(themed.parity.hasModes, true);
+    assert.deepEqual(themed.parity.missingInDark, ["text.muted"]);
+    assert.ok(themed.contrast.pairsEvaluated >= 3);
+    assert.equal(themed.contrast.wcagFailures, 1, "Must fail #a3a3a3 on #ffffff");
+
+    // 4. Scoped CSS + Tailwind drift (excludes --tw-*, max-width/font-size, minified public/assets)
     const appDir = join(scratch, "app");
-    mkdirSync(appDir, { recursive: true });
+    mkdirSync(join(appDir, "public/assets"), { recursive: true });
+    writeFileSync(join(appDir, "public/assets/app.min.css"), ".x{color:#111;padding:13px;}");
     writeFileSync(
       join(appDir, "styles.css"),
-      `:root { --brand: #1d4ed8; --unused-orphan: #999999; }
-       .btn { color: var(--brand); background: #2563eb; border-color: #2461e8; padding: 13px !important; }`
+      `:root { --brand: #1d4ed8; --unused-orphan: #999999; --tw-ring-color: rgba(0,0,0,.5); --radix-open: 1; }
+       .btn { color: var(--brand); background: #2563eb; border-color: #2461e8; max-width: 1140px; font-size: 13px; padding: 13px !important; }`
+    );
+    writeFileSync(
+      join(appDir, "Card.tsx"),
+      `export const Card = () => <div className="bg-[#ef4444] p-[13px] text-slate-500" style={{ margin: "17px" }} />;`
     );
     const drift = scanTarget(appDir);
-    assert.equal(drift.drift.orphanCssVariableCount, 1, "Must detect --unused-orphan");
+    assert.equal(drift.filesScanned.uiAndStyle, 2, "Must skip public/assets/*.min.css");
+    assert.equal(drift.drift.orphanCssVariableCount, 1, "Must detect only --unused-orphan, ignoring --tw-* and --radix-*");
     assert.equal(drift.drift.importantOverrides, 1, "Must detect !important");
     assert.equal(drift.drift.hardcodedColorHits, 2, "Must exclude :root and count only non-token colors");
-    assert.equal(drift.drift.offGridSpacingHits, 1, "Must detect 13px off-grid spacing");
+    assert.equal(drift.drift.offGridSpacingHits, 2, "Must count padding: 13px + margin: 17px, NOT max-width/font-size");
     assert.equal(drift.drift.nearDuplicateHexClusters.length, 1, "Must cluster #2563eb and #2461e8");
+    assert.equal(drift.drift.tailwind.arbitraryColors, 1);
+    assert.equal(drift.drift.tailwind.arbitrarySpacing, 1);
+    assert.equal(drift.drift.tailwind.primitiveColors, 1);
 
-    console.log("AUDIT_TOKENS_SELF_TEST_PASSED (DTCG refs + cycles + CSS drift + near-duplicate hex + orphan vars)");
+    console.log("AUDIT_TOKENS_SELF_TEST_PASSED (DTCG refs/modes/contrast + scoped CSS/Tailwind drift)");
     return 0;
   } finally {
     rmSync(scratch, { recursive: true, force: true });
@@ -473,17 +673,23 @@ function main() {
     console.log(`Target: ${result.target}`);
     console.log(`Files scanned: tokenJson=${result.filesScanned.tokenJson}, ui/style=${result.filesScanned.uiAndStyle}`);
     if (result.dtcg) {
+      const m = result.dtcgModes;
       console.log(
         `DTCG Tokens: ${result.dtcg.tokenCount} (typed=${result.dtcg.typedCount}, aliases=${result.dtcg.aliasCount}, component=${result.dtcg.componentScopedCount}, modernColor=${result.dtcg.modernColorCount}, blockingIssues=${result.dtcg.blockingIssues.length})`
       );
+      if (m) {
+        console.log(
+          `DTCG Modes/Contrast: hasModes=${m.parity.hasModes} (L=${m.parity.lightCount}/D=${m.parity.darkCount}, missD=${m.parity.missingInDark.length}, missL=${m.parity.missingInLight.length}) | pairs=${m.contrast.pairsEvaluated} wcagFail=${m.contrast.wcagFailures} apcaWarn=${m.contrast.apcaWarnings}`
+        );
+      }
     } else {
       console.log("DTCG Tokens: none detected");
     }
     console.log(
-      `CSS Drift: compliance=${d.tokenCompliancePct ?? "N/A"}% (varRefs=${d.colorTokenRefs} vs hardcoded=${d.hardcodedColorHits}) | orphans=${d.orphanCssVariableCount} | !important=${d.importantOverrides} | offGridPx=${d.offGridSpacingHits} | nearDupHexClusters=${d.nearDuplicateHexClusters.length}`
+      `CSS Drift: compliance=${d.tokenCompliancePct ?? "N/A"}% (varRefs=${d.colorTokenRefs} vs hardcoded=${d.hardcodedColorHits}) | orphans=${d.orphanCssVariableCount} | !important=${d.importantOverrides} | offGridPx=${d.offGridSpacingHits} | nearDupHexClusters=${d.nearDuplicateHexClusters.length} | twArbColor=${d.tailwind.arbitraryColors} twArbPx=${d.tailwind.arbitrarySpacing} twPrim=${d.tailwind.primitiveColors}`
     );
   }
 }
 
-const isEntry = process.argv[1] && resolve(process.argv[1]) === new URL(import.meta.url).pathname;
+const isEntry = process.argv[1] && resolve(process.argv[1]) === decodeURIComponent(new URL(import.meta.url).pathname);
 if (isEntry) main();

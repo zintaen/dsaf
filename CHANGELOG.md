@@ -4,6 +4,25 @@ All notable changes to **DSAF (Design System Audit Framework)** will be document
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.0] - 2026-11-26
+
+### Added
+- **Single-Entry CLI (`bin/dsaf.mjs`):** Exposes `dsaf <recon|tokens|runtime|scorecard|diff|guardrails|integrity|verify|mine|sync|version|help>` via `"bin": { "dsaf": "./bin/dsaf.mjs" }` in `package.json`.
+- **Runnable Guardrails Generator (`skill/scripts/generate-guardrails.mjs`):** Implements `+SG` output generation (`check-design-discipline.mjs`, `dsaf-regression-gate.yml`, and `AGENTS-dsaf-rules.md`) with zero external runtime dependencies and self-tests.
+- **Runtime Keyboard & Showcase Tooling (`skill/scripts/audit-runtime.mjs`):** Adds `keyboardMap` (`tabbableCount`, `tabindex > 0`, unnamed interactive control summary), `--storybook` `prefers-reduced-motion: reduce` checks, and `--screenshot <png> [--pins]` visual capture.
+- **DTCG Modes & Tailwind Drift Metrics (`skill/scripts/audit-tokens.mjs`):** Adds Light/Dark DTCG mode parity, token-pair WCAG 2.2 AA & APCA-W3 `Lc` contrast checking, and Tailwind arbitrary color/spacing & primitive palette metrics.
+- **Playwright CI & Calibration Corpus:** Added headless Chromium CI verification, calibration `.scores.json` baselines in `evolve/fixtures/calibration/`, weekly evolution miner workflow (`evolve-calibration.yml`), canonical preview showcase screenshot, and sample Mode C report (`examples/sample-mode-c-report.md`).
+- **Explicit 3-Vertex Figma MCP / Code Connect SOP (`skill/references/mode-conformance.md`):** Formalizes Designed <-> Defined <-> Shipped triangulation and honest fallback degradation when Figma inputs are absent.
+
+### Changed
+- **Reduced Real-World False Positives (`recon.mjs`, `audit-tokens.mjs`):**
+  - Tightened `Mode C` detection so local CSS custom properties without DS packages, token files, or `@theme` do not misclassify standalone apps (`Mode P`).
+  - Excluded framework internal CSS variables (`--tw-*`, `--radix-*`, etc.), minified assets, and non-spacing `px` literals (`max-width`, `font-size`) from orphan and `offGridSpacingHits` counts.
+- Upgraded `validate-isolation.mjs` with dynamic version parity (`package.json`, `SKILL.md`, `evolve/SKILL.md`, `compute-scorecard.mjs`), CLI binary check, and host `/Users/` / `file:///` leak guards.
+
+### Fixed
+- Replaced an accidental local filesystem link in `README.md` with a relative repository link.
+
 ## [0.0.1] - 2026-11-26
 
 ### Added

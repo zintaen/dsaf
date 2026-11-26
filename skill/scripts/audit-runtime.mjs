@@ -1,15 +1,15 @@
 #!/usr/bin/env node
 /**
- * DSAF v0.0.1 — Runtime Browser, APCA-W3 & N-of-1 Verifier.
+ * DSAF v0.1.0 — Runtime Browser, APCA-W3, Keyboard, Screenshot & N-of-1 Verifier.
  * Pure-JS self-tests run with zero dependencies. Live browser/draft audits lazily
  * require Playwright (`playwright` or `@playwright/test`) and Chromium.
  */
 
 import assert from "node:assert/strict";
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
-import { basename, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 const require = createRequire(import.meta.url);
@@ -87,6 +87,22 @@ export function clusterSignatures(items) {
   return { totalRendered: items.length, distinctSignatures: clusters.length, clusters: clusters.slice(0, 10) };
 }
 
+export function summarizeKeyboardAccessibility(controls) {
+  const positiveTabindex = controls
+    .filter((c) => Number(c.tabindex) > 0)
+    .map((c) => ({ tag: c.tag, label: c.label, tabindex: c.tabindex }));
+  const unnamedInteractive = controls
+    .filter((c) => !c.accessibleName)
+    .map((c) => ({ tag: c.tag, role: c.role || c.tag }));
+  return {
+    tabbableCount: controls.length,
+    positiveTabindexCount: positiveTabindex.length,
+    positiveTabindexSample: positiveTabindex.slice(0, 8),
+    unnamedInteractiveCount: unnamedInteractive.length,
+    unnamedSample: unnamedInteractive.slice(0, 8),
+  };
+}
+
 function parseArgs(argv) {
   const out = {
     targets: [],
@@ -96,6 +112,8 @@ function parseArgs(argv) {
     wiringAfter: null,
     storybook: null,
     maxStories: 8,
+    screenshot: null,
+    pins: false,
     live: false,
     skipShellCheck: false,
     json: false,
@@ -110,6 +128,8 @@ function parseArgs(argv) {
     else if (a === "--wiring-after") out.wiringAfter = argv[++i];
     else if (a === "--storybook") out.storybook = argv[++i];
     else if (a === "--max-stories") out.maxStories = Number(argv[++i]) || 8;
+    else if (a === "--screenshot") out.screenshot = argv[++i];
+    else if (a === "--pins") out.pins = true;
     else if (a === "--live") out.live = true;
     else if (a === "--skip-shell-check") out.skipShellCheck = true;
     else if (a === "--json") out.json = true;
@@ -657,6 +677,46 @@ async function auditGeometryApcaInventoryAndSlop(page, isMobile) {
       }
     }
 
+    const getAccName = (el) => {
+      const aria = el.getAttribute("aria-label") || "";
+      if (aria.trim()) return aria.trim();
+      const labelledBy = el.getAttribute("aria-labelledby");
+      if (labelledBy) {
+        const t = labelledBy
+          .split(/\s+/)
+          .map((id) => document.getElementById(id)?.textContent || "")
+          .join(" ")
+          .trim();
+        if (t) return t;
+      }
+      if (el.id) {
+        const lbl = document.querySelector(`label[for="${CSS.escape(el.id)}"]`);
+        if (lbl && (lbl.textContent || "").trim()) return lbl.textContent.trim();
+      }
+      const wrapLabel = el.closest("label");
+      if (wrapLabel && (wrapLabel.textContent || "").trim()) return wrapLabel.textContent.trim();
+      const text = (el.textContent || el.value || el.getAttribute("placeholder") || el.getAttribute("title") || "").trim();
+      if (text) return text;
+      const img = el.querySelector("img[alt]");
+      if (img && img.getAttribute("alt")?.trim()) return img.getAttribute("alt").trim();
+      return "";
+    };
+
+    const focusableControls = [];
+    for (const el of document.querySelectorAll(
+      'a[href], button:not([disabled]), input:not([disabled]):not([type="hidden"]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"]), [role="button"], [role="tab"]'
+    )) {
+      if (!visible(el) || el.getAttribute("tabindex") === "-1" || el.hasAttribute("disabled")) continue;
+      const acc = getAccName(el);
+      focusableControls.push({
+        tag: el.tagName.toLowerCase(),
+        role: el.getAttribute("role") || "",
+        tabindex: parseInt(el.getAttribute("tabindex") || "0", 10) || 0,
+        accessibleName: acc.slice(0, 32),
+        label: (acc || el.tagName).slice(0, 24),
+      });
+    }
+
     return {
       docOverflow,
       bodyOverflow,
@@ -668,13 +728,14 @@ async function auditGeometryApcaInventoryAndSlop(page, isMobile) {
       badTransitions,
       hiddenAtRest,
       inlineHeightMismatches,
+      focusableControls,
       buttonShapes,
       inputShapes,
       textSamples,
     };
   }, isMobile);
 
-  // Compute real APCA-W3 Lc and N-of-1 clusters cleanly in Node
+  // Compute real APCA-W3 Lc, keyboard map, and N-of-1 clusters cleanly in Node
   let minApcaBodyLc = null;
   let minApcaLargeLc = null;
   const apcaLowWarnings = [];
@@ -700,6 +761,7 @@ async function auditGeometryApcaInventoryAndSlop(page, isMobile) {
     badTransitions: raw.badTransitions,
     hiddenAtRest: raw.hiddenAtRest,
     inlineHeightMismatches: raw.inlineHeightMismatches,
+    keyboardMap: summarizeKeyboardAccessibility(raw.focusableControls),
     apca: { minBodyLc: minApcaBodyLc, minLargeLc: minApcaLargeLc, lowWarnings: apcaLowWarnings.slice(0, 8) },
     componentInventory: {
       buttons: clusterSignatures(raw.buttonShapes),
@@ -769,14 +831,25 @@ function runSelfTest() {
   assert.equal(inv.totalRendered, 3);
   assert.equal(inv.distinctSignatures, 2, "Must cluster 40px & 41px into 2 signatures");
 
-  console.log("AUDIT_RUNTIME_SELF_TEST_PASSED (APCA-W3 0.1.9 + WCAG 2.2 + N-of-1 signature clustering)");
+  const kbd = summarizeKeyboardAccessibility([
+    { tag: "button", role: "button", tabindex: 0, accessibleName: "Save", label: "Save" },
+    { tag: "input", role: "", tabindex: 2, accessibleName: "Search", label: "Search" },
+    { tag: "button", role: "button", tabindex: 0, accessibleName: "", label: "BUTTON" },
+  ]);
+  assert.equal(kbd.tabbableCount, 3);
+  assert.equal(kbd.positiveTabindexCount, 1);
+  assert.equal(kbd.unnamedInteractiveCount, 1);
+
+  console.log("AUDIT_RUNTIME_SELF_TEST_PASSED (APCA-W3 0.1.9 + WCAG 2.2 + keyboard map + N-of-1 clustering)");
   return 0;
 }
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   if (args.help) {
-    console.log("Usage: node skill/scripts/audit-runtime.mjs <draft.html|draft-dir|url> [--live] [--storybook <url|index.json>] [--wiring-before a --wiring-after b] [--axe path] [--skip-shell-check] [--json] [--self-test]");
+    console.log(
+      "Usage: node skill/scripts/audit-runtime.mjs <draft.html|draft-dir|url> [--live] [--storybook <url|index.json>] [--screenshot <out.png> [--pins]] [--wiring-before a --wiring-after b] [--axe path] [--skip-shell-check] [--json] [--self-test]"
+    );
     process.exit(0);
   }
   if (args.selfTest) process.exit(runSelfTest());
@@ -794,7 +867,8 @@ async function main() {
   const { chromium } = loadPlaywright();
   const axePath = findAxe(args.axePath);
   const browser = await launchChromium(chromium, args.executablePath);
-  const report = { schema: "dsaf-runtime/1", axeLoaded: Boolean(axePath), files: [], wiringDiff: null, allPassed: true };
+  const report = { schema: "dsaf-runtime/2", axeLoaded: Boolean(axePath), files: [], wiringDiff: null, allPassed: true };
+  let screenshotSaved = false;
 
   try {
     const urlsOrFiles = collectHtmlFiles(targets);
@@ -808,7 +882,17 @@ async function main() {
 
     for (const target of urlsOrFiles) {
       const pageErrors = [];
-      const fileRes = { file: /^https?:\/\//i.test(target) ? target : basename(target), pageErrors, webVitals: null, shell: null, pixelBehind: [], checks: [], passed: true };
+      const fileRes = {
+        file: /^https?:\/\//i.test(target) ? target : basename(target),
+        pageErrors,
+        webVitals: null,
+        shell: null,
+        screenshot: null,
+        reducedMotion: null,
+        pixelBehind: [],
+        checks: [],
+        passed: true,
+      };
       const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
       page.on("pageerror", (err) => pageErrors.push(err.message || String(err)));
       await page.goto(toUrl(target), { waitUntil: "networkidle" });
@@ -820,6 +904,21 @@ async function main() {
           fileRes.passed = false;
           report.allPassed = false;
         }
+      }
+
+      if (args.screenshot && !screenshotSaved) {
+        await page.setViewportSize({ width: 1440, height: 900 });
+        const pinsBtn = args.pins ? await page.$("#uxs-pins-btn") : null;
+        if (pinsBtn) {
+          await pinsBtn.click();
+          await page.waitForTimeout(150);
+        }
+        const outShot = resolve(args.screenshot);
+        mkdirSync(dirname(outShot), { recursive: true });
+        await page.screenshot({ path: outShot, fullPage: false });
+        fileRes.screenshot = outShot;
+        screenshotSaved = true;
+        if (pinsBtn) await pinsBtn.click();
       }
 
       fileRes.pixelBehind = await probePixelBehindElements(page);
@@ -868,6 +967,25 @@ async function main() {
         }
         fileRes.checks.push({ state: m.name, passed: ok, ...geom, hoverFails, axeViolations });
       }
+
+      if (args.storybook) {
+        await page.emulateMedia({ reducedMotion: "reduce" });
+        await page.waitForTimeout(100);
+        fileRes.reducedMotion = await page.evaluate(() => {
+          const matches = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+          const unguarded = [];
+          for (const el of document.querySelectorAll("*")) {
+            const cs = getComputedStyle(el);
+            const dur = Math.max(parseFloat(cs.transitionDuration) || 0, parseFloat(cs.animationDuration) || 0);
+            if (dur > 0.25 && cs.display !== "none") {
+              unguarded.push({ tag: el.tagName.toLowerCase(), dur });
+            }
+          }
+          return { mediaMatches: matches, unguardedAnimatedCount: unguarded.length };
+        });
+        await page.emulateMedia({ reducedMotion: "no-preference" });
+      }
+
       if (pageErrors.length > 0) {
         fileRes.passed = false;
         report.allPassed = false;
@@ -894,12 +1012,14 @@ async function main() {
     for (const f of report.files) {
       console.log(`FILE ${f.file}: ${f.passed ? "PASS" : "FAIL"} (pageErrors=${f.pageErrors.length}, LCP=${f.webVitals?.lcpMs ?? "n/a"}ms, CLS=${f.webVitals?.cls ?? 0})`);
       if (f.shell) console.log(`  shell: ${f.shell.failures.length === 0 ? "PASS" : "FAIL " + JSON.stringify(f.shell.failures)}`);
+      if (f.screenshot) console.log(`  screenshot: ${f.screenshot}`);
+      if (f.reducedMotion) console.log(`  reducedMotion: mediaMatches=${f.reducedMotion.mediaMatches} unguarded=${f.reducedMotion.unguardedAnimatedCount}`);
       for (const pb of f.pixelBehind) {
         console.log(`  pixelBehind ${pb.label}: ${pb.ratio}:1 (min ${pb.threshold}:1, Lc=${pb.apcaLc}) ${pb.pass ? "PASS" : "FAIL"}`);
       }
       for (const c of f.checks) {
         console.log(
-          `  [${c.state}] ${c.passed ? "PASS" : "FAIL"} | overflow=${c.docOverflow}/${c.bodyOverflow} child=${c.childOverflows.length} small44=${c.smallTargets.length} clip=${c.clippedTargets.length} borders=${c.borderFails.length} hover=${c.hoverFails.length} leaks=${c.focusLeaks.length} slop=${c.badTransitions.length + c.hiddenAtRest.length + c.inlineHeightMismatches.length} axe=${c.axeViolations.length} | apcaBodyMin=${c.apca.minBodyLc ?? "n/a"} btnSigs=${c.componentInventory.buttons.distinctSignatures}`
+          `  [${c.state}] ${c.passed ? "PASS" : "FAIL"} | overflow=${c.docOverflow}/${c.bodyOverflow} child=${c.childOverflows.length} small44=${c.smallTargets.length} clip=${c.clippedTargets.length} borders=${c.borderFails.length} hover=${c.hoverFails.length} leaks=${c.focusLeaks.length} tab=${c.keyboardMap.tabbableCount}(+${c.keyboardMap.positiveTabindexCount}/un=${c.keyboardMap.unnamedInteractiveCount}) slop=${c.badTransitions.length + c.hiddenAtRest.length + c.inlineHeightMismatches.length} axe=${c.axeViolations.length} | apcaBodyMin=${c.apca.minBodyLc ?? "n/a"} btnSigs=${c.componentInventory.buttons.distinctSignatures}`
         );
       }
     }
@@ -911,7 +1031,7 @@ async function main() {
   process.exit(report.allPassed ? 0 : 1);
 }
 
-const isEntry = process.argv[1] && resolve(process.argv[1]) === new URL(import.meta.url).pathname;
+const isEntry = process.argv[1] && resolve(process.argv[1]) === decodeURIComponent(new URL(import.meta.url).pathname);
 if (isEntry) {
   main().catch((err) => {
     console.error("ERROR:", err.message || err);

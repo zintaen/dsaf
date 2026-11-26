@@ -1,4 +1,4 @@
-<!-- Version 0.0.1 (2026-11-26). English canonical specification for DSAF Visual UI, Tokens & Design-System Upgrade Audits (Mode P & Mode C Round 2). Automatically mirror the user's conversation language across reports, UI copy, and previews unless explicitly overridden. -->
+<!-- Version 0.1.0 (2026-11-26). English canonical specification for DSAF Visual UI, Tokens & Design-System Upgrade Audits (Mode P & Mode C Round 2). Automatically mirror the user's conversation language across reports, UI copy, and previews unless explicitly overridden. -->
 
 # Visual Design, Layout, 3-Tier Design System & Craft Audit with a Weighted Rubric
 
@@ -76,7 +76,7 @@ Use exact `Pts/Step` values from `compute-scorecard.mjs` so Track A fixes reconc
   1. File-level CSS/token/component Implementation Handoff Spec.
   2. **Kept Wiring Inventory** (`a[href]`, `form`, `[name]`, `[id]`, `[data-testid]`).
   3. **Repo Lint & Test Contract Scan** (existing design linters, unit tests, E2E selectors).
-  4. **Executable Guardrails** (`(+SG)` or `Mode C`): concrete Stylelint/custom-check rules banning rogue hex/off-grid px/`!important`, `audit-diff.mjs` CI gate, and `AGENTS.md` token discipline rules.
+  4. **Executable Guardrails (`+SG` or `Mode C`):** Run `node ./scripts/generate-guardrails.mjs --out .dsaf-guardrails --stack <css|tailwind|react> --mode <P|C>` to emit `check-design-discipline.mjs`, `dsaf-regression-gate.yml`, and `AGENTS-dsaf-rules.md`.
 
 ### Step 9. Pre-Delivery Self-Check & Programmatic Reconciliation
 Recompute the final contrast/APCA tables cleanly from final `draft/` computed output AFTER the last CSS edit, verify all cited `.png`/`.json`/`.html` paths exist on disk, ensure 100% Finding `<->` Scorecard `<->` Roadmap delta reconciliation, and verify 100% of `draft/*.html` passed `audit-runtime.mjs`.

@@ -1,0 +1,598 @@
+{
+  "schema": "dsaf-scores/2",
+  "engine_version": "0.1.0",
+  "generated": "2026-11-26T11:13:40.440Z",
+  "type": "system",
+  "profile": "ds_core",
+  "weights": {
+    "P1": 30,
+    "P2": 30,
+    "P3": 20,
+    "P4": 20
+  },
+  "phases": {
+    "before": {
+      "pillars": [
+        {
+          "id": "P1",
+          "name": "Foundations & Token Architecture",
+          "weight": 30,
+          "scored_criteria": 3,
+          "total_criteria": 3,
+          "raw_sum": 5,
+          "max_raw": 6,
+          "pct": 83.33,
+          "weighted_points": 25,
+          "pts_per_step": 5
+        },
+        {
+          "id": "P2",
+          "name": "Component Architecture & Accessibility",
+          "weight": 30,
+          "scored_criteria": 3,
+          "total_criteria": 3,
+          "raw_sum": 4,
+          "max_raw": 6,
+          "pct": 66.67,
+          "weighted_points": 20,
+          "pts_per_step": 5
+        },
+        {
+          "id": "P3",
+          "name": "Product Conformance & Drift",
+          "weight": 20,
+          "scored_criteria": 3,
+          "total_criteria": 3,
+          "raw_sum": 4,
+          "max_raw": 6,
+          "pct": 66.67,
+          "weighted_points": 13.33,
+          "pts_per_step": 3.33
+        },
+        {
+          "id": "P4",
+          "name": "Governance, DX & AI Readiness",
+          "weight": 20,
+          "scored_criteria": 2,
+          "total_criteria": 3,
+          "raw_sum": 3,
+          "max_raw": 4,
+          "pct": 75,
+          "weighted_points": 15,
+          "pts_per_step": 5
+        }
+      ],
+      "scored_weight_sum": 100,
+      "total": 73.33,
+      "hard_floor_blockers": [],
+      "grade": "L3 — Built & Shipped",
+      "criterion_unit_points": {
+        "DS01": {
+          "exact_step": 5,
+          "pts_per_step": 5,
+          "max_pts": 10
+        },
+        "DS02": {
+          "exact_step": 5,
+          "pts_per_step": 5,
+          "max_pts": 10
+        },
+        "DS03": {
+          "exact_step": 5,
+          "pts_per_step": 5,
+          "max_pts": 10
+        },
+        "DS04": {
+          "exact_step": 5,
+          "pts_per_step": 5,
+          "max_pts": 10
+        },
+        "DS05": {
+          "exact_step": 5,
+          "pts_per_step": 5,
+          "max_pts": 10
+        },
+        "DS06": {
+          "exact_step": 5,
+          "pts_per_step": 5,
+          "max_pts": 10
+        },
+        "DS07": {
+          "exact_step": 3.3333333333333335,
+          "pts_per_step": 3.33,
+          "max_pts": 6.67
+        },
+        "DS08": {
+          "exact_step": 3.3333333333333335,
+          "pts_per_step": 3.33,
+          "max_pts": 6.67
+        },
+        "DS09": {
+          "exact_step": 3.3333333333333335,
+          "pts_per_step": 3.33,
+          "max_pts": 6.67
+        },
+        "DS10": {
+          "exact_step": 5,
+          "pts_per_step": 5,
+          "max_pts": 10
+        },
+        "DS11": {
+          "exact_step": 5,
+          "pts_per_step": 5,
+          "max_pts": 10
+        },
+        "DS12": {
+          "exact_step": null,
+          "pts_per_step": null,
+          "max_pts": null
+        }
+      }
+    },
+    "after_track_a": {
+      "pillars": [
+        {
+          "id": "P1",
+          "name": "Foundations & Token Architecture",
+          "weight": 30,
+          "scored_criteria": 3,
+          "total_criteria": 3,
+          "raw_sum": 6,
+          "max_raw": 6,
+          "pct": 100,
+          "weighted_points": 30,
+          "pts_per_step": 5
+        },
+        {
+          "id": "P2",
+          "name": "Component Architecture & Accessibility",
+          "weight": 30,
+          "scored_criteria": 3,
+          "total_criteria": 3,
+          "raw_sum": 5,
+          "max_raw": 6,
+          "pct": 83.33,
+          "weighted_points": 25,
+          "pts_per_step": 5
+        },
+        {
+          "id": "P3",
+          "name": "Product Conformance & Drift",
+          "weight": 20,
+          "scored_criteria": 3,
+          "total_criteria": 3,
+          "raw_sum": 4,
+          "max_raw": 6,
+          "pct": 66.67,
+          "weighted_points": 13.33,
+          "pts_per_step": 3.33
+        },
+        {
+          "id": "P4",
+          "name": "Governance, DX & AI Readiness",
+          "weight": 20,
+          "scored_criteria": 2,
+          "total_criteria": 3,
+          "raw_sum": 4,
+          "max_raw": 4,
+          "pct": 100,
+          "weighted_points": 20,
+          "pts_per_step": 5
+        }
+      ],
+      "scored_weight_sum": 100,
+      "total": 88.33,
+      "hard_floor_blockers": [],
+      "grade": "L4 — Measured & Enforced (Caps at L3 for unverified self-audits)",
+      "criterion_unit_points": {
+        "DS01": {
+          "exact_step": 5,
+          "pts_per_step": 5,
+          "max_pts": 10
+        },
+        "DS02": {
+          "exact_step": 5,
+          "pts_per_step": 5,
+          "max_pts": 10
+        },
+        "DS03": {
+          "exact_step": 5,
+          "pts_per_step": 5,
+          "max_pts": 10
+        },
+        "DS04": {
+          "exact_step": 5,
+          "pts_per_step": 5,
+          "max_pts": 10
+        },
+        "DS05": {
+          "exact_step": 5,
+          "pts_per_step": 5,
+          "max_pts": 10
+        },
+        "DS06": {
+          "exact_step": 5,
+          "pts_per_step": 5,
+          "max_pts": 10
+        },
+        "DS07": {
+          "exact_step": 3.3333333333333335,
+          "pts_per_step": 3.33,
+          "max_pts": 6.67
+        },
+        "DS08": {
+          "exact_step": 3.3333333333333335,
+          "pts_per_step": 3.33,
+          "max_pts": 6.67
+        },
+        "DS09": {
+          "exact_step": 3.3333333333333335,
+          "pts_per_step": 3.33,
+          "max_pts": 6.67
+        },
+        "DS10": {
+          "exact_step": 5,
+          "pts_per_step": 5,
+          "max_pts": 10
+        },
+        "DS11": {
+          "exact_step": 5,
+          "pts_per_step": 5,
+          "max_pts": 10
+        },
+        "DS12": {
+          "exact_step": null,
+          "pts_per_step": null,
+          "max_pts": null
+        }
+      }
+    }
+  },
+  "deltas": {
+    "after_track_a": 15
+  },
+  "criterion_deltas": {
+    "after_track_a": {
+      "DS01": 0,
+      "DS02": 0,
+      "DS03": 5,
+      "DS04": 0,
+      "DS05": 0,
+      "DS06": 5,
+      "DS07": 0,
+      "DS08": 0,
+      "DS09": 0,
+      "DS10": 0,
+      "DS11": 5,
+      "DS12": null
+    }
+  },
+  "criteria": {
+    "before": {
+      "DS01": {
+        "score": 2,
+        "findings": [],
+        "reason": "",
+        "secondary_impact": false,
+        "volatility": "FIXED",
+        "bands": {
+          "prose": 25,
+          "artifacts": 30,
+          "verification": 15
+        },
+        "check_type": null
+      },
+      "DS02": {
+        "score": 2,
+        "findings": [],
+        "reason": "",
+        "secondary_impact": false,
+        "volatility": "DYNAMIC",
+        "bands": {
+          "prose": 20,
+          "artifacts": 35,
+          "verification": 15
+        },
+        "check_type": null
+      },
+      "DS03": {
+        "score": 1,
+        "findings": [
+          "SYS-01"
+        ],
+        "reason": "",
+        "secondary_impact": false,
+        "volatility": "DYNAMIC",
+        "bands": {
+          "prose": 25,
+          "artifacts": 20,
+          "verification": 5
+        },
+        "check_type": null
+      },
+      "DS04": {
+        "score": 2,
+        "findings": [],
+        "reason": "",
+        "secondary_impact": false,
+        "volatility": "FIXED",
+        "bands": {
+          "prose": 20,
+          "artifacts": 35,
+          "verification": 15
+        },
+        "check_type": null
+      },
+      "DS05": {
+        "score": 1,
+        "findings": [
+          "SYS-02"
+        ],
+        "reason": "",
+        "secondary_impact": false,
+        "volatility": "FIXED",
+        "bands": {
+          "prose": 20,
+          "artifacts": 25,
+          "verification": 5
+        },
+        "check_type": null
+      },
+      "DS06": {
+        "score": 1,
+        "findings": [
+          "SYS-03"
+        ],
+        "reason": "",
+        "secondary_impact": false,
+        "volatility": "FIXED",
+        "bands": {
+          "prose": 20,
+          "artifacts": 20,
+          "verification": 0
+        },
+        "check_type": null
+      },
+      "DS07": {
+        "score": 1,
+        "findings": [
+          "SYS-04"
+        ],
+        "reason": "",
+        "secondary_impact": false,
+        "volatility": "FIXED",
+        "bands": {
+          "prose": 30,
+          "artifacts": 10,
+          "verification": 0
+        },
+        "check_type": null
+      },
+      "DS08": {
+        "score": 1,
+        "findings": [
+          "SYS-05"
+        ],
+        "reason": "",
+        "secondary_impact": false,
+        "volatility": "FIXED",
+        "bands": {
+          "prose": 20,
+          "artifacts": 15,
+          "verification": 5
+        },
+        "check_type": null
+      },
+      "DS09": {
+        "score": 2,
+        "findings": [],
+        "reason": "",
+        "secondary_impact": false,
+        "volatility": "FIXED",
+        "bands": {
+          "prose": 20,
+          "artifacts": 30,
+          "verification": 15
+        },
+        "check_type": null
+      },
+      "DS10": {
+        "score": 2,
+        "findings": [],
+        "reason": "",
+        "secondary_impact": false,
+        "volatility": "FIXED",
+        "bands": {
+          "prose": 30,
+          "artifacts": 30,
+          "verification": 10
+        },
+        "check_type": null
+      },
+      "DS11": {
+        "score": 1,
+        "findings": [
+          "SYS-06"
+        ],
+        "reason": "",
+        "secondary_impact": false,
+        "volatility": "FIXED",
+        "bands": {
+          "prose": 20,
+          "artifacts": 15,
+          "verification": 0
+        },
+        "check_type": null
+      },
+      "DS12": {
+        "score": "N/A",
+        "findings": [],
+        "reason": "Figma Code Connect files absent in synthetic DS fixture",
+        "secondary_impact": false,
+        "volatility": "DYNAMIC",
+        "bands": null,
+        "check_type": null
+      }
+    },
+    "after_track_a": {
+      "DS01": {
+        "score": 2,
+        "findings": [],
+        "reason": "",
+        "secondary_impact": false,
+        "volatility": "FIXED",
+        "bands": {
+          "prose": 25,
+          "artifacts": 30,
+          "verification": 15
+        },
+        "check_type": null
+      },
+      "DS02": {
+        "score": 2,
+        "findings": [],
+        "reason": "",
+        "secondary_impact": false,
+        "volatility": "DYNAMIC",
+        "bands": {
+          "prose": 20,
+          "artifacts": 35,
+          "verification": 15
+        },
+        "check_type": null
+      },
+      "DS03": {
+        "score": 2,
+        "findings": [],
+        "reason": "",
+        "secondary_impact": false,
+        "volatility": "DYNAMIC",
+        "bands": {
+          "prose": 20,
+          "artifacts": 35,
+          "verification": 15
+        },
+        "check_type": null
+      },
+      "DS04": {
+        "score": 2,
+        "findings": [],
+        "reason": "",
+        "secondary_impact": false,
+        "volatility": "FIXED",
+        "bands": {
+          "prose": 20,
+          "artifacts": 35,
+          "verification": 15
+        },
+        "check_type": null
+      },
+      "DS05": {
+        "score": 1,
+        "findings": [
+          "SYS-02"
+        ],
+        "reason": "",
+        "secondary_impact": false,
+        "volatility": "FIXED",
+        "bands": {
+          "prose": 20,
+          "artifacts": 25,
+          "verification": 5
+        },
+        "check_type": null
+      },
+      "DS06": {
+        "score": 2,
+        "findings": [],
+        "reason": "",
+        "secondary_impact": false,
+        "volatility": "FIXED",
+        "bands": {
+          "prose": 20,
+          "artifacts": 30,
+          "verification": 20
+        },
+        "check_type": null
+      },
+      "DS07": {
+        "score": 1,
+        "findings": [
+          "SYS-04"
+        ],
+        "reason": "",
+        "secondary_impact": false,
+        "volatility": "FIXED",
+        "bands": {
+          "prose": 30,
+          "artifacts": 10,
+          "verification": 0
+        },
+        "check_type": null
+      },
+      "DS08": {
+        "score": 1,
+        "findings": [
+          "SYS-05"
+        ],
+        "reason": "",
+        "secondary_impact": false,
+        "volatility": "FIXED",
+        "bands": {
+          "prose": 20,
+          "artifacts": 15,
+          "verification": 5
+        },
+        "check_type": null
+      },
+      "DS09": {
+        "score": 2,
+        "findings": [],
+        "reason": "",
+        "secondary_impact": false,
+        "volatility": "FIXED",
+        "bands": {
+          "prose": 20,
+          "artifacts": 30,
+          "verification": 15
+        },
+        "check_type": null
+      },
+      "DS10": {
+        "score": 2,
+        "findings": [],
+        "reason": "",
+        "secondary_impact": false,
+        "volatility": "FIXED",
+        "bands": {
+          "prose": 30,
+          "artifacts": 30,
+          "verification": 10
+        },
+        "check_type": null
+      },
+      "DS11": {
+        "score": 2,
+        "findings": [],
+        "reason": "",
+        "secondary_impact": false,
+        "volatility": "FIXED",
+        "bands": {
+          "prose": 20,
+          "artifacts": 35,
+          "verification": 15
+        },
+        "check_type": null
+      },
+      "DS12": {
+        "score": "N/A",
+        "findings": [],
+        "reason": "Figma Code Connect files absent in synthetic DS fixture",
+        "secondary_impact": false,
+        "volatility": "DYNAMIC",
+        "bands": null,
+        "check_type": null
+      }
+    }
+  }
+}

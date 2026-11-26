@@ -1,0 +1,23 @@
+name: DSAF Evolution Calibration & Signal Miner
+
+on:
+  schedule:
+    - cron: "0 2 * * 1"
+  workflow_dispatch:
+
+jobs:
+  mine-calibration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Validate isolation & schema invariants
+        run: npm test
+      - name: Generate calibration & backlog report
+        run: |
+          node evolve/scripts/mine-signals.mjs \
+            --input evolve/fixtures/example-feedback.jsonl \
+            --scores-dir evolve/fixtures/calibration \
+            --format markdown >> "$GITHUB_STEP_SUMMARY"

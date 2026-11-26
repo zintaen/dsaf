@@ -201,8 +201,7 @@ export function analyzeDirectory(inputDir) {
     hasDtcgTokens ||
     tokenJsonFiles.length > 0 ||
     hasTailwindTheme ||
-    cssTokenFiles.length > 0 ||
-    cssCustomPropCount >= 12;
+    (cssTokenFiles.length > 0 && cssCustomPropCount >= 12);
 
   let recommendedMode = "P";
   let topologyLabel = "Mode P — Product UX/UI (No Formal Design System)";
@@ -330,16 +329,27 @@ function runSelfTest() {
     assert.equal(resC.t2MockRequired, true, "Expected t2MockRequired on SUPABASE env key");
     assert.ok(!JSON.stringify(resC).includes("https://example.supabase.co"), "Must never expose env secret/URL values!");
 
-    // 3. Mode P — Product without formal DS
+    // 3. Mode P — Product without formal DS (even with local CSS :root variables >= 12)
     const dirP = join(scratch, "product-raw");
     mkdirSync(join(dirP, "src/pages"), { recursive: true });
     writeFileSync(join(dirP, "package.json"), JSON.stringify({ name: "mvp-app", dependencies: { react: "^19.0.0" }, scripts: { dev: "vite" } }));
     writeFileSync(join(dirP, "src/pages/Index.tsx"), "export const Index = () => null;");
-    writeFileSync(join(dirP, "src/app.css"), "body { color: #222; }");
+    const localVars = Array.from({ length: 16 }, (_, idx) => `--local-v-${idx}: ${idx}px;`).join(" ");
+    writeFileSync(join(dirP, "src/app.css"), `:root { ${localVars} } body { color: #222; }`);
     const resP = analyzeDirectory(dirP);
-    assert.equal(resP.recommendedMode, "P", `Expected Mode P, got ${resP.recommendedMode}`);
+    assert.equal(resP.recommendedMode, "P", `Expected Mode P despite local CSS vars, got ${resP.recommendedMode}`);
 
-    // 4. URL classification
+    // 4. Dedicated token stylesheet triggers Mode C
+    const dirCTok = join(scratch, "app-tokens-css");
+    mkdirSync(join(dirCTok, "src/pages"), { recursive: true });
+    writeFileSync(join(dirCTok, "package.json"), JSON.stringify({ name: "tok-app", dependencies: { react: "^19.0.0", vite: "^6.0.0" }, scripts: { dev: "vite" } }));
+    writeFileSync(join(dirCTok, "src/pages/App.tsx"), "export const App = () => null;");
+    const tokVars = Array.from({ length: 14 }, (_, idx) => `--ds-tok-${idx}: #111;`).join(" ");
+    writeFileSync(join(dirCTok, "src/tokens.css"), `:root { ${tokVars} }`);
+    const resCTok = analyzeDirectory(dirCTok);
+    assert.equal(resCTok.recommendedMode, "C", `Expected Mode C on dedicated tokens.css, got ${resCTok.recommendedMode}`);
+
+    // 5. URL classification
     assert.equal(analyzeUrlTarget("https://prod.example.com").recommendedDataTier, "T0");
     assert.match(analyzeUrlTarget("http://localhost:3000").recommendedDataTier, /^T2/);
 

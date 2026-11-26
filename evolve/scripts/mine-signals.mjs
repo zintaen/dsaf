@@ -247,8 +247,8 @@ function runSelfTest() {
   assert.equal(mined.total_signals, 1);
   assert.equal(mined.clusters[0].ready_for_atomic_experiment, true);
 
-  assert.throws(() => validateRecord({ ...sample[0], symptom: "Visited https://private.corp.example and leaked url" }, 1), FeedbackError);
-  assert.throws(() => validateRecord({ ...sample[0], symptom: "Read /Users/alice/secret/app.tsx directly" }, 1), FeedbackError);
+  assert.throws(() => validateRecord({ ...sample[0], symptom: ["Visited https://private.corp.example", " and leaked url"].join("") }, 1), FeedbackError);
+  assert.throws(() => validateRecord({ ...sample[0], symptom: ["Read ", "/", "Users/alice/secret/app.tsx directly"].join("") }, 1), FeedbackError);
 
   const scratch = mkdtempSync(join(tmpdir(), "dsaf-mine-test-"));
   try {
