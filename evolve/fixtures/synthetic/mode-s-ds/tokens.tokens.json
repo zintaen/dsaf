@@ -1,0 +1,24 @@
+{
+  "color": {
+    "primitive": {
+      "blue600": { "$type": "color", "$value": "oklch(0.55 0.19 255)", "$description": "Core blue" },
+      "slate950": { "$type": "color", "$value": "oklch(0.18 0.02 255)", "$description": "Deep ink" },
+      "white": { "$type": "color", "$value": "#ffffff", "$description": "Pure light" }
+    },
+    "semantic": {
+      "actionPrimary": { "$type": "color", "$value": "{color.primitive.blue600}", "$description": "Primary CTA fill" },
+      "textDefault": { "$type": "color", "$value": "{color.primitive.slate950}", "$description": "Body ink" },
+      "surfacePage": { "$type": "color", "$value": "{color.primitive.white}", "$description": "Default background" }
+    },
+    "component": {
+      "button": {
+        "bg": { "$type": "color", "$value": "{color.semantic.actionPrimary}", "$description": "Button fill" },
+        "ink": { "$type": "color", "$value": "{color.primitive.white}", "$description": "Button label" }
+      }
+    }
+  },
+  "spacing": {
+    "sm": { "$type": "dimension", "$value": "8px", "$description": "Small unit" },
+    "md": { "$type": "dimension", "$value": "16px", "$description": "Base unit" }
+  }
+}

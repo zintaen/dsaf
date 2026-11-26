@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dsaf.local/schemas/feedback-record.v1.json",
+  "title": "DSAF Field Retro Signal Record",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "id",
+    "timestamp",
+    "skill_version",
+    "mode",
+    "round",
+    "language",
+    "product_archetype",
+    "ui_maturity",
+    "data_tier",
+    "category",
+    "severity",
+    "symptom",
+    "root_cause_pointer",
+    "candidate_hypothesis",
+    "affected_artifact"
+  ],
+  "properties": {
+    "id": { "type": "string", "pattern": "^FB-[0-9]{8}-[0-9]{3,}$" },
+    "timestamp": { "type": "string", "minLength": 10 },
+    "skill_version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+(\\.[0-9]+)?$" },
+    "mode": { "type": "string", "enum": ["system", "conformance", "product"] },
+    "round": { "type": "string", "enum": ["preflight", "system", "conformance", "usability", "visual", "full", "handoff"] },
+    "language": { "type": "string", "enum": ["en", "vi", "other"] },
+    "product_archetype": { "type": "string", "minLength": 3, "maxLength": 80 },
+    "ui_maturity": { "type": "string", "enum": ["tier_1_crude", "tier_2_baseline", "tier_3_mature", "unknown"] },
+    "data_tier": { "type": "string", "enum": ["tier_0_readonly", "tier_1_staging", "tier_2_sandbox", "tier_3_branch", "unknown"] },
+    "category": {
+      "type": "string",
+      "enum": [
+        "false_positive",
+        "false_negative",
+        "ds_drift_signal",
+        "ambition_gap",
+        "depth_or_persona_gap",
+        "process_or_safety_friction",
+        "design_taste_signal"
+      ]
+    },
+    "severity": { "type": "string", "enum": ["high", "medium", "low"] },
+    "symptom": { "type": "string", "minLength": 10 },
+    "root_cause_pointer": { "type": "string", "minLength": 5 },
+    "candidate_hypothesis": { "type": "string", "minLength": 10 },
+    "affected_artifact": { "type": "string", "minLength": 3 }
+  }
+}

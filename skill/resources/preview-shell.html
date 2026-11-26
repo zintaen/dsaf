@@ -1,0 +1,697 @@
+<!DOCTYPE html>
+<html lang="en" data-uxs-theme="dark" data-uxs-ambition="L3" data-uxs-view="compare" data-uxs-compare-target="track-b" data-uxs-vp="fluid" data-uxs-state="default" data-uxs-pins="off">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>DSAF v0.0.1 — Audit Preview (Before vs After)</title>
+  <style>
+    /* =====================================================================
+       Canonical DSAF Preview Shell Styles (strictly .uxs-* / --uxs-*)
+       DO NOT remove toolbar groups or weaken contrast / 44px mobile targets.
+       ===================================================================== */
+    :root {
+      --uxs-bg: #f4f6f9;
+      --uxs-surface: #ffffff;
+      --uxs-surface-2: #edf1f6;
+      --uxs-ink: #0f172a;
+      --uxs-ink-muted: #334155;
+      --uxs-border: #475569;
+      --uxs-border-soft: #94a3b8;
+      --uxs-accent: #1d4ed8;
+      --uxs-accent-hover: #1e40af;
+      --uxs-accent-ink: #ffffff;
+      --uxs-pin-bg: #92400e;
+      --uxs-pin-ink: #ffffff;
+      --uxs-focus: #1d4ed8;
+      --uxs-radius: 8px;
+      --uxs-font: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      --uxs-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    }
+
+    html[data-uxs-theme="dark"] {
+      --uxs-bg: #0b101b;
+      --uxs-surface: #131b2b;
+      --uxs-surface-2: #1c263b;
+      --uxs-ink: #f1f5f9;
+      --uxs-ink-muted: #cbd5e1;
+      --uxs-border: #7c8fa6;
+      --uxs-border-soft: #475569;
+      --uxs-accent: #38bdf8;
+      --uxs-accent-hover: #7dd3fc;
+      --uxs-accent-ink: #082f49;
+      --uxs-pin-bg: #fbbf24;
+      --uxs-pin-ink: #1c1917;
+      --uxs-focus: #38bdf8;
+    }
+
+    html, body {
+      margin: 0;
+      padding: 0;
+      overflow-x: clip;
+      background: var(--uxs-bg);
+      color: var(--uxs-ink);
+      font-family: var(--uxs-font);
+      font-size: 16px;
+      line-height: 1.5;
+    }
+
+    *, *::before, *::after {
+      box-sizing: border-box;
+    }
+
+    .uxs-skip {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip-path: inset(50%);
+      white-space: nowrap;
+      border: 0;
+      z-index: 9999;
+      background: var(--uxs-accent);
+      color: var(--uxs-accent-ink);
+      font-weight: 600;
+      text-decoration: none;
+    }
+    .uxs-skip:focus {
+      left: 12px;
+      top: 8px;
+      width: auto;
+      height: auto;
+      margin: 0;
+      padding: 10px 16px;
+      overflow: visible;
+      clip-path: none;
+      border-radius: var(--uxs-radius);
+    }
+
+    .uxs-header {
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      background: var(--uxs-surface);
+      border-bottom: 1px solid var(--uxs-border);
+      padding: 10px 16px;
+    }
+
+    .uxs-header-inner {
+      max-width: 1520px;
+      margin: 0 auto;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .uxs-title-row {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px 16px;
+    }
+
+    .uxs-title {
+      margin: 0;
+      font-size: 1rem;
+      font-weight: 700;
+      line-height: 1.3;
+      color: var(--uxs-ink);
+    }
+
+    .uxs-meta {
+      margin: 0;
+      font-size: 0.875rem;
+      color: var(--uxs-ink-muted);
+    }
+
+    .uxs-toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px 12px;
+    }
+
+    .uxs-group {
+      display: inline-flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 4px;
+      padding: 3px;
+      background: var(--uxs-surface-2);
+      border: 1px solid var(--uxs-border);
+      border-radius: var(--uxs-radius);
+    }
+
+    .uxs-group-label {
+      font-size: 0.75rem;
+      font-weight: 600;
+      color: var(--uxs-ink-muted);
+      padding: 0 6px;
+    }
+
+    .uxs-btn, .uxs-select {
+      font-family: var(--uxs-font);
+      font-size: 0.875rem;
+      font-weight: 600;
+      line-height: 1.2;
+      color: var(--uxs-ink);
+      background: var(--uxs-surface);
+      border: 1px solid var(--uxs-border);
+      border-radius: 6px;
+      min-height: 36px;
+      padding: 6px 11px;
+      cursor: pointer;
+      transition: background-color 140ms ease-out, color 140ms ease-out, border-color 140ms ease-out;
+    }
+
+    .uxs-btn:hover {
+      background: var(--uxs-surface-2);
+    }
+
+    .uxs-btn[aria-pressed="true"] {
+      background: var(--uxs-accent);
+      color: var(--uxs-accent-ink);
+      border-color: var(--uxs-accent);
+    }
+
+    .uxs-btn[aria-pressed="true"]:hover {
+      background: var(--uxs-accent-hover);
+      border-color: var(--uxs-accent-hover);
+    }
+
+    .uxs-btn:focus-visible, .uxs-select:focus-visible, .uxs-jump-link:focus-visible {
+      outline: 3px solid var(--uxs-focus);
+      outline-offset: 2px;
+    }
+
+    .uxs-select {
+      padding-right: 28px;
+    }
+
+    .uxs-compare-subbar {
+      display: none;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 8px;
+      padding-top: 4px;
+    }
+    html[data-uxs-view="compare"][data-uxs-ambition="L3"] .uxs-compare-subbar {
+      display: flex;
+    }
+
+    .uxs-pins-drawer {
+      display: none;
+      max-width: 1520px;
+      margin: 12px auto 0;
+      padding: 12px 16px;
+      background: var(--uxs-surface);
+      border: 1px solid var(--uxs-border);
+      border-radius: var(--uxs-radius);
+    }
+    html[data-uxs-pins="on"] .uxs-pins-drawer {
+      display: block;
+    }
+    .uxs-pins-title {
+      margin: 0 0 8px;
+      font-size: 0.9375rem;
+      font-weight: 700;
+    }
+    .uxs-pins-list {
+      margin: 0;
+      padding-left: 18px;
+      display: grid;
+      gap: 6px;
+      font-size: 0.875rem;
+    }
+
+    .uxs-main {
+      max-width: 1520px;
+      margin: 0 auto;
+      padding: 16px;
+    }
+
+    .uxs-stage-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr);
+      gap: 16px;
+      align-items: start;
+    }
+
+    html[data-uxs-view="compare"] .uxs-stage-grid {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .uxs-pane {
+      display: none;
+      min-width: 0;
+      background: var(--uxs-surface);
+      border: 1px solid var(--uxs-border);
+      border-radius: 12px;
+      overflow: hidden;
+    }
+
+    .uxs-pane-head {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 10px 14px;
+      background: var(--uxs-surface-2);
+      border-bottom: 1px solid var(--uxs-border);
+    }
+
+    .uxs-pane-title {
+      margin: 0;
+      font-size: 0.9375rem;
+      font-weight: 700;
+    }
+
+    .uxs-pane-tag {
+      font-family: var(--uxs-mono);
+      font-size: 0.75rem;
+      font-weight: 700;
+      padding: 2px 8px;
+      border-radius: 6px;
+      border: 1px solid var(--uxs-border);
+      background: var(--uxs-surface);
+      color: var(--uxs-ink);
+    }
+
+    .uxs-pane-viewport {
+      padding: 16px;
+      background: var(--uxs-bg);
+      display: flex;
+      justify-content: center;
+    }
+
+    .uxs-canvas {
+      width: 100%;
+      min-width: 0;
+      container-type: inline-size;
+      container-name: uxs-stage;
+      background: var(--uxs-surface);
+      border: 1px solid var(--uxs-border-soft);
+      border-radius: 10px;
+      padding: 16px;
+      overflow-x: clip;
+    }
+
+    html[data-uxs-vp="desktop"] .uxs-canvas {
+      max-width: 1440px;
+    }
+
+    html[data-uxs-vp="mobile"] .uxs-canvas {
+      max-width: 375px;
+      border-width: 2px;
+      border-color: var(--uxs-border);
+    }
+
+    /* Visibility rules by View Mode */
+    html[data-uxs-view="before"] .uxs-pane[data-pane="before"],
+    html[data-uxs-view="track-a"] .uxs-pane[data-pane="track-a"],
+    html[data-uxs-view="track-b"] .uxs-pane[data-pane="track-b"],
+    html[data-uxs-view="compare"] .uxs-pane[data-pane="before"] {
+      display: block;
+    }
+
+    html[data-uxs-view="compare"][data-uxs-compare-target="track-a"] .uxs-pane[data-pane="track-a"],
+    html[data-uxs-view="compare"][data-uxs-compare-target="track-b"] .uxs-pane[data-pane="track-b"] {
+      display: block;
+    }
+
+    /* Hide North-Star button when Ambition is L1 or L2 */
+    html:not([data-uxs-ambition="L3"]) [data-only-l3] {
+      display: none;
+    }
+
+    /* Optional Finding Pins inside preview canvas */
+    .uxs-pin {
+      display: none;
+      margin-left: 6px;
+      padding: 1px 6px;
+      border-radius: 4px;
+      font-family: var(--uxs-mono);
+      font-size: 0.75rem;
+      font-weight: 700;
+      background: var(--uxs-pin-bg);
+      color: var(--uxs-pin-ink);
+      vertical-align: middle;
+    }
+    html[data-uxs-pins="on"] .uxs-pin {
+      display: inline-block;
+    }
+
+    /* Quick jump bar for stacked compare on narrow mobile screens */
+    .uxs-mobile-jump {
+      display: none;
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+    .uxs-jump-link {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 44px;
+      padding: 8px 14px;
+      border-radius: var(--uxs-radius);
+      border: 1px solid var(--uxs-border);
+      background: var(--uxs-surface);
+      color: var(--uxs-ink);
+      font-size: 0.875rem;
+      font-weight: 600;
+      text-decoration: none;
+    }
+
+    @media (max-width: 960px) {
+      html[data-uxs-view="compare"] .uxs-stage-grid {
+        grid-template-columns: minmax(0, 1fr);
+      }
+      html[data-uxs-view="compare"] .uxs-mobile-jump {
+        display: flex;
+      }
+    }
+
+    @media (max-width: 640px) {
+      .uxs-header {
+        position: static;
+        padding: 10px 12px;
+      }
+      .uxs-main {
+        padding: 12px;
+      }
+      .uxs-pane-viewport {
+        padding: 10px;
+      }
+      .uxs-canvas {
+        padding: 12px;
+      }
+      .uxs-btn, .uxs-select {
+        min-height: 44px;
+        min-width: 44px;
+        padding: 10px 12px;
+      }
+      .uxs-group {
+        width: 100%;
+      }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after {
+        transition-duration: 0.01ms !important;
+        animation-duration: 0.01ms !important;
+      }
+    }
+
+    /* =====================================================================
+       SLOT:PRODUCT_STYLES — Place product-specific Before / Track A / Track B
+       CSS below. Always scope under [data-pane="before"], [data-pane="track-a"],
+       or [data-pane="track-b"] and respond to @container uxs-stage (max-width: 520px).
+       ===================================================================== */
+    .demo-block {
+      display: grid;
+      gap: 12px;
+    }
+    .demo-heading {
+      margin: 0;
+      font-size: 1.25rem;
+      line-height: 1.3;
+    }
+    .demo-text {
+      margin: 0;
+      color: var(--uxs-ink-muted);
+      font-size: 0.9375rem;
+    }
+    .demo-state-box {
+      padding: 12px;
+      border-radius: 8px;
+      border: 1px solid var(--uxs-border);
+      background: var(--uxs-surface-2);
+      font-size: 0.875rem;
+    }
+  </style>
+</head>
+<body>
+  <a class="uxs-skip" href="#uxs-main-stage">Skip to preview stage</a>
+
+  <header class="uxs-header">
+    <div class="uxs-header-inner">
+      <div class="uxs-title-row">
+        <h1 class="uxs-title" id="uxs-doc-title"><!-- SLOT:SCREEN_TITLE -->DSAF Audit Preview Shell (v0.0.1)<!-- /SLOT:SCREEN_TITLE --></h1>
+        <p class="uxs-meta" id="uxs-doc-meta"><!-- SLOT:SCREEN_META -->Unified Before / After / Side-by-Side Comparison · Fixed 5-Group Toolbar<!-- /SLOT:SCREEN_META --></p>
+      </div>
+
+      <nav class="uxs-toolbar" aria-label="Preview comparison controls" data-ux-shell-toolbar="v3.0">
+        <!-- Group 1: View Mode -->
+        <div class="uxs-group" role="group" aria-label="View mode" data-uxs-group="view">
+          <span class="uxs-group-label">View</span>
+          <button type="button" class="uxs-btn" data-view="before" aria-pressed="false">Before</button>
+          <button type="button" class="uxs-btn" data-view="track-a" aria-pressed="false">After · Pragmatic</button>
+          <button type="button" class="uxs-btn" data-view="track-b" aria-pressed="false" data-only-l3="true">After · North-Star</button>
+          <button type="button" class="uxs-btn" data-view="compare" aria-pressed="true">Side-by-Side</button>
+        </div>
+
+        <!-- Group 2: Viewport Frame -->
+        <div class="uxs-group" role="group" aria-label="Viewport frame" data-uxs-group="viewport">
+          <span class="uxs-group-label">Viewport</span>
+          <button type="button" class="uxs-btn" data-vp="fluid" aria-pressed="true">Fluid</button>
+          <button type="button" class="uxs-btn" data-vp="desktop" aria-pressed="false">1440</button>
+          <button type="button" class="uxs-btn" data-vp="mobile" aria-pressed="false">375</button>
+        </div>
+
+        <!-- Group 3: Theme Mode -->
+        <div class="uxs-group" role="group" aria-label="Theme mode" data-uxs-group="theme">
+          <span class="uxs-group-label">Theme</span>
+          <button type="button" class="uxs-btn" data-theme="light" aria-pressed="false">Light</button>
+          <button type="button" class="uxs-btn" data-theme="dark" aria-pressed="true">Dark</button>
+        </div>
+
+        <!-- Group 4: Real-Data State -->
+        <div class="uxs-group" data-uxs-group="state">
+          <label class="uxs-group-label" for="uxs-state-select">State</label>
+          <select id="uxs-state-select" class="uxs-select">
+            <option value="default" selected>Default</option>
+            <option value="empty">Empty (0)</option>
+            <option value="stress">Stress / Long</option>
+            <option value="error">Error</option>
+          </select>
+        </div>
+
+        <!-- Group 5: Finding Pins Toggle -->
+        <div class="uxs-group" data-uxs-group="pins">
+          <button type="button" class="uxs-btn" id="uxs-pins-btn" aria-pressed="false">Finding Pins</button>
+        </div>
+      </nav>
+
+      <div class="uxs-compare-subbar" role="group" aria-label="Side-by-side target track">
+        <span class="uxs-group-label">Compare Before against:</span>
+        <button type="button" class="uxs-btn" data-compare-target="track-a" aria-pressed="false">Pragmatic</button>
+        <button type="button" class="uxs-btn" data-compare-target="track-b" aria-pressed="true">North-Star</button>
+      </div>
+    </div>
+  </header>
+
+  <aside class="uxs-pins-drawer" aria-label="Finding annotations summary" id="uxs-pins-drawer">
+    <h2 class="uxs-pins-title">Linked Findings &amp; Changes</h2>
+    <ul class="uxs-pins-list" id="uxs-pins-list"></ul>
+  </aside>
+
+  <main class="uxs-main" id="uxs-main-stage">
+    <div class="uxs-mobile-jump" aria-label="Quick jump between Before and After">
+      <a class="uxs-jump-link" href="#pane-before">Jump to Before</a>
+      <a class="uxs-jump-link" href="#pane-track-b" id="uxs-jump-after">Jump to After</a>
+    </div>
+
+    <div class="uxs-stage-grid">
+      <section class="uxs-pane" id="pane-before" data-pane="before" aria-labelledby="pane-before-title">
+        <div class="uxs-pane-head">
+          <h2 class="uxs-pane-title" id="pane-before-title">Before (Current Baseline)</h2>
+          <span class="uxs-pane-tag">BEFORE</span>
+        </div>
+        <div class="uxs-pane-viewport">
+          <div class="uxs-canvas" data-canvas="before">
+            <!-- SLOT:BEFORE_HTML -->
+            <div class="demo-block">
+              <h3 class="demo-heading">Current Baseline Slot <span class="uxs-pin" data-finding-pin="F-01">F-01</span></h3>
+              <p class="demo-text">Replace this slot with the authentic Before baseline UI or high-resolution baseline capture using real product copy.</p>
+              <div class="demo-state-box" data-state-readout="before">Active state: default</div>
+            </div>
+            <!-- /SLOT:BEFORE_HTML -->
+          </div>
+        </div>
+      </section>
+
+      <section class="uxs-pane" id="pane-track-a" data-pane="track-a" aria-labelledby="pane-a-title">
+        <div class="uxs-pane-head">
+          <h2 class="uxs-pane-title" id="pane-a-title">After · Track A (Pragmatic Fix)</h2>
+          <span class="uxs-pane-tag">TRACK A</span>
+        </div>
+        <div class="uxs-pane-viewport">
+          <div class="uxs-canvas" data-canvas="track-a">
+            <!-- SLOT:TRACK_A_HTML -->
+            <div class="demo-block">
+              <h3 class="demo-heading">Pragmatic Fix Slot <span class="uxs-pin" data-finding-pin="F-01">F-01 Fixed</span></h3>
+              <p class="demo-text">Replace this slot with Track A (low-risk fixes on existing structure using identical real Before data).</p>
+              <div class="demo-state-box" data-state-readout="track-a">Active state: default</div>
+            </div>
+            <!-- /SLOT:TRACK_A_HTML -->
+          </div>
+        </div>
+      </section>
+
+      <section class="uxs-pane" id="pane-track-b" data-pane="track-b" aria-labelledby="pane-b-title" data-only-l3="true">
+        <div class="uxs-pane-head">
+          <h2 class="uxs-pane-title" id="pane-b-title">After · Track B (North-Star Redesign)</h2>
+          <span class="uxs-pane-tag">TRACK B</span>
+        </div>
+        <div class="uxs-pane-viewport">
+          <div class="uxs-canvas" data-canvas="track-b">
+            <!-- SLOT:TRACK_B_HTML -->
+            <div class="demo-block">
+              <h3 class="demo-heading">North-Star Breakthrough Slot <span class="uxs-pin" data-finding-pin="F-01">F-01 Redesigned</span></h3>
+              <p class="demo-text">Replace this slot with Track B (clean-sheet IA/visual breakthrough using identical real Before data and 5-line brand direction).</p>
+              <div class="demo-state-box" data-state-readout="track-b">Active state: default</div>
+            </div>
+            <!-- /SLOT:TRACK_B_HTML -->
+          </div>
+        </div>
+      </section>
+    </div>
+  </main>
+
+  <script id="uxs-findings-data" type="application/json">
+    [
+      { "id": "F-01", "summary": "Example linked finding — replace with actual Finding IDs and Track A / Track B changes." }
+    ]
+  </script>
+
+  <script>
+    (function () {
+      const root = document.documentElement;
+      const params = new URLSearchParams(window.location.search);
+
+      const state = {
+        ambition: root.getAttribute("data-uxs-ambition") || "L3",
+        view: params.get("view") || root.getAttribute("data-uxs-view") || "compare",
+        compareTarget: params.get("target") || root.getAttribute("data-uxs-compare-target") || "track-b",
+        vp: params.get("vp") || root.getAttribute("data-uxs-vp") || "fluid",
+        theme: params.get("theme") || root.getAttribute("data-uxs-theme") || "dark",
+        dataState: params.get("state") || root.getAttribute("data-uxs-state") || "default",
+        pins: params.get("pins") || root.getAttribute("data-uxs-pins") || "off"
+      };
+
+      if (state.ambition !== "L3") {
+        if (state.view === "track-b") state.view = "track-a";
+        state.compareTarget = "track-a";
+      }
+
+      function renderPinsList() {
+        const list = document.getElementById("uxs-pins-list");
+        const raw = document.getElementById("uxs-findings-data");
+        if (!list || !raw) return;
+        try {
+          const items = JSON.parse(raw.textContent || "[]");
+          list.innerHTML = "";
+          for (const item of items) {
+            const li = document.createElement("li");
+            const strong = document.createElement("strong");
+            strong.textContent = item.id + ": ";
+            li.appendChild(strong);
+            li.appendChild(document.createTextNode(item.summary || ""));
+            list.appendChild(li);
+          }
+        } catch {}
+      }
+
+      function applyState() {
+        root.setAttribute("data-uxs-view", state.view);
+        root.setAttribute("data-uxs-compare-target", state.compareTarget);
+        root.setAttribute("data-uxs-vp", state.vp);
+        root.setAttribute("data-uxs-theme", state.theme);
+        root.setAttribute("data-uxs-state", state.dataState);
+        root.setAttribute("data-uxs-pins", state.pins);
+
+        document.querySelectorAll("[data-view]").forEach((btn) => {
+          btn.setAttribute("aria-pressed", String(btn.getAttribute("data-view") === state.view));
+        });
+        document.querySelectorAll("[data-compare-target]").forEach((btn) => {
+          btn.setAttribute("aria-pressed", String(btn.getAttribute("data-compare-target") === state.compareTarget));
+        });
+        document.querySelectorAll("[data-vp]").forEach((btn) => {
+          btn.setAttribute("aria-pressed", String(btn.getAttribute("data-vp") === state.vp));
+        });
+        document.querySelectorAll("[data-theme]").forEach((btn) => {
+          btn.setAttribute("aria-pressed", String(btn.getAttribute("data-theme") === state.theme));
+        });
+
+        const select = document.getElementById("uxs-state-select");
+        if (select) select.value = state.dataState;
+
+        const pinsBtn = document.getElementById("uxs-pins-btn");
+        if (pinsBtn) pinsBtn.setAttribute("aria-pressed", String(state.pins === "on"));
+
+        const jumpAfter = document.getElementById("uxs-jump-after");
+        if (jumpAfter) {
+          jumpAfter.setAttribute("href", state.compareTarget === "track-b" && state.ambition === "L3" ? "#pane-track-b" : "#pane-track-a");
+          jumpAfter.textContent = state.compareTarget === "track-b" && state.ambition === "L3" ? "Jump to After (North-Star)" : "Jump to After (Pragmatic)";
+        }
+
+        document.querySelectorAll("[data-state-readout]").forEach((el) => {
+          el.textContent = "Active state: " + state.dataState + " (" + state.theme + ", " + state.vp + ")";
+        });
+
+        window.dispatchEvent(new CustomEvent("uxs:change", { detail: Object.assign({}, state) }));
+      }
+
+      document.querySelectorAll("[data-view]").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          state.view = btn.getAttribute("data-view");
+          applyState();
+        });
+      });
+
+      document.querySelectorAll("[data-compare-target]").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          state.compareTarget = btn.getAttribute("data-compare-target");
+          applyState();
+        });
+      });
+
+      document.querySelectorAll("[data-vp]").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          state.vp = btn.getAttribute("data-vp");
+          applyState();
+        });
+      });
+
+      document.querySelectorAll("[data-theme]").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          state.theme = btn.getAttribute("data-theme");
+          applyState();
+        });
+      });
+
+      const select = document.getElementById("uxs-state-select");
+      if (select) {
+        select.addEventListener("change", () => {
+          state.dataState = select.value;
+          applyState();
+        });
+      }
+
+      const pinsBtn = document.getElementById("uxs-pins-btn");
+      if (pinsBtn) {
+        pinsBtn.addEventListener("click", () => {
+          state.pins = state.pins === "on" ? "off" : "on";
+          applyState();
+        });
+      }
+
+      renderPinsList();
+      applyState();
+    })();
+  </script>
+</body>
+</html>

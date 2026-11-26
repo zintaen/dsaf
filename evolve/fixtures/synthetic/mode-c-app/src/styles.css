@@ -1,0 +1,19 @@
+:root {
+  --surface-page: #ffffff;
+  --text-primary: #0f172a;
+  --accent-action: #1d4ed8;
+  --unused-legacy-badge: #f59e0b;
+}
+
+.page-shell {
+  background: var(--surface-page);
+  color: var(--text-primary);
+}
+
+/* Intentional drift for testing: hardcoded near-duplicate grays, off-grid 13px, !important */
+.custom-cta {
+  background: #1e4ed9;
+  border-color: #1c4cd6;
+  color: #ffffff;
+  padding: 13px 17px !important;
+}

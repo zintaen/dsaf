@@ -1,0 +1,10 @@
+{
+  "name": "standalone-ledger-app",
+  "version": "0.1.0",
+  "scripts": {
+    "dev": "vite"
+  },
+  "dependencies": {
+    "react": "^19.0.0"
+  }
+}

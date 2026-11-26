@@ -1,0 +1,12 @@
+{
+  "name": "acme-billing-portal",
+  "version": "0.4.0",
+  "scripts": {
+    "dev": "vite"
+  },
+  "dependencies": {
+    "react": "^19.0.0",
+    "@radix-ui/react-dialog": "^1.1.0",
+    "acme-design-system": "^1.2.0"
+  }
+}
