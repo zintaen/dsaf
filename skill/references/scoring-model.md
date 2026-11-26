@@ -1,4 +1,4 @@
-# Unified Deterministic Scoring Model & No-Silent-Regression Policy (`v0.0.1`)
+# Unified Deterministic Scoring Model & No-Silent-Regression Policy (`v0.1.1`)
 
 Load this reference during criterion scoring and baseline comparison in every mode (`Mode S`, `Mode C`, `Mode P`). Pair with `../scripts/compute-scorecard.mjs` and `../scripts/audit-diff.mjs` to guarantee zero arithmetic drift, strict evidence linkage, and mechanical regression blocking.
 

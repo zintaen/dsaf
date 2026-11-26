@@ -44,7 +44,7 @@ Each line in `~/.dsaf/feedback-log.jsonl` must match:
 {
   "id": "FB-20261126-001",
   "timestamp": "2026-11-26T10:00:00Z",
-  "skill_version": "0.0.1",
+  "skill_version": "0.1.1",
   "mode": "conformance",
   "round": "visual",
   "language": "en",

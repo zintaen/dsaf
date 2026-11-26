@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 /**
- * DSAF v0.1.0 — Deterministic W3C DTCG Token Validator & Codebase Drift Scanner.
+ * DSAF v0.1.1 — Deterministic W3C DTCG Token Validator & Codebase Drift Scanner.
  * Zero external dependencies. Validates $value/$type/{alias}/$ref tokens, Light/Dark
  * mode parity, token-level WCAG 2.2 + APCA-W3 contrast, and scans stylesheets/UI
  * components for hardcoded color drift, property-scoped spacing drift, !important
- * overrides, authored orphan CSS vars (excluding framework internals), and Tailwind
- * arbitrary/primitive drift.
+ * overrides, authored orphan CSS variables (excluding Tailwind @theme & JS refs), and
+ * Tailwind arbitrary/primitive drift.
  */
 
 import assert from "node:assert/strict";
@@ -333,7 +333,12 @@ function extractNonTokenDeclarations(cssText) {
       depth++;
       const hdr = curHeader.trim();
       curHeader = "";
-      if (skipDepth === null && /(^|,|\s)(:root|\[data-theme[^\]]*\]|@theme\b|html\[data-uxs-theme[^\]]*\])/i.test(hdr)) {
+      if (
+        skipDepth === null &&
+        /(^|,|\s)(:root|\[data-theme[^\]]*\]|@theme(?:\s+inline)?\b|html\[data-uxs-theme[^\]]*\]|html\.(?:dark|light)\b|:host\b)/i.test(
+          hdr
+        )
+      ) {
         skipDepth = depth;
       }
     } else if (ch === "}") {
@@ -350,6 +355,29 @@ function extractNonTokenDeclarations(cssText) {
     idx++;
   }
   return out.join("");
+}
+
+function extractAtThemeVars(cssText) {
+  const vars = new Set();
+  const cleaned = cssText.replace(/\/\*[\s\S]*?\*\//g, "");
+  const re = /@theme(?:\s+inline)?\s*\{/gi;
+  let match;
+  while ((match = re.exec(cleaned)) !== null) {
+    let idx = match.index + match[0].length;
+    let depth = 1;
+    const start = idx;
+    while (idx < cleaned.length && depth > 0) {
+      if (cleaned[idx] === "{") depth++;
+      else if (cleaned[idx] === "}") depth--;
+      idx++;
+    }
+    const block = cleaned.slice(start, Math.max(start, idx - 1));
+    for (const m of block.matchAll(/--([a-zA-Z0-9_-]+)\s*:/g)) {
+      const name = `--${m[1]}`;
+      if (!isFrameworkInternalVar(name)) vars.add(name);
+    }
+  }
+  return vars;
 }
 
 function findNearDuplicateHexClusters(hexSet) {
@@ -414,6 +442,7 @@ export function scanTarget(targetPath) {
     function walk(dir) {
       for (const entry of readdirSync(dir, { withFileTypes: true })) {
         if (SKIP_DIRS.has(entry.name)) continue;
+        if (entry.isDirectory() && entry.name.startsWith(".")) continue;
         const full = join(dir, entry.name);
         if (entry.isDirectory()) {
           walk(full);
@@ -421,7 +450,7 @@ export function scanTarget(targetPath) {
         }
         const rel = relative(resolved, full).replace(/\\/g, "/");
         if (
-          /(\.test\.|\.spec\.|__tests__\/|(^|\/)tests?\/|\.min\.(css|js)$|\.bundle\.(css|js|mjs)$|(^|\/)(public\/assets|static\/chunks|vendor)\/)/i.test(
+          /(\.test\.|\.spec\.|__tests__\/|(^|\/)tests?\/|\.min\.(css|js)$|\.bundle\.(css|js|mjs)$|(^|\/)(public\/assets|static\/chunks|vendor|ios\/App\/App\/public|android\/app\/src\/main\/assets\/public)\/)/i.test(
             rel
           )
         ) {
@@ -459,6 +488,8 @@ export function scanTarget(targetPath) {
   // 2. Codebase Drift Scan
   const definedVars = new Set();
   const usedVars = new Set();
+  const themeVars = new Set();
+  const seenUtilityClasses = new Set();
   const primitiveVarsUsed = new Set();
   let colorTokenRefs = 0;
   let hardcodedColorHits = 0;
@@ -477,6 +508,9 @@ export function scanTarget(targetPath) {
     if (raw.length > 100_000 && raw.split("\n").length < 5) continue;
     const isStyle = cf.endsWith(".css") || cf.endsWith(".scss");
 
+    if (isStyle) {
+      for (const tv of extractAtThemeVars(raw)) themeVars.add(tv);
+    }
     for (const m of raw.matchAll(/--([a-zA-Z0-9_-]+)\s*:/g)) {
       const name = `--${m[1]}`;
       if (!isFrameworkInternalVar(name)) definedVars.add(name);
@@ -487,6 +521,13 @@ export function scanTarget(targetPath) {
       if (/^--(gray|slate|zinc|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose|palette|raw)-?\d+/i.test(name)) {
         primitiveVarsUsed.add(name);
       }
+    }
+    for (const m of raw.matchAll(/\b(?:getPropertyValue|setProperty)\(\s*["']--([a-zA-Z0-9_-]+)["']/g)) {
+      const name = `--${m[1]}`;
+      if (!isFrameworkInternalVar(name)) usedVars.add(name);
+    }
+    for (const m of raw.matchAll(/(?:^|[\s"'`:/])([a-z]+-[a-z0-9-]+)/g)) {
+      seenUtilityClasses.add(m[1]);
     }
 
     const driftSurface = isStyle ? extractNonTokenDeclarations(raw) : raw;
@@ -527,6 +568,31 @@ export function scanTarget(targetPath) {
         offGridPx: fileOffGrid,
         tailwindArbitrary: fileTwArbColors + fileTwArbSpacing,
       });
+    }
+  }
+
+  for (const tv of themeVars) {
+    if (tv.startsWith("--color-")) {
+      const slug = tv.slice(8);
+      if (["bg-", "text-", "border-", "ring-", "fill-", "stroke-", "from-", "to-", "via-", "outline-", "accent-", "decoration-"].some((p) => seenUtilityClasses.has(p + slug))) {
+        usedVars.add(tv);
+      }
+    } else if (tv.startsWith("--spacing-")) {
+      const slug = tv.slice(10);
+      if (["p-", "px-", "py-", "pt-", "pr-", "pb-", "pl-", "m-", "mx-", "my-", "mt-", "mr-", "mb-", "ml-", "gap-", "gap-x-", "gap-y-", "w-", "h-", "size-", "space-x-", "space-y-"].some((p) => seenUtilityClasses.has(p + slug))) {
+        usedVars.add(tv);
+      }
+    } else if (tv.startsWith("--radius-")) {
+      const slug = tv.slice(9);
+      if (["rounded-", "rounded-t-", "rounded-b-", "rounded-l-", "rounded-r-"].some((p) => seenUtilityClasses.has(p + slug))) {
+        usedVars.add(tv);
+      }
+    } else if (tv.startsWith("--font-") && seenUtilityClasses.has("font-" + tv.slice(7))) {
+      usedVars.add(tv);
+    } else if (tv.startsWith("--shadow-") && seenUtilityClasses.has("shadow-" + tv.slice(9))) {
+      usedVars.add(tv);
+    } else if (tv.startsWith("--text-") && seenUtilityClasses.has("text-" + tv.slice(7))) {
+      usedVars.add(tv);
     }
   }
 
@@ -629,7 +695,33 @@ function runSelfTest() {
     assert.equal(drift.drift.tailwind.arbitrarySpacing, 1);
     assert.equal(drift.drift.tailwind.primitiveColors, 1);
 
-    console.log("AUDIT_TOKENS_SELF_TEST_PASSED (DTCG refs/modes/contrast + scoped CSS/Tailwind drift)");
+    // 5. Tailwind v4 @theme utility consumption, JS var lookup, & Capacitor mobile bundle exclusion
+    const twDir = join(scratch, "tw-app");
+    mkdirSync(join(twDir, "ios/App/App/public/assets"), { recursive: true });
+    mkdirSync(join(twDir, "src"), { recursive: true });
+    writeFileSync(join(twDir, "ios/App/App/public/assets/vendor-design.css"), ":root { --mobile-bundle-var: #123456; }");
+    writeFileSync(
+      join(twDir, "src/theme.css"),
+      `@theme inline {
+        --color-brand-accent: #1d4ed8;
+        --radius-card: 12px;
+        --color-unused-orphan: #ef4444;
+      }
+      :root { --js-consumed: 10px; }`
+    );
+    writeFileSync(
+      join(twDir, "src/App.tsx"),
+      `export const App = () => {
+        const v = getComputedStyle(document.documentElement).getPropertyValue("--js-consumed");
+        return <div data-v={v} className="bg-brand-accent rounded-card" />;
+      };`
+    );
+    const twScan = scanTarget(twDir);
+    assert.equal(twScan.filesScanned.uiAndStyle, 2, "Must skip ios/App/App/public/assets mobile bundle");
+    assert.equal(twScan.drift.orphanCssVariableCount, 1, "Must detect only --color-unused-orphan");
+    assert.deepEqual(twScan.drift.orphanCssVariablesSample, ["--color-unused-orphan"]);
+
+    console.log("AUDIT_TOKENS_SELF_TEST_PASSED (DTCG refs/modes/contrast + scoped CSS/@theme/Tailwind drift)");
     return 0;
   } finally {
     rmSync(scratch, { recursive: true, force: true });

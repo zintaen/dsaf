@@ -91,6 +91,7 @@ function main() {
   const skillMd = readFileSync(join(SKILL_DIR, "SKILL.md"), "utf8");
   const evolveMd = readFileSync(join(EVOLVE_DIR, "SKILL.md"), "utf8");
   const scorecardSrc = readFileSync(join(SKILL_DIR, "scripts/compute-scorecard.mjs"), "utf8");
+  const diffSrc = readFileSync(join(SKILL_DIR, "scripts/audit-diff.mjs"), "utf8");
   if (!skillMd.includes(`v${pkg.version}`)) {
     console.error(`ERROR: skill/SKILL.md must reference v${pkg.version}`);
     process.exit(1);
@@ -101,6 +102,10 @@ function main() {
   }
   if (!scorecardSrc.includes(`ENGINE_VERSION = "${pkg.version}"`)) {
     console.error(`ERROR: compute-scorecard.mjs ENGINE_VERSION must match ${pkg.version}`);
+    process.exit(1);
+  }
+  if (!diffSrc.includes(`engine_version: "${pkg.version}"`)) {
+    console.error(`ERROR: audit-diff.mjs engine_version must match ${pkg.version}`);
     process.exit(1);
   }
 

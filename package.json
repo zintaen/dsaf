@@ -1,6 +1,6 @@
 {
   "name": "dsaf",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "DSAF — Agent-native Design System & Product UX/UI Audit Framework with deterministic runtime verification, token drift analysis, Dual-Track drafts, CI guardrails, and closed-loop evolution.",
   "type": "module",
   "bin": {

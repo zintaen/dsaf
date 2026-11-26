@@ -1,4 +1,4 @@
-# Mode S — Design System Core Audit (`v0.0.1`)
+# Mode S — Design System Core Audit (`v0.1.1`)
 
 Load this playbook when Step 0 confirms **`Mode S` (Design System Core)** — auditing an existing design system library, token package, or component system repository. Pair with [scoring-model.md](./scoring-model.md) and always follow the user's conversation language.
 
@@ -40,7 +40,7 @@ Inspect directly (no guessed scores):
 ### Step 4. Synthesize Findings & Compute 3-Band `system` Scorecard
 Run:
 ```bash
-node ./scripts/compute-scorecard.mjs --input <audit-output/system/scorecard-input.json> --lang <vi|en> --format markdown
+node ./scripts/compute-scorecard.mjs --input <audit-output/system/scorecard-input.json> --format markdown
 ```
 Enforce these mandatory integrity rules:
 - **3-Band Anti-Prose Cap (`prose <= 40`):** Every criterion `DS01–DS12` MUST specify `bands: { prose, artifacts, verification }` (`0..40`, `0..40`, `0..20`). Documentation prose alone without shipped artifacts AND verification proof caps score at `<= 1` (`max 40%`).

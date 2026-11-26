@@ -1,4 +1,4 @@
-# Mode C — Product Conformance & Drift Audit (`v0.1.0`)
+# Mode C — Product Conformance & Drift Audit (`v0.1.1`)
 
 Load this playbook when Step 0 confirms **`Mode C` (Product-on-DS Conformance & Drift)** — auditing a live product or application codebase that already consumes a design system, token library, or structured styling architecture. Pair with [scoring-model.md](./scoring-model.md), [mode-product-ux.md](./mode-product-ux.md), and [mode-product-ui.md](./mode-product-ui.md).
 

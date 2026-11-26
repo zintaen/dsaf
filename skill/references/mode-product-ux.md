@@ -1,4 +1,4 @@
-<!-- Version 0.0.1 (2026-11-26). English canonical specification for DSAF Product Usability Audits (Mode P & Mode C Round 1). Automatically mirror the user's conversation language across reports, UI copy checks, and previews unless explicitly overridden. -->
+<!-- Version 0.1.1 (2026-11-26). English canonical specification for DSAF Product Usability Audits (Mode P & Mode C Round 1). Automatically mirror the user's conversation language across reports, UI copy checks, and previews unless explicitly overridden. -->
 
 # Usability Evaluation & Redesign Using Multi-Axis Personas, Tasks, and a Weighted Rubric
 

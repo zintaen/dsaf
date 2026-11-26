@@ -1,4 +1,4 @@
-# DSAF — Design System & UX/UI Audit Framework (`v0.1.0`)
+# DSAF — Design System & UX/UI Audit Framework (`v0.1.1`)
 
 **DSAF** is a single, agent-native, clean-room audit framework that evaluates both **established design systems** and **live software products that do not yet have a design system** — pairing AI coding agents with deterministic Node ESM measurement scripts rather than static prose guesswork.
 

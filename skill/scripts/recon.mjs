@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * DSAF v0.0.1 — Step 0 Read-Only Reconnaissance Scanner (zero external deps).
+ * DSAF v0.1.1 — Step 0 Read-Only Reconnaissance Scanner (zero external deps).
  * Scans a local repository or records a URL stub strictly read-only to classify
  * target topology (Mode S / C / P), tech stack, cloud-isolation risks (T2-Mock),
  * and recommended Step 0 clarification defaults.
@@ -71,7 +71,10 @@ function collectFiles(rootDir, maxFiles = 3500) {
     for (const entry of entries) {
       if (files.length >= maxFiles) break;
       if (SKIP_DIRS.has(entry.name)) continue;
+      if (entry.isDirectory() && entry.name.startsWith(".") && entry.name !== ".storybook") continue;
       const full = join(dir, entry.name);
+      const rel = relative(rootDir, full).replace(/\\/g, "/");
+      if (/(^|\/)(ios\/App\/App\/public|android\/app\/src\/main\/assets\/public)\//i.test(rel)) continue;
       if (entry.isFile()) {
         files.push(full);
       } else if (entry.isDirectory()) {
@@ -153,7 +156,15 @@ export function analyzeDirectory(inputDir) {
     }
   }
 
-  const cssTokenFiles = relFiles.filter((r) => /(token|theme|variables|palette|design).*\.(css|scss|ts|js)$/.test(r));
+  const AUTH_OR_TEST_TOKEN_RE = /(\.test\.|\.spec\.|__tests__\/|\/tests?\/|\[[^\]]+\]|(^|\/)route\.(ts|js|tsx|jsx)$|(?:^|[/_-])(?:auth|oauth|oa|jwt|csrf|session|access|refresh|api|snooze|reset|verify|invite)[-_.]?token)/i;
+  const cssTokenFiles = relFiles.filter((r) => {
+    if (AUTH_OR_TEST_TOKEN_RE.test(r)) return false;
+    return (
+      /(^|\/)(?:design[-_]?)?(?:tokens?|themes?|variables|palette)[^/]*\.(css|scss)$/i.test(r) ||
+      /(^|\/)(?:theme|themes|tokens|design-tokens)\/[^/]+\.(css|scss)$/i.test(r) ||
+      /(^|\/)(?:theme|themes|tokens|design-tokens)\/(?:index|tokens?|colors?|theme)\.(ts|js)$/i.test(r)
+    );
+  });
   const figmaCodeConnect = relFiles.filter((r) => /\.figma\.(ts|tsx|js|jsx)$/.test(r) || r.endsWith("figma.config.json"));
   const componentFiles = relFiles.filter((r) => /(^|\/)(components?|primitives?|ui)\/.+\.(tsx|jsx|vue|svelte)$/.test(r));
   const appRoutes = relFiles.filter((r) => /(^|\/)(app|pages|routes|views|screens)\/.+\.(tsx|jsx|vue|svelte|html)$/.test(r));
@@ -168,7 +179,7 @@ export function analyzeDirectory(inputDir) {
   for (const sf of styleFiles.slice(0, 20)) {
     const txt = safeReadText(join(root, sf), 180_000);
     if (!txt) continue;
-    if (/@theme\b/.test(txt)) hasTailwindTheme = true;
+    if (/@theme(?:\s+inline)?\b/.test(txt)) hasTailwindTheme = true;
     const varDefs = txt.match(/--[a-zA-Z0-9_-]+\s*:/g);
     if (varDefs) cssCustomPropCount += varDefs.length;
   }
@@ -349,11 +360,38 @@ function runSelfTest() {
     const resCTok = analyzeDirectory(dirCTok);
     assert.equal(resCTok.recommendedMode, "C", `Expected Mode C on dedicated tokens.css, got ${resCTok.recommendedMode}`);
 
-    // 5. URL classification
+    // 5. Auth/test/route tokens & hidden/mobile bundles must NOT falsely trigger Mode C
+    const dirPAuth = join(scratch, "nextjs-auth-tokens");
+    mkdirSync(join(dirPAuth, "lib"), { recursive: true });
+    mkdirSync(join(dirPAuth, "app/lich/[token]"), { recursive: true });
+    mkdirSync(join(dirPAuth, ".worktrees/old"), { recursive: true });
+    mkdirSync(join(dirPAuth, "ios/App/App/public/assets"), { recursive: true });
+    writeFileSync(join(dirPAuth, "package.json"), JSON.stringify({ name: "next-app", dependencies: { next: "^15.0.0", react: "^19.0.0" }, scripts: { dev: "next dev" } }));
+    writeFileSync(join(dirPAuth, "lib/snooze_token.ts"), "export const sign = () => '';");
+    writeFileSync(join(dirPAuth, "lib/theme_toggle.test.ts"), "export const t = 1;");
+    writeFileSync(join(dirPAuth, "app/lich/[token]/route.ts"), "export async function GET() {}");
+    writeFileSync(join(dirPAuth, "app/globals.css"), ":root { --bg: #fff; }");
+    writeFileSync(join(dirPAuth, ".worktrees/old/tokens.css"), ":root { --ds: #000; }");
+    writeFileSync(join(dirPAuth, "ios/App/App/public/assets/vendor-design.css"), ".x{color:#000}");
+    const resPAuth = analyzeDirectory(dirPAuth);
+    assert.equal(resPAuth.recommendedMode, "P", `Expected Mode P despite auth/route/hidden token paths, got ${resPAuth.recommendedMode}`);
+    assert.equal(resPAuth.counts.cssTokenFiles, 0, "Auth/route/test token paths must not count as cssTokenFiles");
+
+    // 6. Tailwind v4 @theme inline triggers Mode C
+    const dirTw = join(scratch, "app-tw4");
+    mkdirSync(join(dirTw, "src"), { recursive: true });
+    writeFileSync(join(dirTw, "package.json"), JSON.stringify({ name: "tw4-app", dependencies: { react: "^19.0.0", vite: "^6.0.0" }, scripts: { dev: "vite" } }));
+    writeFileSync(join(dirTw, "src/App.tsx"), "export const App = () => null;");
+    writeFileSync(join(dirTw, "src/index.css"), "@theme inline { --color-brand: #1d4ed8; }");
+    const resTw = analyzeDirectory(dirTw);
+    assert.equal(resTw.stack.hasTailwindTheme, true, "Must detect @theme inline");
+    assert.equal(resTw.recommendedMode, "C", "Expected Mode C on Tailwind @theme inline");
+
+    // 7. URL classification
     assert.equal(analyzeUrlTarget("https://prod.example.com").recommendedDataTier, "T0");
     assert.match(analyzeUrlTarget("http://localhost:3000").recommendedDataTier, /^T2/);
 
-    console.log("RECON_SELF_TEST_PASSED (Mode S / Mode C + T2-Mock / Mode P / URL safety)");
+    console.log("RECON_SELF_TEST_PASSED (Mode S / Mode C + @theme inline + auth/hidden-dir exclusion / Mode P / URL safety)");
     return 0;
   } finally {
     rmSync(scratch, { recursive: true, force: true });

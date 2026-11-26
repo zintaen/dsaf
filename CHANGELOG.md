@@ -4,6 +4,14 @@ All notable changes to **DSAF (Design System Audit Framework)** will be document
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.1] - 2026-11-26
+
+### Fixed
+- **Eliminated Auth/Route Token Misclassification (`recon.mjs`):** Excluded test, dynamic-route (`[token]/route.ts`), auth/OAuth/session/snooze token filenames, hidden agent/worktree directories (`.worktrees`, `.claude`, `.agents`, etc. except `.storybook`), and Capacitor/Cordova mobile WebView bundles (`ios/App/App/public`, `android/app/src/main/assets/public`) from triggering false `Mode C` topology signals.
+- **Reduced `@theme` & Mobile Bundle Orphan False Positives (`audit-tokens.mjs`):** Added Tailwind v4 `@theme inline` utility class consumption detection (`--color-*`, `--spacing-*`, `--radius-*`, `--font-*`, `--shadow-*`, `--text-*`), JS `getPropertyValue` / `setProperty` references, hidden-dir skipping, and mobile WebView built bundle exclusions.
+- **Version-Agnostic Preview Shell (`preview-shell.html`):** Removed stale `v0.0.1` title/header text and re-rendered `docs/assets/preview-shell-showcase.png`.
+- **Stale Flag & Version Sync:** Removed nonexistent `--lang` flag from `skill/references/mode-system.md` and synchronized all script headers, docs, and `audit-diff.mjs` version parity checks.
+
 ## [0.1.0] - 2026-11-26
 
 ### Added
