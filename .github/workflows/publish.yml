@@ -1,0 +1,41 @@
+name: Publish to npm (OIDC)
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: 'https://registry.npmjs.org'
+      - name: Run full verification & isolation suite
+        run: npm test
+      - name: Verify tag matches package.json version & tarball excludes evolve/
+        run: |
+          node -e '
+            const fs = require("fs");
+            const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
+            if (process.env.GITHUB_REF_TYPE === "tag" && process.env.GITHUB_REF_NAME !== "v" + pkg.version) {
+              console.error("Tag", process.env.GITHUB_REF_NAME, "does not match package.json v" + pkg.version);
+              process.exit(1);
+            }
+          '
+          if npm pack --dry-run 2>&1 | grep -E '(^|\s)evolve/'; then
+            echo "ERROR: evolve/ leaked into npm tarball!"
+            exit 1
+          fi
+      - name: Upgrade npm CLI for OIDC Trusted Publishing
+        run: npm install -g npm@latest
+      - name: Publish @zintaen/dsaf with provenance
+        run: npm publish --provenance --access public

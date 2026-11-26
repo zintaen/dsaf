@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * DSAF v0.2.1 — Deterministic W3C DTCG Token Validator & Codebase Drift Scanner.
+ * DSAF v0.2.2 — Deterministic W3C DTCG Token Validator & Codebase Drift Scanner.
  * Zero external dependencies. Validates $value/$type/{alias}/$ref tokens, Light/Dark
  * mode parity, token-level WCAG 2.2 + APCA-W3 contrast, and scans stylesheets/UI
  * components for hardcoded color drift, property-scoped spacing drift, !important
@@ -450,7 +450,7 @@ export function scanTarget(targetPath) {
         }
         const rel = relative(resolved, full).replace(/\\/g, "/");
         if (
-          /(\.test\.|\.spec\.|__tests__\/|(^|\/)tests?\/|\.min\.(css|js)$|\.bundle\.(css|js|mjs)$|(^|\/)(public\/assets|static\/chunks|vendor|ios\/App\/App\/public|android\/app\/src\/main\/assets\/public)\/)/i.test(
+          /(\.test\.|\.spec\.|__tests__\/|(^|\/)(?:tests?|fixtures|__fixtures__)\/|\.min\.(css|js)$|\.bundle\.(css|js|mjs)$|(^|\/)(public\/assets|static\/chunks|vendor|ios\/App\/App\/public|android\/app\/src\/main\/assets\/public)\/)/i.test(
             rel
           )
         ) {
@@ -499,6 +499,7 @@ export function scanTarget(targetPath) {
   let twArbitrarySpacing = 0;
   let twPrimitiveColors = 0;
   const hardcodedHexSet = new Set();
+  const serverImageFiles = [];
   const sampleViolations = [];
 
   for (const cf of codeFiles.sort()) {
@@ -506,6 +507,11 @@ export function scanTarget(targetPath) {
     const rel = st.isDirectory() ? relative(resolved, cf) : cf;
     // Skip single-line compiled/minified bundles even without .min. suffix
     if (raw.length > 100_000 && raw.split("\n").length < 5) continue;
+    // Skip server-side raster OG/icon generators (e.g. next/og ImageResponse) that cannot read CSS var()
+    if (/\bImageResponse\b/.test(raw) && /next\/og|@vercel\/og|satori/i.test(raw)) {
+      serverImageFiles.push(rel);
+      continue;
+    }
     const isStyle = cf.endsWith(".css") || cf.endsWith(".scss");
 
     if (isStyle) {
@@ -621,6 +627,7 @@ export function scanTarget(targetPath) {
       nearDuplicateHexClusters,
       importantOverrides: importantCount,
       offGridSpacingHits,
+      serverImageFiles,
       tailwind: {
         arbitraryColors: twArbitraryColors,
         arbitrarySpacing: twArbitrarySpacing,
@@ -721,7 +728,23 @@ function runSelfTest() {
     assert.equal(twScan.drift.orphanCssVariableCount, 1, "Must detect only --color-unused-orphan");
     assert.deepEqual(twScan.drift.orphanCssVariablesSample, ["--color-unused-orphan"]);
 
-    console.log("AUDIT_TOKENS_SELF_TEST_PASSED (DTCG refs/modes/contrast + scoped CSS/@theme/Tailwind drift)");
+    // 6. Fixture HTML & Server ImageResponse OG exclusion (FB-20261126-007)
+    const ogRoot = join(scratch, "og-root");
+    mkdirSync(join(ogRoot, "crawler/fixtures"), { recursive: true });
+    mkdirSync(join(ogRoot, "app"), { recursive: true });
+    writeFileSync(join(ogRoot, "crawler/fixtures/sample.html"), `<div style="color:#ff0000;padding:13px;">snapshot</div>`);
+    writeFileSync(
+      join(ogRoot, "app/opengraph-image.tsx"),
+      `import { ImageResponse } from "next/og";\nexport default function Og() { return new ImageResponse(<div style={{ background: "#0b0f19", padding: "13px" }} />); }`
+    );
+    writeFileSync(join(ogRoot, "app/page.tsx"), `export default function Page() { return <main className="card" />; }`);
+    const ogScan = scanTarget(ogRoot);
+    assert.equal(ogScan.filesScanned.uiAndStyle, 2, "Must exclude crawler/fixtures/*.html");
+    assert.equal(ogScan.drift.hardcodedColorHits, 0, "Must exclude server ImageResponse OG hex colors");
+    assert.equal(ogScan.drift.offGridSpacingHits, 0, "Must exclude server ImageResponse OG padding");
+    assert.deepEqual(ogScan.drift.serverImageFiles, ["app/opengraph-image.tsx"]);
+
+    console.log("AUDIT_TOKENS_SELF_TEST_PASSED (DTCG refs/modes/contrast + scoped CSS/@theme/Tailwind + fixture/OG exclusion)");
     return 0;
   } finally {
     rmSync(scratch, { recursive: true, force: true });
@@ -777,8 +800,9 @@ function main() {
     } else {
       console.log("DTCG Tokens: none detected");
     }
+    const ogNote = d.serverImageFiles.length > 0 ? ` | serverImageSkipped=${d.serverImageFiles.length}` : "";
     console.log(
-      `CSS Drift: compliance=${d.tokenCompliancePct ?? "N/A"}% (varRefs=${d.colorTokenRefs} vs hardcoded=${d.hardcodedColorHits}) | orphans=${d.orphanCssVariableCount} | !important=${d.importantOverrides} | offGridPx=${d.offGridSpacingHits} | nearDupHexClusters=${d.nearDuplicateHexClusters.length} | twArbColor=${d.tailwind.arbitraryColors} twArbPx=${d.tailwind.arbitrarySpacing} twPrim=${d.tailwind.primitiveColors}`
+      `CSS Drift: compliance=${d.tokenCompliancePct ?? "N/A"}% (varRefs=${d.colorTokenRefs} vs hardcoded=${d.hardcodedColorHits}) | orphans=${d.orphanCssVariableCount} | !important=${d.importantOverrides} | offGridPx=${d.offGridSpacingHits} | nearDupHexClusters=${d.nearDuplicateHexClusters.length} | twArbColor=${d.tailwind.arbitraryColors} twArbPx=${d.tailwind.arbitrarySpacing} twPrim=${d.tailwind.primitiveColors}${ogNote}`
     );
   }
 }

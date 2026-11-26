@@ -1,0 +1,1081 @@
+{
+  "schema": "dsaf-scores/2",
+  "engine_version": "0.2.2",
+  "generated": "2026-11-26T12:58:58.753Z",
+  "type": "usability",
+  "profile": "consumer_mobile",
+  "weights": {
+    "P1": 20,
+    "P2": 15,
+    "P3": 20,
+    "P4": 15,
+    "P5": 15,
+    "P6": 15
+  },
+  "phases": {
+    "before": {
+      "pillars": [
+        {
+          "id": "P1",
+          "name": "Onboarding & Value Clarity",
+          "weight": 20,
+          "scored_criteria": 3,
+          "total_criteria": 3,
+          "raw_sum": 6,
+          "max_raw": 6,
+          "pct": 100,
+          "weighted_points": 20,
+          "pts_per_step": 3.33
+        },
+        {
+          "id": "P2",
+          "name": "IA, Navigation & Mental Model",
+          "weight": 15,
+          "scored_criteria": 3,
+          "total_criteria": 3,
+          "raw_sum": 4,
+          "max_raw": 6,
+          "pct": 66.67,
+          "weighted_points": 10,
+          "pts_per_step": 2.5
+        },
+        {
+          "id": "P3",
+          "name": "Efficiency & Laws of UX",
+          "weight": 20,
+          "scored_criteria": 3,
+          "total_criteria": 3,
+          "raw_sum": 6,
+          "max_raw": 6,
+          "pct": 100,
+          "weighted_points": 20,
+          "pts_per_step": 3.33
+        },
+        {
+          "id": "P4",
+          "name": "Feedback, Errors & Recovery",
+          "weight": 15,
+          "scored_criteria": 4,
+          "total_criteria": 4,
+          "raw_sum": 6,
+          "max_raw": 8,
+          "pct": 75,
+          "weighted_points": 11.25,
+          "pts_per_step": 1.88
+        },
+        {
+          "id": "P5",
+          "name": "Consistency, Content & Trust",
+          "weight": 15,
+          "scored_criteria": 4,
+          "total_criteria": 4,
+          "raw_sum": 8,
+          "max_raw": 8,
+          "pct": 100,
+          "weighted_points": 15,
+          "pts_per_step": 1.88
+        },
+        {
+          "id": "P6",
+          "name": "WCAG 2.2 AA Accessibility (Hard Floor)",
+          "weight": 15,
+          "scored_criteria": 1,
+          "total_criteria": 1,
+          "raw_sum": 2,
+          "max_raw": 2,
+          "pct": 100,
+          "weighted_points": 15,
+          "pts_per_step": 7.5
+        }
+      ],
+      "scored_weight_sum": 100,
+      "total": 91.25,
+      "hard_floor_blockers": [],
+      "grade": "Grade A — Excellent / Production-Ready",
+      "criterion_unit_points": {
+        "U01": {
+          "exact_step": 3.3333333333333335,
+          "pts_per_step": 3.33,
+          "max_pts": 6.67
+        },
+        "U02": {
+          "exact_step": 3.3333333333333335,
+          "pts_per_step": 3.33,
+          "max_pts": 6.67
+        },
+        "U03": {
+          "exact_step": 3.3333333333333335,
+          "pts_per_step": 3.33,
+          "max_pts": 6.67
+        },
+        "U04": {
+          "exact_step": 2.5,
+          "pts_per_step": 2.5,
+          "max_pts": 5
+        },
+        "U05": {
+          "exact_step": 2.5,
+          "pts_per_step": 2.5,
+          "max_pts": 5
+        },
+        "U06": {
+          "exact_step": 2.5,
+          "pts_per_step": 2.5,
+          "max_pts": 5
+        },
+        "U07": {
+          "exact_step": 3.3333333333333335,
+          "pts_per_step": 3.33,
+          "max_pts": 6.67
+        },
+        "U08": {
+          "exact_step": 3.3333333333333335,
+          "pts_per_step": 3.33,
+          "max_pts": 6.67
+        },
+        "U09": {
+          "exact_step": 3.3333333333333335,
+          "pts_per_step": 3.33,
+          "max_pts": 6.67
+        },
+        "U10": {
+          "exact_step": 1.875,
+          "pts_per_step": 1.88,
+          "max_pts": 3.75
+        },
+        "U11": {
+          "exact_step": 1.875,
+          "pts_per_step": 1.88,
+          "max_pts": 3.75
+        },
+        "U12": {
+          "exact_step": 1.875,
+          "pts_per_step": 1.88,
+          "max_pts": 3.75
+        },
+        "U13": {
+          "exact_step": 1.875,
+          "pts_per_step": 1.88,
+          "max_pts": 3.75
+        },
+        "U14": {
+          "exact_step": 1.875,
+          "pts_per_step": 1.88,
+          "max_pts": 3.75
+        },
+        "U15": {
+          "exact_step": 1.875,
+          "pts_per_step": 1.88,
+          "max_pts": 3.75
+        },
+        "U16": {
+          "exact_step": 1.875,
+          "pts_per_step": 1.88,
+          "max_pts": 3.75
+        },
+        "U17": {
+          "exact_step": 1.875,
+          "pts_per_step": 1.88,
+          "max_pts": 3.75
+        },
+        "U18": {
+          "exact_step": 7.5,
+          "pts_per_step": 7.5,
+          "max_pts": 15
+        }
+      }
+    },
+    "after_track_a": {
+      "pillars": [
+        {
+          "id": "P1",
+          "name": "Onboarding & Value Clarity",
+          "weight": 20,
+          "scored_criteria": 3,
+          "total_criteria": 3,
+          "raw_sum": 6,
+          "max_raw": 6,
+          "pct": 100,
+          "weighted_points": 20,
+          "pts_per_step": 3.33
+        },
+        {
+          "id": "P2",
+          "name": "IA, Navigation & Mental Model",
+          "weight": 15,
+          "scored_criteria": 3,
+          "total_criteria": 3,
+          "raw_sum": 6,
+          "max_raw": 6,
+          "pct": 100,
+          "weighted_points": 15,
+          "pts_per_step": 2.5
+        },
+        {
+          "id": "P3",
+          "name": "Efficiency & Laws of UX",
+          "weight": 20,
+          "scored_criteria": 3,
+          "total_criteria": 3,
+          "raw_sum": 6,
+          "max_raw": 6,
+          "pct": 100,
+          "weighted_points": 20,
+          "pts_per_step": 3.33
+        },
+        {
+          "id": "P4",
+          "name": "Feedback, Errors & Recovery",
+          "weight": 15,
+          "scored_criteria": 4,
+          "total_criteria": 4,
+          "raw_sum": 8,
+          "max_raw": 8,
+          "pct": 100,
+          "weighted_points": 15,
+          "pts_per_step": 1.88
+        },
+        {
+          "id": "P5",
+          "name": "Consistency, Content & Trust",
+          "weight": 15,
+          "scored_criteria": 4,
+          "total_criteria": 4,
+          "raw_sum": 8,
+          "max_raw": 8,
+          "pct": 100,
+          "weighted_points": 15,
+          "pts_per_step": 1.88
+        },
+        {
+          "id": "P6",
+          "name": "WCAG 2.2 AA Accessibility (Hard Floor)",
+          "weight": 15,
+          "scored_criteria": 1,
+          "total_criteria": 1,
+          "raw_sum": 2,
+          "max_raw": 2,
+          "pct": 100,
+          "weighted_points": 15,
+          "pts_per_step": 7.5
+        }
+      ],
+      "scored_weight_sum": 100,
+      "total": 100,
+      "hard_floor_blockers": [],
+      "grade": "Grade A — Excellent / Production-Ready",
+      "criterion_unit_points": {
+        "U01": {
+          "exact_step": 3.3333333333333335,
+          "pts_per_step": 3.33,
+          "max_pts": 6.67
+        },
+        "U02": {
+          "exact_step": 3.3333333333333335,
+          "pts_per_step": 3.33,
+          "max_pts": 6.67
+        },
+        "U03": {
+          "exact_step": 3.3333333333333335,
+          "pts_per_step": 3.33,
+          "max_pts": 6.67
+        },
+        "U04": {
+          "exact_step": 2.5,
+          "pts_per_step": 2.5,
+          "max_pts": 5
+        },
+        "U05": {
+          "exact_step": 2.5,
+          "pts_per_step": 2.5,
+          "max_pts": 5
+        },
+        "U06": {
+          "exact_step": 2.5,
+          "pts_per_step": 2.5,
+          "max_pts": 5
+        },
+        "U07": {
+          "exact_step": 3.3333333333333335,
+          "pts_per_step": 3.33,
+          "max_pts": 6.67
+        },
+        "U08": {
+          "exact_step": 3.3333333333333335,
+          "pts_per_step": 3.33,
+          "max_pts": 6.67
+        },
+        "U09": {
+          "exact_step": 3.3333333333333335,
+          "pts_per_step": 3.33,
+          "max_pts": 6.67
+        },
+        "U10": {
+          "exact_step": 1.875,
+          "pts_per_step": 1.88,
+          "max_pts": 3.75
+        },
+        "U11": {
+          "exact_step": 1.875,
+          "pts_per_step": 1.88,
+          "max_pts": 3.75
+        },
+        "U12": {
+          "exact_step": 1.875,
+          "pts_per_step": 1.88,
+          "max_pts": 3.75
+        },
+        "U13": {
+          "exact_step": 1.875,
+          "pts_per_step": 1.88,
+          "max_pts": 3.75
+        },
+        "U14": {
+          "exact_step": 1.875,
+          "pts_per_step": 1.88,
+          "max_pts": 3.75
+        },
+        "U15": {
+          "exact_step": 1.875,
+          "pts_per_step": 1.88,
+          "max_pts": 3.75
+        },
+        "U16": {
+          "exact_step": 1.875,
+          "pts_per_step": 1.88,
+          "max_pts": 3.75
+        },
+        "U17": {
+          "exact_step": 1.875,
+          "pts_per_step": 1.88,
+          "max_pts": 3.75
+        },
+        "U18": {
+          "exact_step": 7.5,
+          "pts_per_step": 7.5,
+          "max_pts": 15
+        }
+      }
+    },
+    "after_track_b": {
+      "pillars": [
+        {
+          "id": "P1",
+          "name": "Onboarding & Value Clarity",
+          "weight": 20,
+          "scored_criteria": 3,
+          "total_criteria": 3,
+          "raw_sum": 6,
+          "max_raw": 6,
+          "pct": 100,
+          "weighted_points": 20,
+          "pts_per_step": 3.33
+        },
+        {
+          "id": "P2",
+          "name": "IA, Navigation & Mental Model",
+          "weight": 15,
+          "scored_criteria": 3,
+          "total_criteria": 3,
+          "raw_sum": 6,
+          "max_raw": 6,
+          "pct": 100,
+          "weighted_points": 15,
+          "pts_per_step": 2.5
+        },
+        {
+          "id": "P3",
+          "name": "Efficiency & Laws of UX",
+          "weight": 20,
+          "scored_criteria": 3,
+          "total_criteria": 3,
+          "raw_sum": 6,
+          "max_raw": 6,
+          "pct": 100,
+          "weighted_points": 20,
+          "pts_per_step": 3.33
+        },
+        {
+          "id": "P4",
+          "name": "Feedback, Errors & Recovery",
+          "weight": 15,
+          "scored_criteria": 4,
+          "total_criteria": 4,
+          "raw_sum": 8,
+          "max_raw": 8,
+          "pct": 100,
+          "weighted_points": 15,
+          "pts_per_step": 1.88
+        },
+        {
+          "id": "P5",
+          "name": "Consistency, Content & Trust",
+          "weight": 15,
+          "scored_criteria": 4,
+          "total_criteria": 4,
+          "raw_sum": 8,
+          "max_raw": 8,
+          "pct": 100,
+          "weighted_points": 15,
+          "pts_per_step": 1.88
+        },
+        {
+          "id": "P6",
+          "name": "WCAG 2.2 AA Accessibility (Hard Floor)",
+          "weight": 15,
+          "scored_criteria": 1,
+          "total_criteria": 1,
+          "raw_sum": 2,
+          "max_raw": 2,
+          "pct": 100,
+          "weighted_points": 15,
+          "pts_per_step": 7.5
+        }
+      ],
+      "scored_weight_sum": 100,
+      "total": 100,
+      "hard_floor_blockers": [],
+      "grade": "Grade A — Excellent / Production-Ready",
+      "criterion_unit_points": {
+        "U01": {
+          "exact_step": 3.3333333333333335,
+          "pts_per_step": 3.33,
+          "max_pts": 6.67
+        },
+        "U02": {
+          "exact_step": 3.3333333333333335,
+          "pts_per_step": 3.33,
+          "max_pts": 6.67
+        },
+        "U03": {
+          "exact_step": 3.3333333333333335,
+          "pts_per_step": 3.33,
+          "max_pts": 6.67
+        },
+        "U04": {
+          "exact_step": 2.5,
+          "pts_per_step": 2.5,
+          "max_pts": 5
+        },
+        "U05": {
+          "exact_step": 2.5,
+          "pts_per_step": 2.5,
+          "max_pts": 5
+        },
+        "U06": {
+          "exact_step": 2.5,
+          "pts_per_step": 2.5,
+          "max_pts": 5
+        },
+        "U07": {
+          "exact_step": 3.3333333333333335,
+          "pts_per_step": 3.33,
+          "max_pts": 6.67
+        },
+        "U08": {
+          "exact_step": 3.3333333333333335,
+          "pts_per_step": 3.33,
+          "max_pts": 6.67
+        },
+        "U09": {
+          "exact_step": 3.3333333333333335,
+          "pts_per_step": 3.33,
+          "max_pts": 6.67
+        },
+        "U10": {
+          "exact_step": 1.875,
+          "pts_per_step": 1.88,
+          "max_pts": 3.75
+        },
+        "U11": {
+          "exact_step": 1.875,
+          "pts_per_step": 1.88,
+          "max_pts": 3.75
+        },
+        "U12": {
+          "exact_step": 1.875,
+          "pts_per_step": 1.88,
+          "max_pts": 3.75
+        },
+        "U13": {
+          "exact_step": 1.875,
+          "pts_per_step": 1.88,
+          "max_pts": 3.75
+        },
+        "U14": {
+          "exact_step": 1.875,
+          "pts_per_step": 1.88,
+          "max_pts": 3.75
+        },
+        "U15": {
+          "exact_step": 1.875,
+          "pts_per_step": 1.88,
+          "max_pts": 3.75
+        },
+        "U16": {
+          "exact_step": 1.875,
+          "pts_per_step": 1.88,
+          "max_pts": 3.75
+        },
+        "U17": {
+          "exact_step": 1.875,
+          "pts_per_step": 1.88,
+          "max_pts": 3.75
+        },
+        "U18": {
+          "exact_step": 7.5,
+          "pts_per_step": 7.5,
+          "max_pts": 15
+        }
+      }
+    }
+  },
+  "deltas": {
+    "after_track_a": 8.75,
+    "after_track_b": 8.75
+  },
+  "criterion_deltas": {
+    "after_track_a": {
+      "U01": 0,
+      "U02": 0,
+      "U03": 0,
+      "U04": 2.5,
+      "U05": 2.5,
+      "U06": 0,
+      "U07": 0,
+      "U08": 0,
+      "U09": 0,
+      "U10": 1.88,
+      "U11": 0,
+      "U12": 1.88,
+      "U13": 0,
+      "U14": 0,
+      "U15": 0,
+      "U16": 0,
+      "U17": 0,
+      "U18": 0
+    },
+    "after_track_b": {
+      "U01": 0,
+      "U02": 0,
+      "U03": 0,
+      "U04": 2.5,
+      "U05": 2.5,
+      "U06": 0,
+      "U07": 0,
+      "U08": 0,
+      "U09": 0,
+      "U10": 1.88,
+      "U11": 0,
+      "U12": 1.88,
+      "U13": 0,
+      "U14": 0,
+      "U15": 0,
+      "U16": 0,
+      "U17": 0,
+      "U18": 0
+    }
+  },
+  "criteria": {
+    "before": {
+      "U01": {
+        "score": 2,
+        "findings": [],
+        "reason": "",
+        "secondary_impact": false,
+        "volatility": "FIXED",
+        "bands": null,
+        "check_type": null
+      },
+      "U02": {
+        "score": 2,
+        "findings": [],
+        "reason": "",
+        "secondary_impact": false,
+        "volatility": "FIXED",
+        "bands": null,
+        "check_type": null
+      },
+      "U03": {
+        "score": 2,
+        "findings": [],
+        "reason": "",
+        "secondary_impact": false,
+        "volatility": "FIXED",
+        "bands": null,
+        "check_type": null
+      },
+      "U04": {
+        "score": 1,
+        "findings": [
+          "UX-11"
+        ],
+        "reason": "",
+        "secondary_impact": false,
+        "volatility": "FIXED",
+        "bands": null,
+        "check_type": null
+      },
+      "U05": {
+        "score": 1,
+        "findings": [
+          "UX-11"
+        ],
+        "reason": "",
+        "secondary_impact": false,
+        "volatility": "FIXED",
+        "bands": null,
+        "check_type": null
+      },
+      "U06": {
+        "score": 2,
+        "findings": [],
+        "reason": "",
+        "secondary_impact": false,
+        "volatility": "FIXED",
+        "bands": null,
+        "check_type": null
+      },
+      "U07": {
+        "score": 2,
+        "findings": [],
+        "reason": "",
+        "secondary_impact": false,
+        "volatility": "FIXED",
+        "bands": null,
+        "check_type": null
+      },
+      "U08": {
+        "score": 2,
+        "findings": [],
+        "reason": "",
+        "secondary_impact": false,
+        "volatility": "FIXED",
+        "bands": null,
+        "check_type": null
+      },
+      "U09": {
+        "score": 2,
+        "findings": [],
+        "reason": "",
+        "secondary_impact": false,
+        "volatility": "FIXED",
+        "bands": null,
+        "check_type": null
+      },
+      "U10": {
+        "score": 1,
+        "findings": [
+          "UX-12"
+        ],
+        "reason": "",
+        "secondary_impact": false,
+        "volatility": "FIXED",
+        "bands": null,
+        "check_type": null
+      },
+      "U11": {
+        "score": 2,
+        "findings": [],
+        "reason": "",
+        "secondary_impact": false,
+        "volatility": "FIXED",
+        "bands": null,
+        "check_type": null
+      },
+      "U12": {
+        "score": 1,
+        "findings": [
+          "UX-12"
+        ],
+        "reason": "",
+        "secondary_impact": false,
+        "volatility": "FIXED",
+        "bands": null,
+        "check_type": null
+      },
+      "U13": {
+        "score": 2,
+        "findings": [],
+        "reason": "",
+        "secondary_impact": false,
+        "volatility": "FIXED",
+        "bands": null,
+        "check_type": null
+      },
+      "U14": {
+        "score": 2,
+        "findings": [],
+        "reason": "",
+        "secondary_impact": false,
+        "volatility": "FIXED",
+        "bands": null,
+        "check_type": null
+      },
+      "U15": {
+        "score": 2,
+        "findings": [],
+        "reason": "",
+        "secondary_impact": false,
+        "volatility": "FIXED",
+        "bands": null,
+        "check_type": null
+      },
+      "U16": {
+        "score": 2,
+        "findings": [],
+        "reason": "",
+        "secondary_impact": false,
+        "volatility": "FIXED",
+        "bands": null,
+        "check_type": null
+      },
+      "U17": {
+        "score": 2,
+        "findings": [],
+        "reason": "",
+        "secondary_impact": false,
+        "volatility": "FIXED",
+        "bands": null,
+        "check_type": null
+      },
+      "U18": {
+        "score": 2,
+        "findings": [],
+        "reason": "",
+        "secondary_impact": false,
+        "volatility": "FIXED",
+        "bands": null,
+        "check_type": null
+      }
+    },
+    "after_track_a": {
+      "U01": {
+        "score": 2,
+        "findings": [],
+        "reason": "",
+        "secondary_impact": false,
+        "volatility": "FIXED",
+        "bands": null,
+        "check_type": null
+      },
+      "U02": {
+        "score": 2,
+        "findings": [],
+        "reason": "",
+        "secondary_impact": false,
+        "volatility": "FIXED",
+        "bands": null,
+        "check_type": null
+      },
+      "U03": {
+        "score": 2,
+        "findings": [],
+        "reason": "",
+        "secondary_impact": false,
+        "volatility": "FIXED",
+        "bands": null,
+        "check_type": null
+      },
+      "U04": {
+        "score": 2,
+        "findings": [],
+        "reason": "Navigation hierarchy clarified",
+        "secondary_impact": false,
+        "volatility": "FIXED",
+        "bands": null,
+        "check_type": null
+      },
+      "U05": {
+        "score": 2,
+        "findings": [],
+        "reason": "Search affordance pinned",
+        "secondary_impact": false,
+        "volatility": "FIXED",
+        "bands": null,
+        "check_type": null
+      },
+      "U06": {
+        "score": 2,
+        "findings": [],
+        "reason": "",
+        "secondary_impact": false,
+        "volatility": "FIXED",
+        "bands": null,
+        "check_type": null
+      },
+      "U07": {
+        "score": 2,
+        "findings": [],
+        "reason": "",
+        "secondary_impact": false,
+        "volatility": "FIXED",
+        "bands": null,
+        "check_type": null
+      },
+      "U08": {
+        "score": 2,
+        "findings": [],
+        "reason": "",
+        "secondary_impact": false,
+        "volatility": "FIXED",
+        "bands": null,
+        "check_type": null
+      },
+      "U09": {
+        "score": 2,
+        "findings": [],
+        "reason": "",
+        "secondary_impact": false,
+        "volatility": "FIXED",
+        "bands": null,
+        "check_type": null
+      },
+      "U10": {
+        "score": 2,
+        "findings": [],
+        "reason": "Inline form errors actionable",
+        "secondary_impact": false,
+        "volatility": "FIXED",
+        "bands": null,
+        "check_type": null
+      },
+      "U11": {
+        "score": 2,
+        "findings": [],
+        "reason": "",
+        "secondary_impact": false,
+        "volatility": "FIXED",
+        "bands": null,
+        "check_type": null
+      },
+      "U12": {
+        "score": 2,
+        "findings": [],
+        "reason": "Preserved unsaved filter state",
+        "secondary_impact": false,
+        "volatility": "FIXED",
+        "bands": null,
+        "check_type": null
+      },
+      "U13": {
+        "score": 2,
+        "findings": [],
+        "reason": "",
+        "secondary_impact": false,
+        "volatility": "FIXED",
+        "bands": null,
+        "check_type": null
+      },
+      "U14": {
+        "score": 2,
+        "findings": [],
+        "reason": "",
+        "secondary_impact": false,
+        "volatility": "FIXED",
+        "bands": null,
+        "check_type": null
+      },
+      "U15": {
+        "score": 2,
+        "findings": [],
+        "reason": "",
+        "secondary_impact": false,
+        "volatility": "FIXED",
+        "bands": null,
+        "check_type": null
+      },
+      "U16": {
+        "score": 2,
+        "findings": [],
+        "reason": "",
+        "secondary_impact": false,
+        "volatility": "FIXED",
+        "bands": null,
+        "check_type": null
+      },
+      "U17": {
+        "score": 2,
+        "findings": [],
+        "reason": "",
+        "secondary_impact": false,
+        "volatility": "FIXED",
+        "bands": null,
+        "check_type": null
+      },
+      "U18": {
+        "score": 2,
+        "findings": [],
+        "reason": "",
+        "secondary_impact": false,
+        "volatility": "FIXED",
+        "bands": null,
+        "check_type": null
+      }
+    },
+    "after_track_b": {
+      "U01": {
+        "score": 2,
+        "findings": [],
+        "reason": "",
+        "secondary_impact": false,
+        "volatility": "FIXED",
+        "bands": null,
+        "check_type": null
+      },
+      "U02": {
+        "score": 2,
+        "findings": [],
+        "reason": "",
+        "secondary_impact": false,
+        "volatility": "FIXED",
+        "bands": null,
+        "check_type": null
+      },
+      "U03": {
+        "score": 2,
+        "findings": [],
+        "reason": "",
+        "secondary_impact": false,
+        "volatility": "FIXED",
+        "bands": null,
+        "check_type": null
+      },
+      "U04": {
+        "score": 2,
+        "findings": [],
+        "reason": "",
+        "secondary_impact": false,
+        "volatility": "FIXED",
+        "bands": null,
+        "check_type": null
+      },
+      "U05": {
+        "score": 2,
+        "findings": [],
+        "reason": "",
+        "secondary_impact": false,
+        "volatility": "FIXED",
+        "bands": null,
+        "check_type": null
+      },
+      "U06": {
+        "score": 2,
+        "findings": [],
+        "reason": "",
+        "secondary_impact": false,
+        "volatility": "FIXED",
+        "bands": null,
+        "check_type": null
+      },
+      "U07": {
+        "score": 2,
+        "findings": [],
+        "reason": "",
+        "secondary_impact": false,
+        "volatility": "FIXED",
+        "bands": null,
+        "check_type": null
+      },
+      "U08": {
+        "score": 2,
+        "findings": [],
+        "reason": "",
+        "secondary_impact": false,
+        "volatility": "FIXED",
+        "bands": null,
+        "check_type": null
+      },
+      "U09": {
+        "score": 2,
+        "findings": [],
+        "reason": "",
+        "secondary_impact": false,
+        "volatility": "FIXED",
+        "bands": null,
+        "check_type": null
+      },
+      "U10": {
+        "score": 2,
+        "findings": [],
+        "reason": "",
+        "secondary_impact": false,
+        "volatility": "FIXED",
+        "bands": null,
+        "check_type": null
+      },
+      "U11": {
+        "score": 2,
+        "findings": [],
+        "reason": "",
+        "secondary_impact": false,
+        "volatility": "FIXED",
+        "bands": null,
+        "check_type": null
+      },
+      "U12": {
+        "score": 2,
+        "findings": [],
+        "reason": "",
+        "secondary_impact": false,
+        "volatility": "FIXED",
+        "bands": null,
+        "check_type": null
+      },
+      "U13": {
+        "score": 2,
+        "findings": [],
+        "reason": "",
+        "secondary_impact": false,
+        "volatility": "FIXED",
+        "bands": null,
+        "check_type": null
+      },
+      "U14": {
+        "score": 2,
+        "findings": [],
+        "reason": "",
+        "secondary_impact": false,
+        "volatility": "FIXED",
+        "bands": null,
+        "check_type": null
+      },
+      "U15": {
+        "score": 2,
+        "findings": [],
+        "reason": "",
+        "secondary_impact": false,
+        "volatility": "FIXED",
+        "bands": null,
+        "check_type": null
+      },
+      "U16": {
+        "score": 2,
+        "findings": [],
+        "reason": "",
+        "secondary_impact": false,
+        "volatility": "FIXED",
+        "bands": null,
+        "check_type": null
+      },
+      "U17": {
+        "score": 2,
+        "findings": [],
+        "reason": "",
+        "secondary_impact": false,
+        "volatility": "FIXED",
+        "bands": null,
+        "check_type": null
+      },
+      "U18": {
+        "score": 2,
+        "findings": [],
+        "reason": "",
+        "secondary_impact": false,
+        "volatility": "FIXED",
+        "bands": null,
+        "check_type": null
+      }
+    }
+  }
+}

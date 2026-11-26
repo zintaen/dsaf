@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * DSAF v0.2.1 — Automated 3-Vertex Figma MCP / Code Connect Triangulation CLI.
+ * DSAF v0.2.2 — Automated 3-Vertex Figma MCP / Code Connect Triangulation CLI.
  * Compares Designed (Figma variable JSON + optional Code Connect *.figma.* files)
  * against Defined (W3C DTCG tokens / CSS variables / audit-tokens JSON) and optional
  * Shipped runtime summary (`audit-runtime --json`). Zero external dependencies.

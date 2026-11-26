@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * DSAF v0.2.1 — CI & AI-Agent Design Guardrail Generator (+SG).
+ * DSAF v0.2.2 — CI & AI-Agent Design Guardrail Generator (+SG).
  * Emits zero-dependency discipline checker script, GitHub Actions workflow template,
  * and concise AI agent coding rules for downstream repos.
  */
@@ -12,7 +12,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 
-export const GENERATOR_VERSION = "0.2.1";
+export const GENERATOR_VERSION = "0.2.2";
 
 function buildDisciplineChecker(stack) {
   const checkTailwind = stack === "tailwind" || stack === "react";
@@ -430,7 +430,7 @@ export const Logo = () => (
     assert.equal(twRun.status, 1, "Generated discipline checker must fail on bg-[#ff00aa] p-[13px]");
     assert.match(twRun.stdout, /styleColors=0 \(max 0\).*twArbitrary=2 \(max 0\)/);
 
-    console.log("GENERATE_GUARDRAILS_SELF_TEST_PASSED (v0.2.1 style/SVG/swatch separation + Tailwind + syntax + workflow + rules)");
+    console.log("GENERATE_GUARDRAILS_SELF_TEST_PASSED (v0.2.2 style/SVG/swatch separation + single-file + Tailwind + syntax + rules)");
     return 0;
   } finally {
     rmSync(scratch, { recursive: true, force: true });

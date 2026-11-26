@@ -1,6 +1,7 @@
-# DSAF — Design System & UX/UI Audit Framework (`v0.2.1`)
+# DSAF — Design System & UX/UI Audit Framework (`v0.2.2`)
 
 [![CI](https://github.com/zintaen/dsaf/actions/workflows/ci.yml/badge.svg)](https://github.com/zintaen/dsaf/actions/workflows/ci.yml)
+[![npm version](https://img.shields.io/npm/v/@zintaen/dsaf)](https://www.npmjs.com/package/@zintaen/dsaf)
 [![Release](https://img.shields.io/github/v/release/zintaen/dsaf)](https://github.com/zintaen/dsaf/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Node.js >= 20](https://img.shields.io/badge/node-%3E%3D20-brightgreen.svg)](package.json)
@@ -53,10 +54,10 @@ node bin/dsaf.mjs guardrails --out ./your-app/.dsaf-guardrails --stack tailwind
 ```
 
 > **Practical runtime & guardrail tips:**
-> - **Live Playwright resolution (`dsaf runtime`):** If `dsaf` is invoked outside the audited repo, set `NODE_PATH=./node_modules` (and `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH` if using a pre-installed browser shell) so `playwright` resolves cleanly.
+> - **Automatic `playwright` & `axe-core` discovery (`dsaf runtime`):** Automatically searches `process.cwd()` and the target file/directory's ancestor `node_modules/` folders cleanly with no `NODE_PATH` needed (override with `NODE_PATH` or `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH` if using an isolated browser dir).
 > - **`+SG` gate targets & env caps (`check-design-discipline.mjs`):** Accepts either a directory (`app`, `src`) or a single file (`app/globals.css`). Configure budgets with `DSAF_MAX_HARDCODED_COLORS`, `DSAF_MAX_IMPORTANT`, `DSAF_MAX_TW_ARBITRARY`, plus optional `DSAF_MAX_SVG_COLORS` and `DSAF_MAX_SWATCH_COLORS`.
 
-Or install/link via `npm link` / `npm install -g @zintaen/dsaf` (or `npx @zintaen/dsaf` — `package.json` configures a strict `"files"` whitelist excluding maintainer-only `evolve/`) to invoke `dsaf <command>` anywhere (`recon`, `tokens`, `figma-diff`, `runtime`, `scorecard`, `diff`, `guardrails`, `integrity`, `verify`, `mine`, `sync`, `version`).
+Or install/link via `npm link` / `npm install -g @zintaen/dsaf` (or `npx @zintaen/dsaf` — `package.json` configures a strict `"files"` whitelist excluding maintainer-only `evolve/`; releases publish automatically via GitHub Actions OIDC `.github/workflows/publish.yml` on `v*` tags) to invoke `dsaf <command>` anywhere (`recon`, `tokens`, `figma-diff`, `runtime`, `scorecard`, `diff`, `guardrails`, `integrity`, `verify`, `mine`, `sync`, `version`).
 
 ### 3. Install `dsaf` (and Optional Maintainer `dsaf-evolve`) into AI Coding Agents
 

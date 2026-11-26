@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 /**
- * DSAF v0.2.1 — Runtime Browser, APCA-W3, Keyboard, Screenshot & N-of-1 Verifier.
+ * DSAF v0.2.2 — Runtime Browser, APCA-W3, Keyboard, Screenshot & N-of-1 Verifier.
  * Pure-JS self-tests run with zero dependencies. Live browser/draft audits lazily
  * require Playwright (`playwright` or `@playwright/test`) and Chromium.
  */
 
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
@@ -141,13 +141,55 @@ function parseArgs(argv) {
   return out;
 }
 
-function loadPlaywright() {
+export function collectAncestorDirs(targetPaths = []) {
+  const dirs = [];
+  const seen = new Set();
+  const pushAncestors = (startDir) => {
+    let cur = resolve(startDir);
+    while (cur && !seen.has(cur)) {
+      seen.add(cur);
+      dirs.push(cur);
+      const parent = dirname(cur);
+      if (parent === cur) break;
+      cur = parent;
+    }
+  };
+  pushAncestors(process.cwd());
+  for (const t of targetPaths) {
+    if (!t || /^(?:https?|data):/i.test(t)) continue;
+    let p = t;
+    if (/^file:\/\//i.test(p)) {
+      try {
+        p = decodeURIComponent(new URL(p).pathname);
+      } catch {
+        continue;
+      }
+    }
+    const clean = resolve(p.split("?")[0]);
+    let start = clean;
+    try {
+      start = statSync(clean).isDirectory() ? clean : dirname(clean);
+    } catch {
+      start = dirname(clean);
+    }
+    pushAncestors(start);
+  }
+  return dirs;
+}
+
+function loadPlaywright(targetPaths = []) {
   const candidates = [
     () => require("playwright"),
     () => require("@playwright/test"),
-    () => require(join(process.cwd(), "node_modules/playwright")),
-    () => require(join(process.cwd(), "node_modules/@playwright/test")),
   ];
+  for (const dir of collectAncestorDirs(targetPaths)) {
+    candidates.push(
+      () => createRequire(join(dir, "package.json"))("playwright"),
+      () => createRequire(join(dir, "package.json"))("@playwright/test"),
+      () => require(join(dir, "node_modules/playwright")),
+      () => require(join(dir, "node_modules/@playwright/test"))
+    );
+  }
   for (const fn of candidates) {
     try {
       const mod = fn();
@@ -210,10 +252,16 @@ async function launchChromium(chromium, explicitPath) {
   }
 }
 
-function findAxe(explicitPath) {
+export function findAxe(explicitPath, targetPaths = []) {
   if (explicitPath && existsSync(explicitPath)) return resolve(explicitPath);
-  for (const p of [join(process.cwd(), "node_modules/axe-core/axe.min.js"), join(process.cwd(), "node_modules/axe-core/axe.js")]) {
-    if (existsSync(p)) return p;
+  for (const dir of collectAncestorDirs(targetPaths)) {
+    for (const p of [join(dir, "node_modules/axe-core/axe.min.js"), join(dir, "node_modules/axe-core/axe.js")]) {
+      if (existsSync(p)) return p;
+    }
+    try {
+      const resolved = createRequire(join(dir, "package.json")).resolve("axe-core/axe.min.js");
+      if (resolved && existsSync(resolved)) return resolved;
+    } catch {}
   }
   try {
     return require.resolve("axe-core/axe.min.js");
@@ -850,6 +898,19 @@ async function runSelfTest() {
     const sbUrls = await resolveStorybookUrls(join(scratch, "index.json"), 4);
     assert.equal(sbUrls.length, 1);
     assert.match(sbUrls[0], /^file:\/\/\/.*iframe\.html\?id=btn--primary&viewMode=story$/);
+
+    const axeDir = join(scratch, "proj/node_modules/axe-core");
+    mkdirSync(axeDir, { recursive: true });
+    writeFileSync(join(axeDir, "axe.min.js"), "/* stub axe */");
+    mkdirSync(join(scratch, "proj/draft/sub"), { recursive: true });
+    const nestedDraft = join(scratch, "proj/draft/sub/preview.html");
+    writeFileSync(nestedDraft, "<html></html>");
+    const resolvedAxe = findAxe(null, [nestedDraft]);
+    assert.equal(
+      realpathSync(resolvedAxe),
+      realpathSync(join(axeDir, "axe.min.js")),
+      "findAxe must walk target ancestors without NODE_PATH"
+    );
   } finally {
     rmSync(scratch, { recursive: true, force: true });
   }
@@ -878,8 +939,9 @@ async function main() {
     process.exit(2);
   }
 
-  const { chromium } = loadPlaywright();
-  const axePath = findAxe(args.axePath);
+  const searchPaths = [...targets, args.wiringBefore, args.wiringAfter].filter(Boolean);
+  const { chromium } = loadPlaywright(searchPaths);
+  const axePath = findAxe(args.axePath, searchPaths);
   const browser = await launchChromium(chromium, args.executablePath);
   const report = { schema: "dsaf-runtime/2", axeLoaded: Boolean(axePath), files: [], wiringDiff: null, allPassed: true };
   let screenshotSaved = false;

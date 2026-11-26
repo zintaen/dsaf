@@ -22,6 +22,12 @@ jobs:
       - run: node bin/dsaf.mjs figma-diff --self-test
       - run: node bin/dsaf.mjs guardrails --self-test
       - run: npm pack --dry-run
+      - name: Smoke-test packed CLI tarball
+        run: |
+          PKG=$(npm pack --silent)
+          npm install --prefix /tmp/dsaf-pkg-test "./$PKG"
+          /tmp/dsaf-pkg-test/node_modules/.bin/dsaf version
+          rm -rf /tmp/dsaf-pkg-test "$PKG"
       - run: node evolve/scripts/mine-signals.mjs --input evolve/fixtures/example-feedback.jsonl --scores-dir evolve/fixtures/calibration --format markdown
 
   runtime-playwright:

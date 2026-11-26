@@ -4,6 +4,17 @@ All notable changes to **DSAF (Design System Audit Framework)** will be document
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.2] - 2026-11-26
+
+### Added
+- **Zero-`NODE_PATH` Runtime Dependency Resolution (`skill/scripts/audit-runtime.mjs`):** Automatically searches `process.cwd()` and target file/URL ancestor `node_modules/` directories for `playwright` / `@playwright/test` and `axe-core` via `createRequire` (`collectAncestorDirs`, `findAxe`).
+- **npm Tarball CI Smoke Test & OIDC Trusted Publishing (`.github/workflows/ci.yml`, `.github/workflows/publish.yml`):** Tests packed tarball installation in CI and publishes `@zintaen/dsaf` cleanly via GitHub Actions OIDC (`id-token: write`, `--provenance --access public`) on `v*` tags.
+- **Balanced Calibration Corpus (`evolve/fixtures/calibration/`):** Added `mode-s-ds-legacy.scores.json` and `mode-p-usability-accessible.scores.json` so all `U01–U18` and `DS01–DS12` criteria span real score variance (`0` dead / `0` saturated criteria).
+
+### Changed
+- **Fixture & Server-OG Filtering (`skill/scripts/audit-tokens.mjs`, `FB-20261126-007`):** Excludes `(tests?|fixtures|__fixtures__)/` directories cleanly and tracks server-rendered `ImageResponse` (`next/og` / `@vercel/og` / `satori`) files separately in `drift.serverImageFiles` instead of inflating CSS/UI drift.
+- **Package Scope & Docs:** Scoped package name as `@zintaen/dsaf` with `"publishConfig": { "access": "public" }` and synchronized `v0.2.2` version banners and practical workflow docs.
+
 ## [0.2.1] - 2026-11-26
 
 ### Changed

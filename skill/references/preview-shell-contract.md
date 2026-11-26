@@ -1,4 +1,4 @@
-# Canonical Before/After Preview Shell Contract (`v0.2.1`)
+# Canonical Before/After Preview Shell Contract (`v0.2.2`)
 
 Load this contract whenever generating `draft/*.html` previews in `Mode P` or `Mode C` (`usability`, `visual`, or component specimen views). *(Preserve `data-ux-shell-toolbar="v3.0"` and `.uxs-*` / `data-uxs-*` attributes so `audit-runtime.mjs` verifies shell wiring cleanly across every audit.)*
 
