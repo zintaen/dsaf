@@ -12,7 +12,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 
-export const GENERATOR_VERSION = "0.4.0";
+export const GENERATOR_VERSION = "0.5.0";
 
 function buildDisciplineChecker(stack) {
   const checkTailwind = stack === "tailwind" || stack === "react";
@@ -309,6 +309,15 @@ jobs:
           DSAF_MAX_IMPORTANT: "0"
           DSAF_MAX_TW_ARBITRARY: "0"
         run: node .dsaf-guardrails/check-design-discipline.mjs src
+      # Optional native GitHub Code Scanning SARIF & unused waiver audit:
+      # - name: Run DSAF SARIF token & hook audit
+      #   run: |
+      #     npx -y @zintaen/dsaf tokens . --sarif dsaf.sarif --report-unused-ignores
+      # - name: Upload SARIF to GitHub Code Scanning
+      #   if: always()
+      #   uses: github/codeql-action/upload-sarif@v3
+      #   with:
+      #     sarif_file: dsaf.sarif
 `;
 }
 
@@ -322,9 +331,10 @@ function buildAgentsRules(stack, mode) {
 - Define design tokens solely inside \`:root\`, \`[data-theme]\`, or \`@theme\` (or W3C DTCG \`.tokens.json\`).
 - Never introduce hardcoded hex/rgb colors or off-grid spacing (use 4px/8px grid tokens) in feature CSS, \`<style>\`, or inline \`style\` props.
 - Declarative SVG presentation \`fill\`/\`stroke\` brand marks and data-visualization swatch constants are reported separately (\`info: svgColors, swatchColors\`) while CSS/inline-style hex literals and Tailwind arbitrary brackets are blocked.${twNote}
+- **Three-tier gates (\`Floor\` / \`Reflex\` / \`Finish\`):** Floor rules (\`transition: all\`, layout transitions, \`100vw\`, naked \`outline: none\`, unmuted \`<video autoplay>\`, hidden \`.reveal\` at rest, invalid DTCG) are **unwaivable**. Waive Reflex rules only with \`/* dsaf-ignore <rule-id> -- <concrete reason >= 12 chars> */\` and verify with \`dsaf doctor\`.
 - Never add \`!important\` overrides in component CSS (keep spec-level \`[hidden]\` and \`prefers-reduced-motion\` overrides budgeted via \`DSAF_MAX_IMPORTANT\`).
 - Maintain >= 44x44px hit targets on mobile controls, WCAG 2.2 AA (>= 4.5:1 text, >= 3:1 UI borders/icons), and APCA-W3 Lc >= 60 for body copy.
-- Before merging UI refactors, run \`node .dsaf-guardrails/check-design-discipline.mjs\` and DSAF scorecard diff gates (\`0\` silent regression).
+- Enable edit-time agent enforcement via \`npx @zintaen/dsaf hook install\` and verify before merging with \`node .dsaf-guardrails/check-design-discipline.mjs\` + \`dsaf audit\`.
 `;
 }
 
@@ -381,6 +391,8 @@ function runSelfTest() {
     assert.match(rules, new RegExp(`v${GENERATOR_VERSION.replaceAll(".", "\\.")}`));
     assert.doesNotMatch(checkerSrc, /v0\.1\.0/);
     assert.match(rules, /44x44px/);
+    assert.match(rules, /dsaf doctor/);
+    assert.match(ymlSrc, /sarif_file/);
 
     // 1. Clean tokens + SVG presentation hex + swatch array + 5-digit prose ID (#01585) MUST PASS
     writeFileSync(join(appDir, "tokens.css"), ":root { --surface: #ffffff; --ink: #111827; }\n.card { color: var(--ink); }\n");
@@ -430,7 +442,7 @@ export const Logo = () => (
     assert.equal(twRun.status, 1, "Generated discipline checker must fail on bg-[#ff00aa] p-[13px]");
     assert.match(twRun.stdout, /styleColors=0 \(max 0\).*twArbitrary=2 \(max 0\)/);
 
-    console.log("GENERATE_GUARDRAILS_SELF_TEST_PASSED (v0.3.0 style/SVG/swatch separation + single-file + Tailwind + syntax + rules)");
+    console.log(`GENERATE_GUARDRAILS_SELF_TEST_PASSED (v${GENERATOR_VERSION} style/SVG/swatch separation + single-file + Tailwind + 3-tier + SARIF)`);
     return 0;
   } finally {
     rmSync(scratch, { recursive: true, force: true });

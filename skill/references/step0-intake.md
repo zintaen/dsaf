@@ -1,4 +1,4 @@
-# Step 0 — Fast Read-Only Recon & Clarification Gate (`v0.3.0`)
+# Step 0 — Fast Read-Only Recon & Clarification Gate (`v0.5.0`)
 
 Always execute this gate at the start of every DSAF run BEFORE creating `audit-output/`, scoring criteria, writing `draft/` previews, or running state-mutating interactions.
 
@@ -30,10 +30,12 @@ Run `node ./scripts/recon.mjs <repo-or-url> --out <tmp-dir/recon.json>` (plus re
    - Identify production domains (`Tier 0`), staging/preview URLs (`Tier 1`), or local sandbox (`localhost` / `127.0.0.1` -> candidate for `Tier 2`).
    - Always inspect environment config keys read-only (never log secret values!) and browser network traffic on `localhost` to detect whether local builds still write to real host-OS files, local shared DBs, or live **remote cloud backends** (e.g., BaaS REST/RPC/GraphQL endpoints). Whenever remote persistence exists on `localhost`, default to **`T2-Mock`** (browser route interception blocking remote `POST`/`PUT`/`PATCH`/`DELETE` calls so `realCloudWrites === 0`).
 4. **Scale & Fragmentation Snapshot:** Rough screen/route/story count, rough CSS/token counts, test/lint scripts present, prior `scores.json` if re-auditing.
-5. **UI / System Maturity Classification:**
+5. **Surface Mode & UI Maturity Classification (`Persuade · Operate · Read · Experience`):**
+   - **Surface Mode (`recon.mjs`):** `Persuade` (landing/pricing — judge hierarchy, conversion CTA & narrative restraint), `Operate` (dashboards/editors/tables — judge scanability, density, keyboard efficiency & consistency), `Read` (docs/articles/changelogs — judge typography, measure `45–75ch`, findability), or `Experience` (portfolios/galleries/WebGL — let artifact lead). Do not penalize `Operate`/`Read` surfaces for landing-page tropes or vice versa.
    - **Maturity Tier 1 — Crude / Ad-Hoc:** Weak hierarchy, patchwork controls, fragmented styling -> auto-recommend Ambition `L3` Dual-Track + Starter DS Spec if `Mode P`.
    - **Maturity Tier 2 — Functional Baseline:** Working flows/tokens but visible drift, friction, or partial coverage -> auto-recommend `L2` Structured Upgrade (or `L3` when structural bottlenecks exist).
    - **Maturity Tier 3 — Mature System/Product:** Coherent system and flows -> auto-recommend `L1` Surgical Polish + strict `audit-diff` regression gating.
+   - **No-Slop Restraint Guard:** If `Mode P` inspection reveals **Tier 3 Mature**, `0` Floor/Blocker defects, and high craft alignment, say so plainly (*"Already clean — no redesign recommended"*) and offer at most 2–3 surgical micro-refinements instead of inventing unneeded churn.
 
 ---
 
@@ -54,7 +56,7 @@ Translate headings, labels, trade-offs, and recommendations naturally into the u
 ### Step 0 — Fast Read-Only Recon & Clarification Gate (Before Auditing)
 
 **Read-Only Recon Summary (Tier 0):**
-- **Detected Topology & Maturity:** <Mode S / C / P> · <Tier 1 Crude / Tier 2 Baseline / Tier 3 Mature> — <1-sentence measured recon evidence>
+- **Detected Topology, Surface & Maturity:** <Mode S / C / P> · <Persuade / Operate / Read / Experience> · <Tier 1 Crude / Tier 2 Baseline / Tier 3 Mature> — <1-sentence measured recon evidence>
 - **Product / System & Stack:** <framework, styling/token files, Storybook/Code Connect signals, approximate screen/story count>
 - **Verified Runtime Capabilities:** <desktop/mobile responsiveness, live verified themes, `375px` check, existing lint/test contracts>
 - **Environment & Isolation Risk:** <localhost / staging / production — explicit note on remote cloud API `T2-Mock` or host-OS safety>

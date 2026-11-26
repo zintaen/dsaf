@@ -1,0 +1,406 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>DSAF — Design System &amp; Product UX/UI Audit Framework</title>
+  <meta name="description" content="Zero-dependency Node ESM CLI and AI coding agent skill for W3C DTCG validation, 3-vertex Figma triangulation, APCA-W3 &amp; WCAG 2.2 runtime audits, SARIF CI gates, and No-Silent-Regression scorecards." />
+  <meta name="color-scheme" content="light dark" />
+  <script>
+    try {
+      const s = localStorage.getItem("color-scheme");
+      if (s === "light" || s === "dark") document.querySelector('meta[name="color-scheme"]').content = s;
+    } catch {}
+  </script>
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <header class="site-header">
+    <div class="container header-inner">
+      <a href="#top" class="brand-link">
+        <span class="brand-mark" aria-hidden="true">DS</span>
+        <span>DSAF <span class="tabular">v0.5.0</span></span>
+      </a>
+      <nav class="nav-links" aria-label="Primary navigation">
+        <a href="#modes" class="nav-link">Topologies</a>
+        <a href="#shell" class="nav-link">Preview Shell</a>
+        <a href="#toolchain" class="nav-link">CLI &amp; CI</a>
+        <a href="#releases" class="nav-link">Releases</a>
+        <a href="https://github.com/zintaen/dsaf" class="nav-link">GitHub</a>
+        <button type="button" id="theme-toggle-btn" class="theme-toggle">
+          <svg class="theme-icon-moon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+            <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
+          </svg>
+          <svg class="theme-icon-sun" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+            <circle cx="12" cy="12" r="4" />
+            <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41" />
+          </svg>
+          <span class="theme-label-dark">Dark</span>
+          <span class="theme-label-light">Light</span>
+          <span class="sr-only theme-label-dark">Switch to dark theme</span>
+          <span class="sr-only theme-label-light">Switch to light theme</span>
+        </button>
+      </nav>
+    </div>
+  </header>
+
+  <main id="top">
+    <section class="hero">
+      <div class="container hero-grid">
+        <div>
+          <h1 class="hero-title">Deterministic design system &amp; UX/UI audits for AI coding agents.</h1>
+          <p class="hero-lede">
+            Auto-detect design system maturity, verify W3C DTCG tokens, triangulate Figma against live DOM CSS variables, enforce APCA-W3 and WCAG 2.2 AA in headless Chromium, and block silent regressions with zero required runtime dependencies.
+          </p>
+          <div class="hero-actions">
+            <a href="#quickstart" class="btn btn-primary">Run with npx</a>
+            <a href="https://www.npmjs.com/package/@zintaen/dsaf" class="btn btn-secondary">@zintaen/dsaf on npm</a>
+          </div>
+          <div class="install-bar">
+            <code id="cli-install-cmd" class="install-cmd">npx @zintaen/dsaf audit . --out ./audit-output</code>
+            <button type="button" class="copy-btn" data-copy-target="cli-install-cmd">Copy</button>
+          </div>
+        </div>
+
+        <div class="inspector" aria-label="Measured audit output samples">
+          <div class="tablist" role="tablist" focusgroup="tablist nomemory" aria-label="DSAF deterministic outputs">
+            <button type="button" role="tab" id="tab-audit" aria-selected="true" focusgroupstart>One-Click Audit</button>
+            <button type="button" role="tab" id="tab-figma" aria-selected="false" tabindex="-1">3-Vertex Figma</button>
+            <button type="button" role="tab" id="tab-sarif" aria-selected="false" tabindex="-1">SARIF &amp; Hook</button>
+            <button type="button" role="tab" id="tab-diff" aria-selected="false" tabindex="-1">Scorecard Diff</button>
+          </div>
+
+          <div class="panels-stack">
+            <div role="tabpanel" aria-labelledby="tab-audit" tabindex="0">
+              <div class="panel-card">
+                <div class="panel-meta">
+                  <span><code>dsaf audit ./apps/web --sarif dsaf.sarif</code></span>
+                  <span class="tabular">Tier 0 Read-Only</span>
+                </div>
+<pre class="code-block">Topology  : Mode C (Product-on-DS Conformance)
+Surface   : operate (Dashboard / Table)
+Tokens    : 98.5% compliance | orphans=9 (scale skipped)
+Runtime   : 5/5 states PASS | APCA min Lc 78 | axe=0
+CI Gate   : floor=0 · reflex=2 · waived=1 · unused=0</pre>
+                <div class="status-line">
+                  <span class="tag-pass">PASS audit-summary.json</span>
+                  <span class="tag-pass">SARIF 2.1.0 written</span>
+                </div>
+              </div>
+            </div>
+
+            <div role="tabpanel" aria-labelledby="tab-figma" hidden="until-found">
+              <div class="panel-card">
+                <div class="panel-meta">
+                  <span><code>dsaf figma-diff --figma vars.json --runtime rt.json</code></span>
+                  <span class="tabular">Designed ↔ Defined ↔ Shipped</span>
+                </div>
+<pre class="code-block">Vertex 1 (Designed) : 337 Figma variables (--sds-*)
+Vertex 2 (Defined)  : DTCG + CSS @theme aliases resolved
+Vertex 3 (Shipped)  : Live computed :root vars matched
+Code Connect v2     : 97 files / 358 mapped components
+Triangulation       : 98.8% match · Value Drift: 0</pre>
+                <div class="status-line">
+                  <span class="tag-pass">3-Vertex Parity OK</span>
+                </div>
+              </div>
+            </div>
+
+            <div role="tabpanel" aria-labelledby="tab-sarif" hidden="until-found">
+              <div class="panel-card">
+                <div class="panel-meta">
+                  <span><code>dsaf hook check src --tier all --report-unused-ignores</code></span>
+                  <span class="tabular">Floor / Reflex / Finish</span>
+                </div>
+<pre class="code-block">[FLOOR]  src/hero.css:12   dsaf/no-transition-all (unwaivable)
+[FLOOR]  src/hero.css:4    dsaf/floor-waiver-rejected
+[REFLEX] src/card.css:19   dsaf/hardcoded-color (literal hex)
+[WAIVED] src/logo.css:8    dsaf/hardcoded-color (brand SVG)
+[FINISH] src/old.css:2     dsaf/unused-ignore (stale waiver)</pre>
+                <div class="status-line">
+                  <span class="tag-fail">EXIT 1 on Floor</span>
+                  <span class="tag-warn">Stale waiver flagged</span>
+                </div>
+              </div>
+            </div>
+
+            <div role="tabpanel" aria-labelledby="tab-diff" hidden="until-found">
+              <div class="panel-card">
+                <div class="panel-meta">
+                  <span><code>dsaf diff --baseline base.json --current cur.json</code></span>
+                  <span class="tabular">No-Silent-Regression</span>
+                </div>
+<pre class="code-block">Pillar               Before    Track A    Delta
+P1 Foundations       24.0/30   30.0/30   +6.00
+P2 Accessibility     15.0/30   30.0/30  +15.00
+P3 Conformance       14.2/20   17.5/20   +3.33
+TOTAL (0-100)        74.25     97.50    +23.25</pre>
+                <div class="status-line">
+                  <span class="tag-pass">0 Regressions (PASS)</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="modes" class="section section-muted">
+      <div class="container">
+        <div class="section-head">
+          <h2>One Framework, Three Auto-Detected Topologies</h2>
+          <p>
+            Every audit starts with a 30-second Tier 0 read-only scan via <code>dsaf recon</code>, then pauses once with concrete trade-offs before touching drafts or state.
+          </p>
+        </div>
+
+        <div class="grid-3">
+          <article class="card surface-alt">
+            <span class="card-kicker">Mode S</span>
+            <h3>Design System Core</h3>
+            <p>For token packages, component libraries, and Storybook repositories.</p>
+            <ul class="spec-list">
+              <li>W3C DTCG <code>$value</code> / <code>$type</code> &amp; cycle checks</li>
+              <li>Light/Dark token parity &amp; WCAG/APCA contrast</li>
+              <li>3-band anti-prose cap (<code>prose &lt;= 40%</code>)</li>
+              <li>Storybook <code>prefers-reduced-motion</code> checks</li>
+            </ul>
+          </article>
+
+          <article class="card surface-alt">
+            <span class="card-kicker">Mode C</span>
+            <h3>Conformance &amp; Drift</h3>
+            <p>For applications consuming an internal design system, Tailwind <code>@theme</code>, or Radix/MUI primitives.</p>
+            <ul class="spec-list">
+              <li>Color token compliance % &amp; arbitrary brackets</li>
+              <li>Live DOM <code>N-of-1</code> button/input clustering</li>
+              <li>Semantic vs palette-scale orphan separation</li>
+              <li>3-vertex Figma &amp; Code Connect diffing</li>
+            </ul>
+          </article>
+
+          <article class="card surface-alt">
+            <span class="card-kicker">Mode P</span>
+            <h3>Product UX/UI (No DS)</h3>
+            <p>For live web apps and prototypes without a formal token system yet.</p>
+            <ul class="spec-list">
+              <li><code>U01–U18</code> cognitive walkthroughs &amp; 7-state edge matrix</li>
+              <li><code>V01–V11</code> craft, WCAG 2.2 AA &amp; APCA-W3 <code>Lc</code></li>
+              <li>No-Slop guard avoids rewriting already-clean UIs</li>
+              <li>Optional Starter DS spec &amp; DTCG tokens (<code>+SG</code>)</li>
+            </ul>
+          </article>
+        </div>
+
+        <div class="surface-strip">
+          <div>
+            <strong>Auto-Detected Surface Modes (<span class="tabular">v0.5.0</span>):</strong> Calibrates density, typography measure, and copy expectations before scoring.
+          </div>
+          <div class="surface-pills">
+            <span class="surface-item">Persuade (Landing)</span>
+            <span class="surface-item">Operate (Dashboard)</span>
+            <span class="surface-item">Read (Docs)</span>
+            <span class="surface-item">Experience (Showcase)</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="shell" class="section">
+      <div class="container">
+        <div class="section-head">
+          <h2>Dual-Track Comparison Shell &amp; 3-Tier Gates</h2>
+          <p>
+            UI proposals render inside an isolated single-file HTML shell comparing Before, Track A (Pragmatic), and Track B (North-Star) side by side, verified in Chromium across 5 to 7 viewports.
+          </p>
+        </div>
+
+        <div class="grid-2">
+          <figure class="showcase-frame" style="margin: 0;">
+            <img
+              src="./assets/preview-shell-showcase.png"
+              width="1440"
+              height="900"
+              alt="DSAF Canonical Preview Shell showing Before, Track A, and Track B side-by-side views with toggleable Finding Pins"
+              loading="lazy"
+            />
+            <figcaption class="showcase-caption">
+              Canonical Preview Shell: viewports (<span class="tabular">320px–1920px</span>), Light/Dark toggle, 4 UI states, Finding Pins, and Kept Wiring diff verification.
+            </figcaption>
+          </figure>
+
+          <div class="grid-2" style="grid-template-columns: minmax(0, 1fr); gap: var(--space-4);">
+            <article class="card">
+              <span class="card-kicker">3-Tier Enforcement</span>
+              <h3>Floor · Reflex · Finish</h3>
+              <ul class="spec-list">
+                <li><strong>Floor (unwaivable):</strong> DTCG reference/contrast failures, <code>transition: all</code>, layout transitions, <code>100vw</code>, naked <code>outline: none</code>, unmuted autoplay, hidden <code>.reveal</code>.</li>
+                <li><strong>Reflex (controlled waiver):</strong> Hardcoded colors, important specificity overrides, off-grid spacing, Tailwind brackets. Waive only via <code>dsaf-ignore &lt;rule&gt; -- &lt;reason &gt;= 12 chars&gt;</code>.</li>
+                <li><strong>Finish (advisory):</strong> Semantic orphan vars &amp; stale waivers flagged by <code>--report-unused-ignores</code>.</li>
+              </ul>
+            </article>
+
+            <article class="card">
+              <span class="card-kicker">Runtime &amp; Anti-Anchoring</span>
+              <h3>Chromium, Electron &amp; Fresh-Context Review</h3>
+              <ul class="spec-list">
+                <li><strong>Probes:</strong> <code>pixelBehind</code> contrast over images/gradients, APCA-W3 <code>0.1.9</code>, WCAG <code>3.00:1</code> borders, <code>&gt;= 44px</code> tap targets, <code>coveredText</code>, RTL tracking, <code>axe-core</code>, and LCP/CLS.</li>
+                <li><strong><code>--cdp &lt;port&gt;</code>:</strong> Attach directly to authenticated browser sessions, Electron, or WebView2 apps.</li>
+                <li><strong>Isolated Review:</strong> Dual-agent separation between visual critique and detector probes, declaring <code>single-context</code> fallback openly.</li>
+              </ul>
+            </article>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="toolchain" class="section section-muted">
+      <div class="container">
+        <div class="section-head">
+          <h2>Zero-Dep Node ESM Toolchain &amp; Agent Integration</h2>
+          <p>
+            Every static scanner, CI formatter, guardrail generator, scorecard calculator, and self-test suite runs directly on Node 20+ with zero npm dependencies installed.
+          </p>
+        </div>
+
+        <div class="table-wrap">
+          <table class="cli-table">
+            <thead>
+              <tr>
+                <th scope="col">Command</th>
+                <th scope="col">Purpose</th>
+                <th scope="col">Outputs &amp; Flags</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>dsaf audit &lt;target&gt;</code></td>
+                <td>One-click Tier 0 pipeline chaining recon, tokens, runtime, figma-diff, and regression diff</td>
+                <td><code>--sarif</code>, <code>--github</code>, <code>--scope</code>, <code>--cdp</code>, <code>--extended-viewports</code></td>
+              </tr>
+              <tr>
+                <td><code>dsaf tokens &lt;target&gt;</code></td>
+                <td>W3C DTCG graph/contrast validator &amp; CSS/Tailwind drift scanner</td>
+                <td><code>--sarif</code>, <code>--github</code>, <code>--report-unused-ignores</code>, <code>--include-demos</code></td>
+              </tr>
+              <tr>
+                <td><code>dsaf hook &lt;subcommand&gt;</code></td>
+                <td>Edit-time Floor/Reflex check &amp; Claude/Cursor/Codex hook installer</td>
+                <td><code>check</code>, <code>stdin</code>, <code>install --agent claude|cursor|codex</code></td>
+              </tr>
+              <tr>
+                <td><code>dsaf doctor [dir]</code></td>
+                <td>6-point read-only check for stale guardrails, token mtime drift, hooks &amp; waivers</td>
+                <td><code>--json</code>, <code>--out</code>, exits <code>1</code> on active Floor defects</td>
+              </tr>
+              <tr>
+                <td><code>dsaf figma-diff</code></td>
+                <td>3-vertex <code>Designed ↔ Defined ↔ Shipped</code> &amp; Code Connect verifier</td>
+                <td><code>--figma</code>, <code>--tokens</code>, <code>--runtime</code>, <code>--prefix</code></td>
+              </tr>
+              <tr>
+                <td><code>dsaf runtime &lt;target&gt;</code></td>
+                <td>Headless Chromium/CDP runtime verifier for APCA, WCAG, <code>axe-core</code>, RTL &amp; shell</td>
+                <td><code>--live</code>, <code>--storybook</code>, <code>--cdp</code>, <code>--screenshot --pins</code></td>
+              </tr>
+              <tr>
+                <td><code>dsaf scorecard</code> / <code>diff</code></td>
+                <td>Weighted <code>dsaf-scores/2</code> calculator, 3-band cap &amp; silent-regression blocker</td>
+                <td>Exits <code>1</code> on unresolved regressions</td>
+              </tr>
+              <tr>
+                <td><code>dsaf guardrails</code></td>
+                <td>Generates runnable CI discipline script, GitHub workflow &amp; <code>AGENTS</code> rules (<code>+SG</code>)</td>
+                <td><code>--stack css|tailwind|react</code>, SARIF upload step</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div id="quickstart" class="grid-2" style="margin-top: var(--space-8);">
+          <div class="card surface-alt">
+            <span class="card-kicker">1 · CLI &amp; CI Gate</span>
+            <h3>Install or run zero-config</h3>
+<pre class="code-block" id="qs-cli">npx @zintaen/dsaf audit ./your-app --out ./audit-out --sarif dsaf.sarif
+npx @zintaen/dsaf hook install --agent claude --dir ./your-app
+npx @zintaen/dsaf doctor ./your-app</pre>
+            <div style="margin-top: var(--space-3);">
+              <button type="button" class="copy-btn" data-copy-target="qs-cli">Copy</button>
+            </div>
+          </div>
+
+          <div class="card surface-alt">
+            <span class="card-kicker">2 · AI Agent Skill</span>
+            <h3>Sync into Claude, Codex &amp; Antigravity</h3>
+<pre class="code-block" id="qs-skill">git clone https://github.com/zintaen/dsaf.git
+cd dsaf &amp;&amp; npm test &amp;&amp; npm run sync:skills
+# In chat: /dsaf ./path/to/your-repo</pre>
+            <div style="margin-top: var(--space-3);">
+              <button type="button" class="copy-btn" data-copy-target="qs-skill">Copy</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="releases" class="section">
+      <div class="container">
+        <div class="section-head">
+          <h2>Release Notes</h2>
+          <p>Concise highlights across shipped versions. Full details live in <code>RELEASE_NOTES.md</code>.</p>
+        </div>
+
+        <div class="release-list">
+          <article class="release-item">
+            <h3><span>v0.5.0 — Surface Modes, Runtime &amp; Doctor</span><span class="release-date">2026-11-26</span></h3>
+            <ul class="spec-list">
+              <li>Surface Mode classification (<code>Persuade</code> / <code>Operate</code> / <code>Read</code> / <code>Experience</code>) &amp; No-Slop guard.</li>
+              <li><code>dsaf runtime</code> adds <code>--cdp</code>, overlay hiding, <code>coveredText</code>, RTL tracking checks, and <code>320px</code>/<code>1920px</code> viewports.</li>
+              <li><code>dsaf doctor</code> diagnostic check &amp; 9-pass causal redline order.</li>
+            </ul>
+          </article>
+
+          <article class="release-item">
+            <h3><span>v0.4.0 — SARIF CI, Hooks &amp; 3-Tier Waivers</span><span class="release-date">2026-11-26</span></h3>
+            <ul class="spec-list">
+              <li><code>--sarif</code> 2.1.0, <code>--github</code> annotations, and <code>--report-unused-ignores</code>.</li>
+              <li><code>dsaf hook</code> edit-time Floor/Reflex check for Claude, Cursor &amp; Codex.</li>
+              <li>3-tier gate taxonomy &amp; dual-agent anti-anchoring provenance.</li>
+            </ul>
+          </article>
+
+          <article class="release-item">
+            <h3><span>v0.3.0 — One-Click Audit &amp; Live Vertex 3</span><span class="release-date">2026-11-26</span></h3>
+            <ul class="spec-list">
+              <li><code>dsaf audit</code> chains recon, scoped tokens, runtime, figma-diff, and diff.</li>
+              <li>Live <code>computedVars</code> Vertex 3 parity &amp; monorepo semantic vs scale orphan split.</li>
+            </ul>
+          </article>
+
+          <article class="release-item">
+            <h3><span>v0.0.1 – v0.2.2 — Core Foundation</span><span class="release-date">2026-11-26</span></h3>
+            <ul class="spec-list">
+              <li>3-mode topology detection, Step 0 Clarification Gate &amp; Dual-Track Preview Shell.</li>
+              <li>DTCG contrast, APCA-W3 <code>0.1.9</code>, Figma Code Connect v2, SVG/swatch guardrails, and OIDC publishing.</li>
+            </ul>
+          </article>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container footer-inner">
+      <p class="footer-note">MIT License · Zero-dependency Node ESM Core · Local-first, zero cloud telemetry.</p>
+      <div class="footer-links">
+        <a href="https://github.com/zintaen/dsaf" class="nav-link">Repository</a>
+        <a href="https://github.com/zintaen/dsaf/blob/main/RELEASE_NOTES.md" class="nav-link">Release Notes</a>
+        <a href="https://www.npmjs.com/package/@zintaen/dsaf" class="nav-link">npm</a>
+        <a href="https://github.com/zintaen/dsaf/issues" class="nav-link">Issues</a>
+      </div>
+    </div>
+  </footer>
+
+  <script src="./app.js" defer></script>
+</body>
+</html>

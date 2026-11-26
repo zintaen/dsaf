@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 /**
- * DSAF v0.4.0 — Step 0 Read-Only Reconnaissance Scanner (zero external deps).
+ * DSAF v0.5.0 — Step 0 Read-Only Reconnaissance Scanner (zero external deps).
  * Scans a local repository or records a URL stub strictly read-only to classify
- * target topology (Mode S / C / P), tech stack, cloud-isolation risks (T2-Mock),
- * and recommended Step 0 clarification defaults.
+ * target topology (Mode S / C / P), Surface Mode (Persuade / Operate / Read /
+ * Experience), tech stack, cloud-isolation risks (T2-Mock), and Step 0 defaults.
  */
 
 import assert from "node:assert/strict";
@@ -105,6 +105,44 @@ function inspectEnvKeysOnly(rootDir, relFiles) {
     }
   }
   return { envFiles, cloudKeys: [...detectedKeys].sort() };
+}
+
+/**
+ * Classify dominant Surface Mode:
+ * - "read": docs, articles, changelogs, markdown-heavy knowledge bases
+ * - "experience": 3D/canvas/gallery/portfolio showcases
+ * - "operate": dashboards, tables, admins, editors, settings, workspaces
+ * - "persuade": marketing, landing, pricing, product homepages
+ */
+export function detectSurfaceMode({ relFiles = [], deps = new Set(), appRoutes = [], componentFiles = [] } = {}) {
+  const depSet = deps instanceof Set ? deps : new Set([...deps].map((d) => String(d).toLowerCase()));
+  const docsDeps = ["docusaurus", "@docusaurus/core", "vitepress", "nextra", "fumadocs-core", "mintlify", "@astrojs/starlight"];
+  const docsHits = relFiles.filter((r) => /(^|\/)(docs?|guides?|blog|articles?|reference|changelog)\//i.test(r)).length;
+  const routeText = appRoutes.join("\n");
+  const allText = relFiles.join("\n");
+
+  if (
+    docsDeps.some((d) => depSet.has(d)) ||
+    (appRoutes.length >= 2 && appRoutes.filter((r) => /(docs?|guide|blog|article|changelog)/i.test(r)).length / appRoutes.length >= 0.5) ||
+    (docsHits >= 5 && componentFiles.length <= 2)
+  ) {
+    return { surfaceMode: "read", surfaceModeRationale: "Documentation/reading framework or docs-heavy route structure detected." };
+  }
+
+  const expDeps = ["three", "@react-three/fiber", "pixi.js", "p5", "ogl"];
+  if (expDeps.some((d) => depSet.has(d)) || /(^|\/)(portfolio|gallery|showcase|exhibition)\b/i.test(allText)) {
+    return { surfaceMode: "experience", surfaceModeRationale: "Canvas/WebGL/showcase or portfolio experience signals detected." };
+  }
+
+  const operateDeps = ["@tanstack/react-table", "@tanstack/react-query", "zustand", "@reduxjs/toolkit", "redux", "ag-grid-community", "recharts"];
+  if (
+    operateDeps.some((d) => depSet.has(d)) ||
+    /(dashboard|admin|settings|workspace|console|editor|billing|account|analytics|inbox|tables?)/i.test(routeText)
+  ) {
+    return { surfaceMode: "operate", surfaceModeRationale: "Interactive workspace, dashboard, table, or state-management app signals detected." };
+  }
+
+  return { surfaceMode: "persuade", surfaceModeRationale: "Defaulted to conversion/product presentation surface (landing/marketing/site)." };
 }
 
 export function analyzeDirectory(inputDir) {
@@ -247,6 +285,7 @@ export function analyzeDirectory(inputDir) {
     hasTailwindTheme,
     hasDtcgTokens,
   };
+  const { surfaceMode, surfaceModeRationale } = detectSurfaceMode({ relFiles, deps, appRoutes, componentFiles });
 
   return {
     schema: "dsaf-recon/1",
@@ -256,6 +295,8 @@ export function analyzeDirectory(inputDir) {
     filesScanned: allFiles.length,
     recommendedMode,
     topologyLabel,
+    surfaceMode,
+    surfaceModeRationale,
     estimatedMaturity: maturity,
     recommendedDataTier: t2MockRequired ? "T2 + T2-Mock" : "T2",
     t2MockRequired,
@@ -304,6 +345,8 @@ export function analyzeUrlTarget(targetUrl) {
     topologyLabel: /storybook/i.test(targetUrl)
       ? "Mode S — Design System Storybook URL (inspect DOM to confirm)"
       : "Live URL (inspect rendered DOM/styles to distinguish Mode C vs Mode P)",
+    surfaceMode: /storybook|docs/i.test(targetUrl) ? "read" : /(dashboard|app|console|admin)/i.test(targetUrl) ? "operate" : "persuade",
+    surfaceModeRationale: "Preliminary hint from URL path; confirm from rendered UI.",
     recommendedDataTier: isLocal ? "T2 (confirm T2-Mock if remote cloud calls detected)" : isStaging ? "T1" : "T0",
     t2MockRequired: isLocal,
     note: "Pair URL recon with live Tier 0 Playwright/browser DOM inspection to verify themes, 375px clipping, and DS classes.",
@@ -387,11 +430,15 @@ function runSelfTest() {
     assert.equal(resTw.stack.hasTailwindTheme, true, "Must detect @theme inline");
     assert.equal(resTw.recommendedMode, "C", "Expected Mode C on Tailwind @theme inline");
 
-    // 7. URL classification
+    // 7. URL & Surface Mode classification (v0.5.0)
     assert.equal(analyzeUrlTarget("https://prod.example.com").recommendedDataTier, "T0");
     assert.match(analyzeUrlTarget("http://localhost:3000").recommendedDataTier, /^T2/);
+    assert.equal(detectSurfaceMode({ deps: new Set(["vitepress"]) }).surfaceMode, "read");
+    assert.equal(detectSurfaceMode({ appRoutes: ["src/pages/dashboard/index.tsx"] }).surfaceMode, "operate");
+    assert.equal(detectSurfaceMode({ deps: new Set(["three"]), relFiles: ["src/gallery/Scene.tsx"] }).surfaceMode, "experience");
+    assert.equal(detectSurfaceMode({ relFiles: ["index.html", "styles.css"] }).surfaceMode, "persuade");
 
-    console.log("RECON_SELF_TEST_PASSED (Mode S / Mode C + @theme inline + auth/hidden-dir exclusion / Mode P / URL safety)");
+    console.log("RECON_SELF_TEST_PASSED (Mode S/C/P + Surface Modes + @theme + auth/hidden-dir exclusion + URL safety)");
     return 0;
   } finally {
     rmSync(scratch, { recursive: true, force: true });

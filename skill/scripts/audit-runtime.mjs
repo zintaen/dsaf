@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 /**
- * DSAF v0.3.0 — Runtime Browser, APCA-W3, Keyboard, Screenshot & N-of-1 Verifier.
+ * DSAF v0.5.0 — Runtime Browser, APCA-W3, Keyboard, CDP, RTL & N-of-1 Verifier.
  * Pure-JS self-tests run with zero dependencies. Live browser/draft audits lazily
- * require Playwright (`playwright` or `@playwright/test`) and Chromium.
+ * require Playwright (`playwright` or `@playwright/test`) and Chromium, or attach via `--cdp`.
  */
 
 import assert from "node:assert/strict";
@@ -121,6 +121,73 @@ export function expandRouteTargets(targets, routesCsv) {
   return out;
 }
 
+export const OVERLAY_SELECTORS = [
+  "#onetrust-banner-sdk",
+  ".onetrust-pc-dark-filter",
+  "#CybotCookiebotDialog",
+  ".cc-window",
+  "[data-consent-banner]",
+  '[aria-label*="cookie" i][role="dialog"]',
+  '[id*="cookie-banner" i]',
+];
+
+export function normalizeCdpEndpoint(raw) {
+  const s = String(raw || "").trim();
+  if (!s) return "";
+  if (/^\d+$/.test(s)) return `http://127.0.0.1:${s}`;
+  return s;
+}
+
+export function buildViewportMatrix(extended = false) {
+  const base = [
+    { name: "desktop-1440-dark", width: 1440, height: 900, theme: "dark", isMobile: false },
+    { name: "desktop-1440-light", width: 1440, height: 900, theme: "light", isMobile: false },
+    { name: "zoom-720-dark", width: 720, height: 450, theme: "dark", isMobile: false },
+    { name: "mobile-375-dark", width: 375, height: 812, theme: "dark", isMobile: true },
+    { name: "mobile-375-light", width: 375, height: 812, theme: "light", isMobile: true },
+  ];
+  if (!extended) return base;
+  return [
+    ...base,
+    { name: "mobile-320-light", width: 320, height: 640, theme: "light", isMobile: true },
+    { name: "wide-1920-light", width: 1920, height: 1080, theme: "light", isMobile: false },
+  ];
+}
+
+const RTL_LANG_RE = /^(?:ar|he|fa|ur|ps|ckb|yi|ug|sd|dv)(?:-|$)/i;
+
+export function evaluateRtlDiagnostics(snapshot) {
+  const htmlDir = String(snapshot?.htmlDir || "").trim().toLowerCase();
+  const htmlLang = String(snapshot?.htmlLang || "").trim();
+  const missingDirRtl = Boolean(htmlLang && RTL_LANG_RE.test(htmlLang) && htmlDir !== "rtl");
+  const applicable = htmlDir === "rtl" || missingDirRtl;
+  if (!applicable) {
+    return {
+      applicable: false,
+      htmlDir,
+      htmlLang,
+      missingDirRtl: false,
+      arabicLetterSpacingViolations: 0,
+      physicalLeftAlignViolations: 0,
+      samples: [],
+      passed: true,
+    };
+  }
+  const elements = Array.isArray(snapshot?.elements) ? snapshot.elements : [];
+  const spacingBad = elements.filter((e) => e.hasRtlScriptText && Math.abs(Number(e.letterSpacingPx) || 0) > 0.05);
+  const leftAlignBad = htmlDir === "rtl" ? elements.filter((e) => e.hasRtlScriptText && String(e.textAlign || "").toLowerCase() === "left") : [];
+  return {
+    applicable: true,
+    htmlDir,
+    htmlLang,
+    missingDirRtl,
+    arabicLetterSpacingViolations: spacingBad.length,
+    physicalLeftAlignViolations: leftAlignBad.length,
+    samples: spacingBad.slice(0, 8),
+    passed: !missingDirRtl && spacingBad.length === 0,
+  };
+}
+
 function parseArgs(argv) {
   const out = {
     targets: [],
@@ -136,6 +203,10 @@ function parseArgs(argv) {
     screenshot: null,
     pins: false,
     live: false,
+    cdp: null,
+    cdpTarget: null,
+    extendedViewports: false,
+    noHideOverlays: false,
     skipShellCheck: false,
     json: false,
     selfTest: false,
@@ -155,13 +226,17 @@ function parseArgs(argv) {
     else if (a === "--screenshot") out.screenshot = argv[++i];
     else if (a === "--pins") out.pins = true;
     else if (a === "--live") out.live = true;
+    else if (a === "--cdp") out.cdp = argv[++i];
+    else if (a === "--target") out.cdpTarget = argv[++i];
+    else if (a === "--extended-viewports") out.extendedViewports = true;
+    else if (a === "--no-hide-overlays") out.noHideOverlays = true;
     else if (a === "--skip-shell-check") out.skipShellCheck = true;
     else if (a === "--json") out.json = true;
     else if (a === "--self-test") out.selfTest = true;
     else if (a === "-h" || a === "--help") out.help = true;
     else if (!a.startsWith("-")) out.targets.push(a);
   }
-  if (out.live || out.storybook) out.skipShellCheck = true;
+  if (out.live || out.storybook || out.cdp) out.skipShellCheck = true;
   return out;
 }
 
@@ -291,6 +366,16 @@ export function findAxe(explicitPath, targetPaths = []) {
     return require.resolve("axe-core/axe.min.js");
   } catch {}
   return null;
+}
+
+export function probeRuntimeDeps(targetPaths = []) {
+  let playwrightAvailable = false;
+  try {
+    loadPlaywright(targetPaths);
+    playwrightAvailable = true;
+  } catch {}
+  const axePath = findAxe(null, targetPaths);
+  return { playwrightAvailable, axeAvailable: Boolean(axePath), axePath };
 }
 
 function toUrl(target) {
@@ -792,6 +877,49 @@ async function auditGeometryApcaInventoryAndSlop(page, isMobile) {
       });
     }
 
+    const coveredText = [];
+    let sampledTextChecks = 0;
+    for (const el of document.querySelectorAll("h1, h2, h3, p, a, button")) {
+      if (sampledTextChecks >= 40 || !visible(el)) continue;
+      const txt = (el.textContent || "").trim();
+      if (!txt) continue;
+      const r = el.getBoundingClientRect();
+      if (r.width < 6 || r.height < 6) continue;
+      const cx = Math.round((Math.max(0, r.left) + Math.min(vw, r.right)) / 2);
+      const cy = Math.round((Math.max(0, r.top) + Math.min(window.innerHeight, r.bottom)) / 2);
+      if (cx <= 0 || cx >= vw || cy <= 0 || cy >= window.innerHeight) continue;
+      sampledTextChecks++;
+      const topEl = document.elementsFromPoint(cx, cy)?.[0];
+      if (!topEl || topEl === el || el.contains(topEl) || topEl.contains(el)) continue;
+      if (topEl.matches(DEV_OVERLAY_SEL) || topEl.closest(DEV_OVERLAY_SEL)) continue;
+      const tcs = getComputedStyle(topEl);
+      if (tcs.position === "fixed" || tcs.position === "sticky" || parseFloat(tcs.opacity) <= 0.2) continue;
+      const tbg = parseColorToRgba(tcs.backgroundColor);
+      const isOpaqueCover =
+        topEl.tagName === "IMG" || topEl.tagName === "SVG" || topEl.tagName === "CANVAS" || (tbg && tbg.a >= 0.75);
+      if (isOpaqueCover) {
+        coveredText.push({ tag: el.tagName.toLowerCase(), text: txt.slice(0, 28), coveredBy: topEl.tagName.toLowerCase() });
+      }
+    }
+
+    const rtlElements = [];
+    const htmlDir = document.documentElement.getAttribute("dir") || "";
+    const htmlLang = document.documentElement.getAttribute("lang") || "";
+    for (const el of document.querySelectorAll("h1, h2, h3, p, a, button, label, span")) {
+      if (rtlElements.length >= 40 || !visible(el) || el.closest('[dir="ltr"]')) continue;
+      const txt = (el.textContent || "").trim();
+      if (!/[\u0590-\u08FF]/.test(txt)) continue;
+      const cs = getComputedStyle(el);
+      const ls = cs.letterSpacing === "normal" ? 0 : parseFloat(cs.letterSpacing) || 0;
+      rtlElements.push({
+        tag: el.tagName.toLowerCase(),
+        text: txt.slice(0, 24),
+        letterSpacingPx: Number(ls.toFixed(2)),
+        textAlign: cs.textAlign,
+        hasRtlScriptText: true,
+      });
+    }
+
     return {
       docOverflow,
       bodyOverflow,
@@ -803,6 +931,8 @@ async function auditGeometryApcaInventoryAndSlop(page, isMobile) {
       badTransitions,
       hiddenAtRest,
       inlineHeightMismatches,
+      coveredText,
+      rtlSnapshot: { htmlDir, htmlLang, elements: rtlElements },
       focusableControls,
       buttonShapes,
       inputShapes,
@@ -810,7 +940,7 @@ async function auditGeometryApcaInventoryAndSlop(page, isMobile) {
     };
   }, isMobile);
 
-  // Compute real APCA-W3 Lc, keyboard map, and N-of-1 clusters cleanly in Node
+  // Compute real APCA-W3 Lc, keyboard map, RTL diagnostics, and N-of-1 clusters cleanly in Node
   let minApcaBodyLc = null;
   let minApcaLargeLc = null;
   const apcaLowWarnings = [];
@@ -829,6 +959,7 @@ async function auditGeometryApcaInventoryAndSlop(page, isMobile) {
   const smallTargetsAnnotated = raw.smallTargets.map((s) =>
     overflowKeys.has(`${s.tag}|${s.text}`) ? { ...s, overlapsChildOverflow: true } : s
   );
+  const rtlChecks = evaluateRtlDiagnostics(raw.rtlSnapshot);
 
   return {
     docOverflow: raw.docOverflow,
@@ -841,6 +972,8 @@ async function auditGeometryApcaInventoryAndSlop(page, isMobile) {
     badTransitions: raw.badTransitions,
     hiddenAtRest: raw.hiddenAtRest,
     inlineHeightMismatches: raw.inlineHeightMismatches,
+    coveredText: raw.coveredText,
+    rtlChecks,
     keyboardMap: summarizeKeyboardAccessibility(raw.focusableControls),
     apca: { minBodyLc: minApcaBodyLc, minLargeLc: minApcaLargeLc, lowWarnings: apcaLowWarnings.slice(0, 8) },
     componentInventory: {
@@ -976,19 +1109,79 @@ async function runSelfTest() {
       "http://localhost:3100/ket-qua",
       "http://localhost:3100/so-ve",
     ]);
+
+    assert.equal(normalizeCdpEndpoint("9222"), "http://127.0.0.1:9222");
+    assert.equal(normalizeCdpEndpoint("http://127.0.0.1:9333"), "http://127.0.0.1:9333");
+    assert.equal(buildViewportMatrix(false).length, 5);
+    assert.equal(buildViewportMatrix(true).length, 7);
+    assert.ok(buildViewportMatrix(true).some((v) => v.width === 320) && buildViewportMatrix(true).some((v) => v.width === 1920));
+    assert.equal(evaluateRtlDiagnostics({ htmlDir: "ltr", htmlLang: "en", elements: [] }).applicable, false);
+    const rtlMissing = evaluateRtlDiagnostics({ htmlDir: "", htmlLang: "ar", elements: [] });
+    assert.equal(rtlMissing.missingDirRtl, true);
+    assert.equal(rtlMissing.passed, false);
+    const rtlBadTrack = evaluateRtlDiagnostics({
+      htmlDir: "rtl",
+      htmlLang: "ar",
+      elements: [{ tag: "p", letterSpacingPx: 1.2, textAlign: "right", hasRtlScriptText: true }],
+    });
+    assert.equal(rtlBadTrack.arabicLetterSpacingViolations, 1);
+    assert.equal(rtlBadTrack.passed, false);
+    const rtlClean = evaluateRtlDiagnostics({
+      htmlDir: "rtl",
+      htmlLang: "ar",
+      elements: [{ tag: "p", letterSpacingPx: 0, textAlign: "right", hasRtlScriptText: true }],
+    });
+    assert.equal(rtlClean.passed, true);
   } finally {
     rmSync(scratch, { recursive: true, force: true });
   }
 
-  console.log("AUDIT_RUNTIME_SELF_TEST_PASSED (APCA-W3 0.1.9 + WCAG 2.2 + keyboard map + Storybook + routes + N-of-1)");
+  console.log("AUDIT_RUNTIME_SELF_TEST_PASSED (APCA-W3 0.1.9 + WCAG 2.2 + keyboard map + Storybook + routes + CDP/RTL/320-1920 + N-of-1)");
   return 0;
+}
+
+async function hideConsentOverlays(page) {
+  return page.evaluate((selectors) => {
+    let hidden = 0;
+    for (const sel of selectors) {
+      for (const el of document.querySelectorAll(sel)) {
+        const cs = getComputedStyle(el);
+        if (cs.display === "none" || cs.visibility === "hidden") continue;
+        el.dataset.dsafOrigVis = el.style.visibility || "";
+        el.style.setProperty("visibility", "hidden", "important");
+        el.style.setProperty("pointer-events", "none", "important");
+        hidden++;
+      }
+    }
+    return hidden;
+  }, OVERLAY_SELECTORS);
+}
+
+async function findCdpPage(browser, matchQuery) {
+  const candidates = [];
+  for (const ctx of browser.contexts()) {
+    for (const p of ctx.pages()) {
+      const url = p.url() || "";
+      if (url.startsWith("devtools://") || url.startsWith("chrome-extension://")) continue;
+      const title = await p.title().catch(() => "");
+      candidates.push({ page: p, url, title });
+    }
+  }
+  if (candidates.length === 0) throw new Error("No open page found on CDP browser target.");
+  if (!matchQuery) return candidates[0].page;
+  const q = String(matchQuery).toLowerCase();
+  const hit = candidates.find((c) => c.url.toLowerCase().includes(q) || c.title.toLowerCase().includes(q));
+  if (!hit) {
+    throw new Error(`No CDP page matched --target '${matchQuery}'. Available: ${candidates.map((c) => `${c.title} (${c.url})`).join("; ")}`);
+  }
+  return hit.page;
 }
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   if (args.help) {
     console.log(
-      "Usage: node skill/scripts/audit-runtime.mjs <draft.html|draft-dir|url> [--routes /,/about] [--out <file>] [--theme-toggle <sel>] [--live] [--storybook <url|index.json>] [--screenshot <out.png> [--pins]] [--wiring-before a --wiring-after b] [--axe path] [--skip-shell-check] [--json] [--self-test]"
+      "Usage: node skill/scripts/audit-runtime.mjs <draft.html|draft-dir|url> [--routes /,/about] [--out <file>] [--theme-toggle <sel>] [--live] [--cdp <port|url> --target <match>] [--extended-viewports] [--no-hide-overlays] [--storybook <url|index.json>] [--screenshot <out.png> [--pins]] [--wiring-before a --wiring-after b] [--axe path] [--skip-shell-check] [--json] [--self-test]"
     );
     process.exit(0);
   }
@@ -999,35 +1192,46 @@ async function main() {
     const sbUrls = await resolveStorybookUrls(args.storybook, args.maxStories);
     targets.push(...sbUrls);
   }
-  if (targets.length === 0 && !(args.wiringBefore && args.wiringAfter)) {
-    console.error("Error: specify target draft/url or --self-test.");
+  const isCdpAttached = Boolean(args.cdp);
+  if (!isCdpAttached && targets.length === 0 && !(args.wiringBefore && args.wiringAfter)) {
+    console.error("Error: specify target draft/url, --cdp <port>, or --self-test.");
     process.exit(2);
   }
 
   const searchPaths = [...targets, args.wiringBefore, args.wiringAfter].filter(Boolean);
   const { chromium } = loadPlaywright(searchPaths);
   const axePath = findAxe(args.axePath, searchPaths);
-  const browser = await launchChromium(chromium, args.executablePath);
-  const report = { schema: "dsaf-runtime/2", axeLoaded: Boolean(axePath), files: [], wiringDiff: null, allPassed: true };
+  const browser = isCdpAttached
+    ? await chromium.connectOverCDP(normalizeCdpEndpoint(args.cdp))
+    : await launchChromium(chromium, args.executablePath);
+  const report = { schema: "dsaf-runtime/2", axeLoaded: Boolean(axePath), cdpAttached: isCdpAttached, files: [], wiringDiff: null, allPassed: true };
   let screenshotSaved = false;
 
   try {
-    const urlsOrFiles = collectHtmlFiles(targets);
-    const matrix = [
-      { name: "desktop-1440-dark", width: 1440, height: 900, theme: "dark", isMobile: false },
-      { name: "desktop-1440-light", width: 1440, height: 900, theme: "light", isMobile: false },
-      { name: "zoom-720-dark", width: 720, height: 450, theme: "dark", isMobile: false },
-      { name: "mobile-375-dark", width: 375, height: 812, theme: "dark", isMobile: true },
-      { name: "mobile-375-light", width: 375, height: 812, theme: "light", isMobile: true },
-    ];
+    const urlsOrFiles = isCdpAttached ? ["cdp://attached-target"] : collectHtmlFiles(targets);
+    const matrix = buildViewportMatrix(args.extendedViewports);
 
     for (const target of urlsOrFiles) {
       const pageErrors = [];
+      const page = isCdpAttached
+        ? await findCdpPage(browser, args.cdpTarget)
+        : await browser.newPage({ viewport: { width: 1440, height: 900 } });
+      page.on("pageerror", (err) => pageErrors.push(err.message || String(err)));
+      if (!isCdpAttached) {
+        await page.goto(toUrl(target), { waitUntil: "networkidle" });
+      }
+      const hiddenOverlaysCount = (args.live || isCdpAttached) && !args.noHideOverlays ? await hideConsentOverlays(page) : 0;
+
       const fileRes = {
-        file: /^(?:https?|file):\/\//i.test(target) ? target.replace(/^file:\/\/\/.*\//, "") : basename(target.split("?")[0]),
+        file: isCdpAttached
+          ? page.url() || "cdp-attached"
+          : /^(?:https?|file):\/\//i.test(target)
+          ? target.replace(/^file:\/\/\/.*\//, "")
+          : basename(target.split("?")[0]),
         pageErrors,
-        webVitals: null,
-        computedVars: null,
+        hiddenOverlaysCount,
+        webVitals: await captureWebVitals(page),
+        computedVars: await captureComputedRootVars(page),
         shell: null,
         screenshot: null,
         reducedMotion: null,
@@ -1035,11 +1239,6 @@ async function main() {
         checks: [],
         passed: true,
       };
-      const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
-      page.on("pageerror", (err) => pageErrors.push(err.message || String(err)));
-      await page.goto(toUrl(target), { waitUntil: "networkidle" });
-      fileRes.webVitals = await captureWebVitals(page);
-      fileRes.computedVars = await captureComputedRootVars(page);
 
       if (!args.skipShellCheck && basename(target) !== "index.html") {
         fileRes.shell = await auditShellContract(page);
@@ -1050,7 +1249,7 @@ async function main() {
       }
 
       if (args.screenshot && !screenshotSaved) {
-        await page.setViewportSize({ width: 1440, height: 900 });
+        if (!isCdpAttached) await page.setViewportSize({ width: 1440, height: 900 });
         const pinsBtn = args.pins ? await page.$("#uxs-pins-btn") : null;
         if (pinsBtn) {
           await pinsBtn.click();
@@ -1071,7 +1270,9 @@ async function main() {
       }
 
       for (const m of matrix) {
-        await page.setViewportSize({ width: m.width, height: m.height });
+        if (!isCdpAttached) {
+          await page.setViewportSize({ width: m.width, height: m.height });
+        }
         await page.emulateMedia({ colorScheme: m.theme });
         const themeBtn = await page.$(`[data-theme="${m.theme}"]`);
         if (themeBtn) {
@@ -1128,6 +1329,8 @@ async function main() {
           geom.badTransitions.length === 0 &&
           geom.hiddenAtRest.length === 0 &&
           geom.inlineHeightMismatches.length === 0 &&
+          geom.coveredText.length === 0 &&
+          geom.rtlChecks.passed &&
           hoverFails.length === 0 &&
           axeViolations.length === 0;
 
@@ -1136,6 +1339,7 @@ async function main() {
           report.allPassed = false;
         }
         fileRes.checks.push({ state: m.name, passed: ok, ...geom, hoverFails, axeViolations });
+        if (isCdpAttached && m.name === "desktop-1440-light") break;
       }
 
       if (args.storybook) {
@@ -1160,7 +1364,7 @@ async function main() {
         fileRes.passed = false;
         report.allPassed = false;
       }
-      await page.close();
+      if (!isCdpAttached) await page.close();
       report.files.push(fileRes);
     }
 
@@ -1173,7 +1377,7 @@ async function main() {
       if (!report.wiringDiff.passed) report.allPassed = false;
     }
   } finally {
-    await browser.close();
+    if (!isCdpAttached) await browser.close();
   }
 
   const outJson = JSON.stringify(report, null, 2) + "\n";
@@ -1185,7 +1389,7 @@ async function main() {
     process.stdout.write(outJson);
   } else {
     for (const f of report.files) {
-      console.log(`FILE ${f.file}: ${f.passed ? "PASS" : "FAIL"} (pageErrors=${f.pageErrors.length}, LCP=${f.webVitals?.lcpMs ?? "n/a"}ms, CLS=${f.webVitals?.cls ?? 0})`);
+      console.log(`FILE ${f.file}: ${f.passed ? "PASS" : "FAIL"} (pageErrors=${f.pageErrors.length}, LCP=${f.webVitals?.lcpMs ?? "n/a"}ms, CLS=${f.webVitals?.cls ?? 0}, hiddenOverlays=${f.hiddenOverlaysCount})`);
       if (f.shell) console.log(`  shell: ${f.shell.failures.length === 0 ? "PASS" : "FAIL " + JSON.stringify(f.shell.failures)}`);
       if (f.screenshot) console.log(`  screenshot: ${f.screenshot}`);
       if (f.reducedMotion) console.log(`  reducedMotion: mediaMatches=${f.reducedMotion.mediaMatches} unguarded=${f.reducedMotion.unguardedAnimatedCount}`);
@@ -1194,7 +1398,7 @@ async function main() {
       }
       for (const c of f.checks) {
         console.log(
-          `  [${c.state}] ${c.passed ? "PASS" : "FAIL"} | overflow=${c.docOverflow}/${c.bodyOverflow} child=${c.childOverflows.length} small44=${c.smallTargets.length} clip=${c.clippedTargets.length} borders=${c.borderFails.length} hover=${c.hoverFails.length} leaks=${c.focusLeaks.length} tab=${c.keyboardMap.tabbableCount}(+${c.keyboardMap.positiveTabindexCount}/un=${c.keyboardMap.unnamedInteractiveCount}) slop=${c.badTransitions.length + c.hiddenAtRest.length + c.inlineHeightMismatches.length} axe=${c.axeViolations.length} | apcaBodyMin=${c.apca.minBodyLc ?? "n/a"} btnSigs=${c.componentInventory.buttons.distinctSignatures}`
+          `  [${c.state}] ${c.passed ? "PASS" : "FAIL"} | overflow=${c.docOverflow}/${c.bodyOverflow} child=${c.childOverflows.length} small44=${c.smallTargets.length} clip=${c.clippedTargets.length} borders=${c.borderFails.length} hover=${c.hoverFails.length} covered=${c.coveredText.length} leaks=${c.focusLeaks.length} tab=${c.keyboardMap.tabbableCount}(+${c.keyboardMap.positiveTabindexCount}/un=${c.keyboardMap.unnamedInteractiveCount}) slop=${c.badTransitions.length + c.hiddenAtRest.length + c.inlineHeightMismatches.length} axe=${c.axeViolations.length} | apcaBodyMin=${c.apca.minBodyLc ?? "n/a"} btnSigs=${c.componentInventory.buttons.distinctSignatures}`
         );
       }
     }

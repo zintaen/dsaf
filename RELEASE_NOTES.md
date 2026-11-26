@@ -4,6 +4,13 @@ Concise version highlights for **DSAF (`@zintaen/dsaf`)**. Follows [Semantic Ver
 
 ---
 
+## v0.5.0 (2026-11-26) — Surface Modes, Runtime Hardening, Doctor & GitHub Pages
+
+- **Surface Mode Auto-Detection & No-Slop Guard:** `dsaf recon` classifies `Persuade` / `Operate` / `Read` / `Experience` surfaces so audits adapt to dashboards vs docs vs marketing; `Mode P` skips gratuitous redesigns on already-clean UIs and follows the 9-pass causal redline order.
+- **Runtime Edge Hardening (`dsaf runtime`):** Adds `--cdp <port>` attachment (Electron / WebView2 / authenticated Chrome), consent banner hiding, `coveredText` occlusion checks, RTL script/`dir="rtl"`/Arabic tracking checks, and `--extended-viewports` (`320px` + `1920px`).
+- **6-Point Read-Only Diagnostic (`dsaf doctor`):** Verifies CLI/guardrail parity, token freshness, edit-time hook setup, CI gate presence, Playwright/axe availability, and stale `dsaf-ignore` waivers.
+- **Promotional GitHub Pages Site (`docs/`):** Added accessible Light/Dark documentation & live inspector site with full CI dogfooding (`tokens`, `hook`, `runtime`).
+
 ## v0.4.0 (2026-11-26) — CI Native Gates, Edit-Time Hooks & Controlled Waivers
 
 - **SARIF 2.1.0 & GitHub Annotations (`--sarif`, `--github`):** `dsaf tokens`, `dsaf audit`, and `dsaf hook` now emit native SARIF 2.1.0 reports and PR-inline GitHub Actions annotations.

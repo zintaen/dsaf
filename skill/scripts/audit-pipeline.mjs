@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 /**
- * DSAF v0.4.0 — Unified Tier 0 Read-Only One-Click Audit Pipeline (Node ESM).
- * Chains `recon`, `tokens`, optional live/Storybook `runtime`, optional 3-vertex
- * `figma-diff`, and optional `audit-diff` into `audit-summary.json` + Markdown + SARIF 2.1.0.
+ * DSAF v0.5.0 — Unified Tier 0 Read-Only One-Click Audit Pipeline (Node ESM).
+ * Chains `recon` (incl. Surface Mode), `tokens`, optional live/Storybook/CDP `runtime`,
+ * optional 3-vertex `figma-diff`, and optional `audit-diff` into `audit-summary.json` + Markdown + SARIF 2.1.0.
  * Strictly Tier 0 Read-Only on target repos; writes only inside explicit `--out`.
  */
 
@@ -53,9 +53,13 @@ export function runAuditPipeline(opts = {}) {
   let runtime = null;
   let runtimePassed = true;
   let runtimeFileForDiff = null;
-  if (opts.url || opts.storybook) {
+  if (opts.url || opts.storybook || opts.cdp) {
     const rtArgs = [];
     if (opts.url) rtArgs.push(opts.url, "--live");
+    if (opts.cdp) rtArgs.push("--cdp", String(opts.cdp));
+    if (opts.cdpTarget) rtArgs.push("--target", opts.cdpTarget);
+    if (opts.extendedViewports) rtArgs.push("--extended-viewports");
+    if (opts.noHideOverlays) rtArgs.push("--no-hide-overlays");
     if (opts.storybook) rtArgs.push("--storybook", opts.storybook);
     if (opts.routes) rtArgs.push("--routes", opts.routes);
     if (opts.axePath) rtArgs.push("--axe", opts.axePath);
@@ -124,7 +128,7 @@ export function runAuditPipeline(opts = {}) {
 
   const summary = {
     schema: "dsaf-audit/1",
-    engine_version: "0.4.0",
+    engine_version: "0.5.0",
     generated: new Date().toISOString(),
     dataTier: "tier_0_readonly",
     target,
@@ -133,6 +137,7 @@ export function runAuditPipeline(opts = {}) {
     recon: {
       recommendedMode: recon.recommendedMode,
       topologyLabel: recon.topologyLabel,
+      surfaceMode: recon.surfaceMode || "persuade",
       estimatedMaturity: recon.estimatedMaturity,
       filesScanned: recon.filesScanned,
       t2MockRequired: recon.t2MockRequired,
@@ -181,10 +186,10 @@ export function renderAuditMarkdown(summary) {
   const r = summary.recon;
   const cg = summary.ciGate || { floor: 0, reflex: 0, finish: 0, waived: 0, unusedIgnores: 0 };
   const lines = [
-    "# DSAF Unified Audit Summary (`v0.4.0` · Tier 0 Read-Only)",
+    "# DSAF Unified Audit Summary (`v0.5.0` · Tier 0 Read-Only)",
     "",
     `- **Target:** \`${summary.target}\``,
-    `- **Topology / Maturity:** \`Mode ${r.recommendedMode}\` (${r.topologyLabel}) | \`${r.estimatedMaturity}\` | \`T2-Mock required: ${r.t2MockRequired}\``,
+    `- **Topology / Surface / Maturity:** \`Mode ${r.recommendedMode}\` (${r.topologyLabel}) | Surface: \`${r.surfaceMode || "persuade"}\` | \`${r.estimatedMaturity}\` | \`T2-Mock required: ${r.t2MockRequired}\``,
     `- **Pipeline Status:** ${summary.passed ? "PASS" : "FAIL"}`,
     `- **CI Gate & Waivers:** Floor=${cg.floor} · Reflex=${cg.reflex} · Finish=${cg.finish} · Waived=${cg.waived} · Unused Ignores=${cg.unusedIgnores}`,
     "",
@@ -259,7 +264,7 @@ function runSelfTest() {
       sarifPath: sarifOut,
     });
     assert.equal(summary.schema, "dsaf-audit/1");
-    assert.equal(summary.engine_version, "0.4.0");
+    assert.equal(summary.engine_version, "0.5.0");
     assert.equal(summary.passed, true);
     assert.equal(summary.tokens.drift.hardcodedColorHits, 0);
     assert.deepEqual(summary.tokens.drift.demoFilesSkipped, ["demo/old-prototype.html"]);
@@ -285,6 +290,10 @@ function main() {
     options: {
       url: { type: "string" },
       routes: { type: "string" },
+      cdp: { type: "string" },
+      target: { type: "string" },
+      "extended-viewports": { type: "boolean", default: false },
+      "no-hide-overlays": { type: "boolean", default: false },
       figma: { type: "string" },
       "code-connect": { type: "string" },
       prefix: { type: "string" },
@@ -324,6 +333,10 @@ function main() {
     target,
     url: values.url,
     routes: values.routes,
+    cdp: values.cdp,
+    cdpTarget: values.target,
+    extendedViewports: values["extended-viewports"],
+    noHideOverlays: values["no-hide-overlays"],
     figmaPath: values.figma,
     codeConnectDir: values["code-connect"],
     prefix: values.prefix,

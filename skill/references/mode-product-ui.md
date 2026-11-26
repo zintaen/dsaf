@@ -1,4 +1,4 @@
-<!-- Version 0.3.0 (2026-11-26). English canonical specification for DSAF Visual UI, Tokens & Design-System Upgrade Audits (Mode P & Mode C Round 2). Automatically mirror the user's conversation language across reports, UI copy, and previews unless explicitly overridden. -->
+<!-- Version 0.5.0 (2026-11-26). English canonical specification for DSAF Visual UI, Tokens & Design-System Upgrade Audits (Mode P & Mode C Round 2). Automatically mirror the user's conversation language across reports, UI copy, and previews unless explicitly overridden. -->
 
 # Visual Design, Layout, 3-Tier Design System & Craft Audit with a Weighted Rubric
 
@@ -65,6 +65,9 @@ Express a cohesive 3-tier system in the target repo's native syntax (inside repo
 
 ### Step 6. Design Improvements by Ambition Level (`Track A` vs `Track B`)
 Concrete `current -> proposed` CSS/token specs per finding across `Level 1` / `Level 2` / `Level 3 Dual-Track` (`Track A` Pragmatic Polish vs `Track B` North-Star Visual Redesign honoring Usability Handoff Constraints, compact mobile rest states, Template Swap Test, and measurable CSS/DOM acceptance criteria).
+
+**9-Pass Causal Redline Order (for Track A/B refactors):** Apply design passes in dependency order so downstream craft never fights broken structure:
+`1. Spacing (4/8px grid & grouping) -> 2. Color (neutral ramp, text roles, 1 accent) -> 3. Icons (unified line family & box) -> 4. Copy (plain nouns, no AI hype; decides headline length) -> 5. Type (scale, weight discipline, tabular-nums) -> 6. Layout (screen composition & fold proportions) -> 7. Details (concentric radii, charts, states) -> 8. Visuals (real product/imagery over blobs) -> 9. Motion (purposeful opacity/transform + reduced-motion)`.
 
 ### Step 7. Prioritize by Visual Impact, Point Delta & Effort
 Use exact `Pts/Step` values from `compute-scorecard.mjs` so Track A fixes reconcile cleanly to Track A deltas and Track B items reconcile to Track B deltas across the 4 buckets (**Do Now**, **Plan Next**, **Do When Convenient**, **Defer**).
