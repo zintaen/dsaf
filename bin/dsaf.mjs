@@ -5,23 +5,25 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 
 const BIN_DIR = dirname(decodeURIComponent(new URL(import.meta.url).pathname));
 const REPO_ROOT = resolve(BIN_DIR, "..");
 
 const COMMANDS = {
-  audit: { script: "skill/scripts/audit-pipeline.mjs", desc: "One-click Tier 0 Read-Only audit pipeline (recon + tokens + runtime + figma + diff)" },
-  init: { script: "skill/scripts/init-evolve.mjs", desc: "Bootstrap .dsaf/ auto-evolution governance (C1-C10), personas, hooks & CI guardrails" },
-  personas: { script: "skill/scripts/generate-personas.mjs", desc: "Generate topology-seeded multi-axis user personas (.dsaf/personas.json)" },
-  fix: { script: "skill/scripts/fix-floor.mjs", desc: "Dry-run preview or apply safe bounded Floor remediations (--apply --backup)" },
-  evolve: { script: "skill/scripts/evolve-runner.mjs", desc: "Supervised .dsaf/ evolution runner with kill-switch & circuit breaker" },
-  mcp: { script: "skill/scripts/mcp-server.mjs", desc: "Zero-dep JSON-RPC 2.0 stdio MCP server exposing 9 read-only audit tools" },
-  recon: { script: "skill/scripts/recon.mjs", desc: "Read-only topology & T2-Mock recon (Mode S / C / P)" },
+  check: { script: "skill/scripts/audit-pipeline.mjs", defaultArgs: ["--compact"], defaultTarget: ".", desc: "Fast 1-command UI, token & persona check on your project" },
+  setup: { script: "skill/scripts/setup.mjs", desc: "Install DSAF agent skill, wire MCP config & optional CI gate" },
+  audit: { script: "skill/scripts/audit-pipeline.mjs", desc: "Full Tier 0 Read-Only audit pipeline (JSON / Markdown / --html / SARIF)" },
+  fix: { script: "skill/scripts/fix-floor.mjs", desc: "Dry-run preview or apply safe Floor fixes (--apply --backup)" },
+  init: { script: "skill/scripts/init-evolve.mjs", desc: "Bootstrap .dsaf/ auto-evolution governance (v1.2.0) & personas" },
+  personas: { script: "skill/scripts/generate-personas.mjs", desc: "Generate uncapped signal-driven user personas (.dsaf/personas.json)" },
+  evolve: { script: "skill/scripts/evolve-runner.mjs", desc: "Supervised .dsaf/ evolution runner with kill-switch & lease" },
+  mcp: { script: "skill/scripts/mcp-server.mjs", desc: "Stdio MCP server (9 tools) + `dsaf mcp install` client configurator" },
+  recon: { script: "skill/scripts/recon.mjs", desc: "Read-only topology & Surface Mode recon (Mode S / C / P)" },
   tokens: { script: "skill/scripts/audit-tokens.mjs", desc: "W3C DTCG validator, Light/Dark parity & CSS/Tailwind drift" },
-  "figma-diff": { script: "skill/scripts/audit-figma-diff.mjs", desc: "Compare Figma MCP variables & Code Connect against DTCG/CSS" },
-  runtime: { script: "skill/scripts/audit-runtime.mjs", desc: "Playwright APCA/WCAG, keyboard map, Storybook, screenshot & N-of-1 verifier" },
+  "figma-diff": { script: "skill/scripts/audit-figma-diff.mjs", desc: "Compare Figma variables / DTCG tokens against live CSS runtime" },
+  runtime: { script: "skill/scripts/audit-runtime.mjs", desc: "Playwright APCA/WCAG, keyboard map, Storybook, screenshot & interaction checks" },
   scorecard: { script: "skill/scripts/compute-scorecard.mjs", desc: "Deterministic weighted scorecard & blocker calculator" },
   diff: { script: "skill/scripts/audit-diff.mjs", desc: "No-silent-regression diff verifier with override logging" },
   guardrails: { script: "skill/scripts/generate-guardrails.mjs", desc: "Generate runnable CI & AI-agent design guardrails" },
@@ -40,29 +42,19 @@ function getPkg() {
 
 function printHelp() {
   const pkg = getPkg();
-  console.log(`DSAF v${pkg.version} — Design System & Product UX/UI Audit Framework\n`);
-  console.log("Usage: dsaf <command> [args...]\n");
-  console.log("Commands:");
+  console.log(`DSAF v${pkg.version} — Design System & Product UX/UI Audit CLI\n`);
+  console.log("Quick Start:");
+  console.log("  npx @zintaen/dsaf check .                   Check your repo in one command");
+  console.log("  npx @zintaen/dsaf setup --agent claude      Install AI skill + wire MCP server");
+  console.log("  npx @zintaen/dsaf fix . --dry-run           Preview safe accessibility/CSS fixes");
+  console.log("  npx @zintaen/dsaf audit . --html report.html  Export an editorial HTML report\n");
+  console.log("Usage: dsaf <command|path> [args...]\n");
+  console.log("All Commands:");
   for (const [name, info] of Object.entries(COMMANDS)) {
-    console.log(`  ${name.padEnd(12)} ${info.desc}`);
+    console.log(`  ${name.padEnd(14)} ${info.desc}`);
   }
-  console.log("  version      Print installed DSAF CLI version");
-  console.log("  help         Show this help message\n");
-  console.log("Examples:");
-  console.log("  dsaf audit ./my-app --out ./audit-output --sarif ./dsaf.sarif");
-  console.log("  dsaf init ./my-app --with-hook --with-guardrails");
-  console.log("  dsaf personas ./my-app --depth deep --out ./.dsaf/personas.json");
-  console.log("  dsaf fix ./my-app/src --dry-run");
-  console.log("  dsaf evolve ./my-app --status --json");
-  console.log("  dsaf mcp");
-  console.log("  dsaf recon ./my-app");
-  console.log("  dsaf tokens ./my-app --json --report-unused-ignores");
-  console.log("  dsaf hook check ./my-app/src --tier floor");
-  console.log("  dsaf hook install --agent claude --dir ./my-app");
-  console.log("  dsaf install-skill --agent claude --scope user");
-  console.log("  dsaf doctor ./my-app");
-  console.log("  dsaf guardrails --out ./my-app/.dsaf-guardrails --stack tailwind");
-  console.log("  dsaf runtime ./draft/preview.html --screenshot ./preview.png --pins");
+  console.log("  version        Print installed DSAF CLI version");
+  console.log("  help           Show this help message");
 }
 
 function main() {
@@ -75,13 +67,33 @@ function main() {
     console.log(`dsaf v${getPkg().version}`);
     process.exit(0);
   }
-  const entry = COMMANDS[cmd];
+
+  let entry = COMMANDS[cmd];
+  let passArgs = [...rest];
+
   if (!entry) {
-    console.error(`Unknown DSAF command: '${cmd}'\n`);
-    printHelp();
-    process.exit(2);
+    if (!cmd.startsWith("-") && existsSync(resolve(cmd))) {
+      entry = COMMANDS.check;
+      passArgs = [cmd, ...rest];
+    } else {
+      console.error(`Unknown DSAF command: '${cmd}'\n`);
+      printHelp();
+      process.exit(2);
+    }
   }
-  const res = spawnSync(process.execPath, [join(REPO_ROOT, entry.script), ...rest], {
+
+  if (entry === COMMANDS.check) {
+    const hasPositional = passArgs.some((a) => !a.startsWith("-"));
+    const asksHelp = passArgs.includes("-h") || passArgs.includes("--help") || passArgs.includes("--self-test");
+    if (!asksHelp) {
+      if (!hasPositional) passArgs.unshift(entry.defaultTarget);
+      if (!passArgs.includes("--compact") && !passArgs.includes("--format")) {
+        passArgs.push(...entry.defaultArgs);
+      }
+    }
+  }
+
+  const res = spawnSync(process.execPath, [join(REPO_ROOT, entry.script), ...passArgs], {
     stdio: "inherit",
   });
   process.exit(res.status ?? 1);

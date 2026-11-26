@@ -1,14 +1,14 @@
 #!/usr/bin/env node
 /**
- * DSAF v0.9.1 — Zero-Dependency Stdio MCP Server (`dsaf mcp`).
- * Exposes 9 read-only audit tools over JSON-RPC 2.0 stdio (supporting both
- * Content-Length LSP framing and newline-delimited JSON-RPC messages).
+ * DSAF v0.9.2 — Zero-Dependency Stdio MCP Server & Client Config Installer (`dsaf mcp`).
+ * Exposes 9 read-only audit tools over JSON-RPC 2.0 stdio (Content-Length & NDJSON),
+ * plus `dsaf mcp install` to wire Claude, Cursor, Codex, or Antigravity MCP JSON.
  */
 
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { analyzeDirectory } from "./recon.mjs";
 import { scanTarget } from "./audit-tokens.mjs";
@@ -20,7 +20,7 @@ import { planFloorFixes } from "./fix-floor.mjs";
 import { readGovernanceStatus } from "./evolve-runner.mjs";
 import { generatePersonas } from "./generate-personas.mjs";
 
-export const MCP_SERVER_VERSION = "0.9.1";
+export const MCP_SERVER_VERSION = "0.9.2";
 export const MCP_PROTOCOL_VERSION = "2024-11-05";
 
 export const TOOL_DEFINITIONS = [
@@ -343,6 +343,93 @@ export function formatMcpResponse(payload, mode = "ndjson") {
   return `${json}\n`;
 }
 
+export function resolveMcpTargets({ agent = "claude", scope = "project", dir, cwd = process.cwd(), home = homedir() }) {
+  if (dir) {
+    return [{ agent: "custom", scope: "custom", path: resolve(dir) }];
+  }
+  if (scope !== "user" && scope !== "project") {
+    throw new Error(`Unsupported --scope '${scope}'. Expected 'user' or 'project'.`);
+  }
+  const userRoots = {
+    claude: [".claude.json"],
+    cursor: [".cursor", "mcp.json"],
+    codex: [".codex", "mcp.json"],
+    antigravity: [".gemini", "antigravity", "mcp_config.json"],
+  };
+  const projectRoots = {
+    claude: [".mcp.json"],
+    cursor: [".cursor", "mcp.json"],
+    codex: [".codex", "mcp.json"],
+    antigravity: [".agent", "mcp.json"],
+  };
+  const roots = scope === "user" ? userRoots : projectRoots;
+  const base = scope === "user" ? resolve(home) : resolve(cwd);
+  const requested =
+    agent === "all"
+      ? Object.keys(roots)
+      : String(agent)
+          .split(",")
+          .map((s) => s.trim().toLowerCase())
+          .filter(Boolean);
+  if (requested.length === 0) {
+    throw new Error("No valid agent selected. Pass --agent claude|cursor|codex|antigravity|all.");
+  }
+  const seen = new Set();
+  const out = [];
+  for (const key of requested) {
+    if (!roots[key]) {
+      throw new Error(`Unknown --agent '${key}'. Supported: ${Object.keys(roots).join(", ")}, all`);
+    }
+    const dest = join(base, ...roots[key]);
+    if (seen.has(dest)) continue;
+    seen.add(dest);
+    out.push({ agent: key, scope, path: dest });
+  }
+  return out;
+}
+
+export function installMcpConfig(opts = {}) {
+  const targets = resolveMcpTargets(opts);
+  const pkgSpec = opts.packageTag ? `@zintaen/dsaf@${opts.packageTag}` : "@zintaen/dsaf";
+  const serverEntry = {
+    command: "npx",
+    args: ["-y", pkgSpec, "mcp"],
+  };
+  const results = [];
+  for (const t of targets) {
+    let existing = {};
+    if (existsSync(t.path)) {
+      const raw = readFileSync(t.path, "utf8").trim();
+      if (raw) {
+        try {
+          existing = JSON.parse(raw);
+        } catch {
+          throw new Error(`Existing MCP config is not valid JSON: ${t.path}`);
+        }
+      }
+    }
+    const merged = {
+      ...existing,
+      mcpServers: {
+        ...(existing.mcpServers && typeof existing.mcpServers === "object" ? existing.mcpServers : {}),
+        dsaf: serverEntry,
+      },
+    };
+    if (!opts.dryRun) {
+      mkdirSync(dirname(t.path), { recursive: true });
+      writeFileSync(t.path, JSON.stringify(merged, null, 2) + "\n", "utf8");
+    }
+    results.push({
+      agent: t.agent,
+      scope: t.scope,
+      path: t.path,
+      dryRun: Boolean(opts.dryRun),
+      serverKey: "dsaf",
+    });
+  }
+  return results;
+}
+
 function runStdioServer() {
   const dispatch = createMcpDispatcher();
   const push = createFrameReader((msg, mode) => {
@@ -451,7 +538,20 @@ function runSelfTest() {
     const unknownRes = JSON.parse(responses[9]);
     assert.equal(unknownRes.error.code, -32601);
 
-    console.log("DSAF_MCP_SELF_TEST_PASSED (9 tools + Content-Length & NDJSON framing)");
+    // 3. Test installMcpConfig merge & dry-run
+    const existingCfg = join(scratch, ".mcp.json");
+    writeFileSync(existingCfg, JSON.stringify({ mcpServers: { other: { command: "echo" } }, unrelated: true }, null, 2));
+    const dryMcp = installMcpConfig({ agent: "cursor", scope: "project", cwd: scratch, dryRun: true });
+    assert.equal(dryMcp[0].dryRun, true);
+    assert.equal(existsSync(join(scratch, ".cursor/mcp.json")), false);
+    const written = installMcpConfig({ agent: "all", scope: "project", cwd: scratch });
+    assert.equal(written.length, 4);
+    const parsedClaude = JSON.parse(readFileSync(existingCfg, "utf8"));
+    assert.equal(parsedClaude.unrelated, true);
+    assert.equal(parsedClaude.mcpServers.other.command, "echo");
+    assert.deepEqual(parsedClaude.mcpServers.dsaf, { command: "npx", args: ["-y", "@zintaen/dsaf", "mcp"] });
+
+    console.log("DSAF_MCP_SELF_TEST_PASSED (9 tools + Content-Length & NDJSON framing + mcp install)");
     return 0;
   } finally {
     rmSync(scratch, { recursive: true, force: true });
@@ -460,18 +560,51 @@ function runSelfTest() {
 
 const isEntrypoint = process.argv[1] && resolve(process.argv[1]) === resolve(decodeURIComponent(new URL(import.meta.url).pathname));
 if (isEntrypoint) {
-  const { values } = parseArgs({
+  const { values, positionals } = parseArgs({
+    allowPositionals: true,
     options: {
+      agent: { type: "string", default: "claude" },
+      scope: { type: "string", default: "project" },
+      dir: { type: "string" },
+      cwd: { type: "string" },
+      "dry-run": { type: "boolean", default: false },
+      json: { type: "boolean", default: false },
       "self-test": { type: "boolean", default: false },
       help: { type: "boolean", short: "h", default: false },
     },
   });
   if (values.help) {
-    console.log("Usage: dsaf mcp [--self-test]\nRuns the zero-dependency JSON-RPC 2.0 stdio MCP server exposing 9 read-only DSAF tools.");
+    console.log(
+      [
+        `DSAF v${MCP_SERVER_VERSION} — Stdio MCP Server & Installer`,
+        "Usage:",
+        "  dsaf mcp                          Run JSON-RPC 2.0 stdio MCP server (9 read-only tools)",
+        "  dsaf mcp install [--agent claude|cursor|codex|antigravity|all] [--scope project|user] [--dir <path>] [--dry-run] [--json]",
+        "  dsaf mcp --self-test",
+      ].join("\n")
+    );
     process.exit(0);
   }
   if (values["self-test"]) {
     process.exit(runSelfTest());
+  }
+  if (positionals[0] === "install") {
+    const results = installMcpConfig({
+      agent: values.agent,
+      scope: values.scope,
+      dir: values.dir,
+      cwd: values.cwd || process.cwd(),
+      dryRun: values["dry-run"],
+    });
+    if (values.json) {
+      process.stdout.write(JSON.stringify({ schema: "dsaf-mcp-install/1", results }, null, 2) + "\n");
+    } else {
+      for (const r of results) {
+        console.log(`${r.dryRun ? "[DRY-RUN] " : ""}Configured DSAF MCP (${r.agent}/${r.scope}) -> ${r.path}`);
+      }
+      console.log("DSAF_MCP_INSTALL_COMPLETE");
+    }
+    process.exit(0);
   }
   runStdioServer();
 }

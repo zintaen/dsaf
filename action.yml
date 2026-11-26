@@ -114,7 +114,7 @@ runs:
         let reflex = 0;
         if (fs.existsSync(summaryPath)) {
           const data = JSON.parse(fs.readFileSync(summaryPath, "utf8"));
-          const counts = data.ci?.counts || data.tokens?.ciFindings?.counts || {};
+          const counts = data.ciGate || data.ci?.counts || data.tokens?.ciFindings?.counts || {};
           floor = Number(counts.floor || 0);
           reflex = Number(counts.reflex || 0);
         }

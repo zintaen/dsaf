@@ -1,4 +1,4 @@
-/* DSAF Promo Site Interactions: Theme Toggle, Accessible Tabs, Copy Controls */
+/* DSAF Docs Interactions: Theme Override, Accessible Focusgroup Tabs, Copy Controls */
 
 (() => {
   const meta = document.querySelector('meta[name="color-scheme"]');
@@ -10,14 +10,16 @@
     return systemMq.matches ? "dark" : "light";
   }
 
-  function syncThemeAria() {
+  function syncThemeBtn() {
     if (!themeBtn) return;
     const current = getRenderedScheme();
-    themeBtn.setAttribute("aria-label", current === "dark" ? "Switch to light theme" : "Switch to dark theme");
+    const next = current === "dark" ? "light" : "dark";
+    themeBtn.textContent = next === "dark" ? "Dark" : "Light";
+    themeBtn.setAttribute("aria-label", `Switch to ${next} theme`);
   }
 
   if (themeBtn && meta) {
-    syncThemeAria();
+    syncThemeBtn();
     themeBtn.addEventListener("click", () => {
       const target = getRenderedScheme() === "dark" ? "light" : "dark";
       const systemScheme = systemMq.matches ? "dark" : "light";
@@ -32,27 +34,28 @@
       } catch {
         meta.content = target;
       }
-      syncThemeAria();
+      syncThemeBtn();
     });
 
     window.addEventListener("storage", (e) => {
       if (e.key !== "color-scheme") return;
       meta.content = e.newValue === "light" || e.newValue === "dark" ? e.newValue : "light dark";
-      syncThemeAria();
+      syncThemeBtn();
     });
 
-    systemMq.addEventListener("change", syncThemeAria);
+    systemMq.addEventListener("change", syncThemeBtn);
   }
 
-  /* Accessible Tabbed Inspector (beforematch + arrow keys + focusgroupstart sync) */
-  const tablist = document.querySelector('[role="tablist"]');
+  /* Single-row accessible tabs with hidden="until-found" + beforematch */
+  const tablist = document.querySelector('[focusgroup^="tablist"]');
   if (tablist) {
-    const tabs = Array.from(tablist.querySelectorAll('[role="tab"]'));
+    const tabs = Array.from(tablist.querySelectorAll("button"));
     const panels = Array.from(document.querySelectorAll('.panels-stack > [role="tabpanel"]'));
 
-    function activateTab(nextTab, { focus = false } = {}) {
+    function activateTab(nextTab, { focus = false, scroll = true } = {}) {
       for (const tab of tabs) {
         const selected = tab === nextTab;
+        tab.setAttribute("role", "tab");
         tab.setAttribute("aria-selected", String(selected));
         tab.tabIndex = selected ? 0 : -1;
         tab.toggleAttribute("focusgroupstart", selected);
@@ -65,10 +68,13 @@
           panel.setAttribute("hidden", "until-found");
         }
       }
-      nextTab.scrollIntoView({ block: "nearest", inline: "nearest" });
+      if (scroll) {
+        nextTab.scrollIntoView({ block: "nearest", inline: "nearest", container: "nearest" });
+      }
       if (focus) nextTab.focus();
     }
 
+    activateTab(tabs[0], { scroll: false });
     for (const tab of tabs) {
       tab.addEventListener("click", () => activateTab(tab));
       tab.addEventListener("keydown", (e) => {

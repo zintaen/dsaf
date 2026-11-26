@@ -29,6 +29,8 @@ const REQUIRED_FILES = [
   "resources/evolve-strategy.md",
   "resources/preview-shell.html",
   "scripts/audit-pipeline.mjs",
+  "scripts/setup.mjs",
+  "scripts/generate-html-report.mjs",
   "scripts/generate-personas.mjs",
   "scripts/init-evolve.mjs",
   "scripts/fix-floor.mjs",
@@ -48,7 +50,7 @@ const REQUIRED_FILES = [
   "scripts/check-integrity.mjs",
 ];
 
-const CONTAM_RE = /(evolve\/|benchmark\.md|\/(Users|home)\/[A-Za-z0-9._-]+\/|[A-Za-z0-9._%+-]+@(?!example\.com|users\.noreply)[A-Za-z0-9.-]+\.[A-Za-z]{2,})/i;
+const CONTAM_RE = /((?<![.\w-])evolve\/|benchmark\.md|\/(Users|home)\/[A-Za-z0-9._-]+\/|[A-Za-z0-9._%+-]+@(?!example\.com|users\.noreply)[A-Za-z0-9.-]+\.[A-Za-z]{2,})/i;
 const EXTRA_TERMS = String(process.env.DSAF_PRIVATE_TERMS || "")
   .split(",")
   .map((s) => s.trim())
@@ -135,6 +137,7 @@ function main() {
   for (const script of [
     "recon.mjs",
     "generate-personas.mjs",
+    "generate-html-report.mjs",
     "init-evolve.mjs",
     "ci-report.mjs",
     "dsaf-hook.mjs",
@@ -150,6 +153,7 @@ function main() {
     "generate-guardrails.mjs",
     "audit-pipeline.mjs",
     "mcp-server.mjs",
+    "setup.mjs",
   ]) {
     const res = spawnSync(process.execPath, [join(SCRIPT_DIR, script), "--self-test"], { encoding: "utf8" });
     process.stdout.write(res.stdout || "");
@@ -160,7 +164,7 @@ function main() {
     }
   }
 
-  console.log("SKILL_INTEGRITY_ALL_PASSED (v0.9.1)");
+  console.log("SKILL_INTEGRITY_ALL_PASSED (v0.9.2)");
 }
 
 main();

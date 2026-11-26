@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * DSAF v0.9.1 — Deterministic Multi-Axis Persona Matrix Generator (`dsaf personas`).
+ * DSAF v0.9.2 — Deterministic Multi-Axis Persona Matrix Generator (`dsaf personas`).
  * Derives uncapped, signal-driven orthogonal personas, merges unlimited custom
  * domain personas (`.dsaf/personas.custom.json` or `--custom <file>`), and binds
  * cognitive walkthrough checklists + T2 synthetic edge datasets from read-only recon.
@@ -14,7 +14,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { analyzeDirectory } from "./recon.mjs";
 
-export const PERSONAS_VERSION = "0.9.1";
+export const PERSONAS_VERSION = "0.9.2";
 
 export const COGNITIVE_WALKTHROUGH_QUESTIONS = [
   "Does the persona know what to do next from visible cues alone?",

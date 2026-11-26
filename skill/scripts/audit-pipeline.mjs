@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 /**
- * DSAF v0.9.1 — Unified Tier 0 Read-Only One-Click Audit Pipeline (Node ESM).
- * Chains `recon` (incl. Surface Mode), `tokens`, optional live/Storybook/CDP `runtime`,
- * optional 3-vertex `figma-diff`, and optional `audit-diff` into `audit-summary.json` + Markdown + SARIF 2.1.0.
- * Strictly Tier 0 Read-Only on target repos; writes only inside explicit `--out`.
+ * DSAF v0.9.2 — Unified Tier 0 Read-Only One-Click Audit Pipeline (Node ESM).
+ * Chains `recon` (incl. Surface Mode), `tokens`, `personas` impact mapping,
+ * optional live/Storybook/CDP `runtime`, optional 2/3-vertex `figma-diff`,
+ * optional `audit-diff`, and `--html` report into `audit-summary.json` + Markdown + SARIF 2.1.0.
+ * Strictly Tier 0 Read-Only on target repos; writes only inside explicit `--out` / `--sarif` / `--html`.
  */
 
 import assert from "node:assert/strict";
@@ -16,6 +17,8 @@ import { scanTarget } from "./audit-tokens.mjs";
 import { compareVertices, renderMarkdown as renderFigmaMarkdown } from "./audit-figma-diff.mjs";
 import { checkTarget } from "./dsaf-hook.mjs";
 import { CI_REPORT_VERSION, formatGithubAnnotations, formatSarif } from "./ci-report.mjs";
+import { generatePersonas } from "./generate-personas.mjs";
+import { renderHtmlReport } from "./generate-html-report.mjs";
 
 const SCRIPT_DIR = dirname(decodeURIComponent(new URL(import.meta.url).pathname));
 
@@ -23,6 +26,45 @@ function runSubScript(scriptName, args) {
   return spawnSync(process.execPath, [join(SCRIPT_DIR, scriptName), ...args], {
     encoding: "utf8",
   });
+}
+
+function loadOrGeneratePersonas(target, recon) {
+  const existingPath = join(target, ".dsaf", "personas.json");
+  if (existsSync(existingPath)) {
+    try {
+      const parsed = JSON.parse(readFileSync(existingPath, "utf8"));
+      if (Array.isArray(parsed?.personas) && parsed.personas.length > 0) {
+        return { source: ".dsaf/personas.json", list: parsed.personas };
+      }
+    } catch {}
+  }
+  const gen = generatePersonas(target, { depth: "auto", recon, relativeTarget: "." });
+  return { source: "generated:auto", list: gen.personas || [] };
+}
+
+export function mapFindingToPersonas(finding, personas = []) {
+  const rule = String(finding?.ruleId || "").toLowerCase();
+  const matchedIds = [];
+  for (const p of personas) {
+    const text = `${p.axis || ""} ${p.name || ""} ${(p.expectations || []).join(" ")} ${(p.failureModes || []).join(" ")} ${p.source || ""}`.toLowerCase();
+    let hit = false;
+    if (/(outline-none|positive-tabindex|unnamed-control)/.test(rule)) {
+      hit = /keyboard|focus|screen reader|aria|navigation|onboarding/.test(text);
+    } else if (/no-100vw/.test(rule)) {
+      hit = /mobile|390|responsive|table|overflow|hybrid/.test(text);
+    } else if (/(hardcoded-color|dtcg-contrast|dark)/.test(rule)) {
+      hit = /contrast|dark|token|conformance|low-vision|theme/.test(text);
+    } else if (/(important|off-grid|dtcg-)/.test(rule)) {
+      hit = /token|conformance|drift|consumer|visual/.test(text);
+    } else if (/(transition|layout-transition|autoplay|hidden-at-rest|motion)/.test(rule)) {
+      hit = /motion|low-vision|keyboard|visitor|resilience/.test(text);
+    }
+    if (hit) matchedIds.push(p.id);
+  }
+  if (matchedIds.length === 0 && personas.length > 0) {
+    matchedIds.push(personas[0].id);
+  }
+  return matchedIds;
 }
 
 export function runAuditPipeline(opts = {}) {
@@ -149,9 +191,27 @@ export function runAuditPipeline(opts = {}) {
     );
   }
 
+  const personaLoaded = loadOrGeneratePersonas(target, recon);
+  const rawFindingsWithPersonas = ciFindingsList.map((f) => ({
+    ...f,
+    personaIds: mapFindingToPersonas(f, personaLoaded.list),
+  }));
+  const personaSummaryItems = personaLoaded.list.map((p) => {
+    const impacted = rawFindingsWithPersonas.filter((f) => f.personaIds.includes(p.id));
+    return {
+      id: p.id,
+      name: p.name,
+      axis: p.axis,
+      viewport: p.viewport,
+      source: p.source || "signal",
+      impactedCount: impacted.length,
+      findingRules: [...new Set(impacted.map((f) => f.ruleId))],
+    };
+  });
+
   const summary = {
     schema: "dsaf-audit/1",
-    engine_version: "0.9.1",
+    engine_version: "0.9.2",
     generated: new Date().toISOString(),
     dataTier: "tier_0_readonly",
     target,
@@ -172,6 +232,11 @@ export function runAuditPipeline(opts = {}) {
       filesScanned: tokens.filesScanned,
       dtcgTokenCount: tokens.dtcg?.tokenCount ?? 0,
       drift: tokens.drift,
+    },
+    personas: {
+      count: personaSummaryItems.length,
+      source: personaLoaded.source,
+      items: personaSummaryItems,
     },
     runtime: runtime
       ? {
@@ -194,14 +259,44 @@ export function runAuditPipeline(opts = {}) {
         }
       : null,
     regressionDiff,
-    ciFindings: ciFindingsList,
+    ciFindings: rawFindingsWithPersonas,
   };
 
   if (outDir) {
     writeFileSync(join(outDir, "audit-summary.json"), JSON.stringify(summary, null, 2) + "\n", "utf8");
     writeFileSync(join(outDir, "audit-summary.md"), renderAuditMarkdown(summary), "utf8");
   }
+  if (opts.htmlPath) {
+    const absHtml = resolve(opts.htmlPath);
+    mkdirSync(dirname(absHtml), { recursive: true });
+    writeFileSync(absHtml, renderHtmlReport(summary, { previewHref: opts.previewHref }), "utf8");
+  }
   return summary;
+}
+
+export function renderCheckSummary(summary) {
+  const cg = summary.ciGate || { floor: 0, reflex: 0 };
+  const r = summary.recon || {};
+  const d = summary.tokens?.drift || {};
+  const status = summary.passed ? "PASS" : "FAIL";
+  const lines = [
+    `DSAF Check (${status}) — Mode ${r.recommendedMode || "P"} (${r.surfaceMode || "operate"}) · Compliance: ${d.tokenCompliancePct ?? "N/A"}%`,
+    `Floor blockers: ${cg.floor} · Reflex warnings: ${cg.reflex} · Personas checked: ${summary.personas?.count ?? 0}`,
+  ];
+  const top = (summary.ciFindings || []).slice(0, 5);
+  if (top.length > 0) {
+    lines.push("Top findings:");
+    for (const f of top) {
+      const pTag = f.personaIds?.length ? ` [${f.personaIds.slice(0, 3).join(",")}]` : "";
+      lines.push(`  - [${f.tier}] ${f.ruleId} at ${f.file}:${f.line || 1}${pTag}`);
+    }
+  }
+  if (cg.floor > 0) {
+    lines.push("Next: run `npx @zintaen/dsaf fix . --dry-run` to preview safe automatic fixes.");
+  } else {
+    lines.push("Next: run `npx @zintaen/dsaf audit . --html audit-report.html` for a shareable report.");
+  }
+  return lines.join("\n") + "\n";
 }
 
 export function renderAuditMarkdown(summary) {
@@ -209,7 +304,7 @@ export function renderAuditMarkdown(summary) {
   const r = summary.recon;
   const cg = summary.ciGate || { floor: 0, reflex: 0, finish: 0, waived: 0, unusedIgnores: 0 };
   const lines = [
-    "# DSAF Unified Audit Summary (`v0.9.1` · Tier 0 Read-Only)",
+    "# DSAF Unified Audit Summary (`v0.9.2` · Tier 0 Read-Only)",
     "",
     `- **Target:** \`${summary.target}\``,
     `- **Topology / Surface / Maturity:** \`Mode ${r.recommendedMode}\` (${r.topologyLabel}) | Surface: \`${r.surfaceMode || "persuade"}\` | \`${r.estimatedMaturity}\` | \`T2-Mock required: ${r.t2MockRequired}\``,
@@ -228,6 +323,21 @@ export function renderAuditMarkdown(summary) {
   ];
   if (d.recommendedScope) lines.push(`| Recommended App Scope | \`${d.recommendedScope}\` |`);
   lines.push("");
+
+  if (summary.personas?.items?.length > 0) {
+    lines.push(
+      `## Persona Impact Matrix (${summary.personas.count} Personas · \`${summary.personas.source}\`)`,
+      "",
+      "| ID | Persona | Axis | Impacted Findings | Rules |",
+      "|---|---|---|---|---|"
+    );
+    for (const p of summary.personas.items) {
+      lines.push(
+        `| \`${p.id}\` | ${p.name} | ${p.axis} | ${p.impactedCount} | ${p.findingRules.slice(0, 3).map((x) => `\`${x}\``).join(", ") || "—"} |`
+      );
+    }
+    lines.push("");
+  }
 
   if (summary.runtime) {
     lines.push(
@@ -280,19 +390,23 @@ function runSelfTest() {
     writeFileSync(figmaPath, JSON.stringify({ "brand/primary": "#1d4ed8" }));
 
     const sarifOut = join(outDir, "dsaf.sarif");
+    const htmlOut = join(outDir, "report.html");
     const summary = runAuditPipeline({
       target: repoDir,
       figmaPath,
       outDir,
       sarifPath: sarifOut,
+      htmlPath: htmlOut,
     });
     assert.equal(summary.schema, "dsaf-audit/1");
-    assert.equal(summary.engine_version, "0.9.1");
+    assert.equal(summary.engine_version, "0.9.2");
     assert.equal(summary.passed, true);
+    assert.ok(summary.personas.count >= 5);
     assert.equal(summary.tokens.drift.hardcodedColorHits, 0);
     assert.deepEqual(summary.tokens.drift.demoFilesSkipped, ["demo/old-prototype.html"]);
     assert.equal(summary.figmaDiff.summary.matchedCount, 1);
     assert.ok(existsSync(sarifOut));
+    assert.ok(existsSync(htmlOut));
     assert.equal(JSON.parse(readFileSync(sarifOut, "utf8")).version, "2.1.0");
     assert.ok(existsSync(join(outDir, "audit-summary.json")));
     assert.ok(existsSync(join(outDir, "audit-summary.md")));
@@ -300,7 +414,7 @@ function runSelfTest() {
     assert.ok(existsSync(join(outDir, "tokens.json")));
     assert.ok(existsSync(join(outDir, "figma-diff.json")));
 
-    // Floor findings from dsaf-hook (e.g. transition: all) must propagate into ciGate + SARIF
+    // Floor findings from dsaf-hook (e.g. transition: all) must propagate into ciGate + SARIF + personas
     const floorApp = join(scratch, "floor-app");
     mkdirSync(join(floorApp, "src"), { recursive: true });
     writeFileSync(join(floorApp, "package.json"), JSON.stringify({ name: "floor-app", dependencies: { react: "^19.0.0" } }));
@@ -308,9 +422,11 @@ function runSelfTest() {
     const floorSummary = runAuditPipeline({ target: floorApp, outDir: join(scratch, "floor-out") });
     assert.equal(floorSummary.passed, false, "Active Floor rule must fail pipeline passed check");
     assert.ok(floorSummary.ciGate.floor >= 1, "Hook Floor finding must propagate into ciGate.floor");
-    assert.ok(floorSummary.ciFindings.some((f) => f.ruleId === "dsaf/no-transition-all"));
+    const trFinding = floorSummary.ciFindings.find((f) => f.ruleId === "dsaf/no-transition-all");
+    assert.ok(trFinding && trFinding.personaIds.length >= 1, "Must map finding to impacted personas");
+    assert.match(renderCheckSummary(floorSummary), /Floor blockers: 1/);
 
-    console.log("AUDIT_PIPELINE_SELF_TEST_PASSED (recon + scoped tokens + figma-diff + SARIF + markdown summary)");
+    console.log("AUDIT_PIPELINE_SELF_TEST_PASSED (recon + scoped tokens + personas + html + figma-diff + SARIF)");
     return 0;
   } finally {
     rmSync(scratch, { recursive: true, force: true });
@@ -342,6 +458,8 @@ function main() {
       github: { type: "boolean", default: false },
       scope: { type: "string" },
       out: { type: "string" },
+      html: { type: "string" },
+      compact: { type: "boolean", default: false },
       format: { type: "string", default: "markdown" },
       "self-test": { type: "boolean", default: false },
       help: { type: "boolean", short: "h", default: false },
@@ -350,7 +468,7 @@ function main() {
 
   if (values.help) {
     console.log(
-      "Usage: node skill/scripts/audit-pipeline.mjs <target> [--url <url>] [--routes /,/about] [--figma <vars.json>] [--code-connect <dir>] [--prefix <str>] [--storybook <url|index.json>] [--baseline <a.json> --current <b.json>] [--include-demos] [--scope <subdir>] [--sarif <file>] [--github] [--report-unused-ignores] [--out <dir>] [--format markdown|json|sarif] [--self-test]"
+      "Usage: node skill/scripts/audit-pipeline.mjs <target> [--url <url>] [--routes /,/about] [--figma <vars.json>] [--code-connect <dir>] [--prefix <str>] [--storybook <url|index.json>] [--baseline <a.json> --current <b.json>] [--include-demos] [--scope <subdir>] [--sarif <file>] [--html <report.html>] [--compact] [--github] [--report-unused-ignores] [--out <dir>] [--format markdown|json|sarif] [--self-test]"
     );
     process.exit(0);
   }
@@ -382,6 +500,7 @@ function main() {
     includeDemos: values["include-demos"],
     reportUnusedIgnores: values["report-unused-ignores"],
     sarifPath: values.sarif,
+    htmlPath: values.html,
     scope: values.scope,
     outDir: values.out,
   });
@@ -392,6 +511,8 @@ function main() {
   } else if (values.github) {
     const ann = formatGithubAnnotations(summary.ciFindings || [], { repoRoot: summary.target });
     if (ann) process.stdout.write(ann + "\n");
+  } else if (values.compact) {
+    process.stdout.write(renderCheckSummary(summary));
   } else {
     process.stdout.write(values.format === "json" ? JSON.stringify(summary, null, 2) + "\n" : renderAuditMarkdown(summary));
   }

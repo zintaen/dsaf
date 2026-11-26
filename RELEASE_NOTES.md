@@ -4,6 +4,14 @@ Concise version highlights for **DSAF (`@zintaen/dsaf`)**. Follows [Semantic Ver
 
 ---
 
+## v0.9.2 (2026-11-27) — Simplified Onboarding, Editorial Shell & Report (`--html`), and `auto-evolve-strategy v1.2.0`
+
+- **Dead-Simple CLI (`dsaf check`, `dsaf setup`, `dsaf mcp install`):** Bare path invocations (`npx @zintaen/dsaf .` or `dsaf check`) immediately run a clean one-command health check with next-step hints; `dsaf setup` installs the Tier 1 agent skill and wires MCP JSON (`dsaf mcp install`) across Claude, Cursor, Codex, and Antigravity in one step.
+- **Persona-to-Finding Linking & Standalone HTML Reports (`--html`):** `audit-pipeline.mjs` now maps every Floor/Reflex/token defect directly to affected user persona IDs (`P01..Pn`), includes a **Persona Impact Matrix** in Markdown/PR comments, and exports self-contained dark/light editorial HTML reports (`generate-html-report.mjs`) with accessible tabs and container-responsive tables.
+- **Anti-AI-Slop Preview Shell & Docs Redesign:** Rebuilt canonical `preview-shell.html` and GitHub Pages (`docs/`) with quiet hairline studio chrome, an authentic Team Billing specimen (`Before` vs `Track A` vs `Track B`), plain 3-step onboarding copy, and a live [Sample HTML Report](https://zintaen.github.io/dsaf/demo/sample-report.html).
+- **Live Interactive Probes (`audit-runtime.mjs`):** Automatically exercises visible tabs, collapsed `<details>` disclosures, and theme toggles on live targets to catch hidden overflow or state regressions.
+- **`auto-evolve-strategy v1.2.0` Adoption:** Pinned canonical `STRATEGY.md v1.2.0` in `.evolve/` (excluded from npm tarballs) and upgraded `dsaf init` / `dsaf evolve` with `A9.4` atomic numbered `lease.<n>` + `owner: none` release semantics and `.dsaf/.evolve` `STOP` parity. Also fixed `action.yml` Floor/Reflex count extraction (`data.ciGate`).
+
 ## v0.9.1 (2026-11-27) — Uncapped Signal-Driven Personas & Container-Query Preview Shell
 
 - **Uncapped Persona Scaling (`dsaf personas` / `dsaf init` / `dsaf_personas`):** Removed the `if/else` 8-persona branch cap; `generate-personas.mjs` (`--depth auto` default) now derives every applicable orthogonal persona from repo signals (`Mode S/C`, routes, forms, dense tables, docs/Storybook, dark mode, hybrid WebView shells, fault tolerance) and merges unlimited domain roles from `.dsaf/personas.custom.json` or `--custom <file>`.

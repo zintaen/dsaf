@@ -432,6 +432,7 @@ function parseArgs(argv) {
     else if (a === "--extended-viewports") out.extendedViewports = true;
     else if (a === "--no-hide-overlays") out.noHideOverlays = true;
     else if (a === "--skip-shell-check") out.skipShellCheck = true;
+    else if (a === "--skip-interactions") out.skipInteractions = true;
     else if (a === "--json") out.json = true;
     else if (a === "--self-test") out.selfTest = true;
     else if (a === "-h" || a === "--help") out.help = true;
@@ -786,6 +787,99 @@ export function validateSimulatedViewportSnapshot(viewport, snap) {
     failures.push(`Simulated ${viewport} unstacked table overflow: tableW=${t.tableW} > wrapW=${t.wrapW}`);
   }
   return failures;
+}
+
+export function validateLiveInteractionSnapshot(snap) {
+  const failures = [];
+  if (!snap) return failures;
+  if (snap.docOverflow > 2) {
+    failures.push(`Interactive state '${snap.label}' caused horizontal overflow (${snap.docOverflow}px)`);
+  }
+  if (snap.panelOverflow > 2) {
+    failures.push(`Interactive panel '${snap.label}' overflows container (${snap.panelOverflow}px)`);
+  }
+  if (snap.selectionUpdated === false) {
+    failures.push(`Clicking tab '${snap.label}' did not update aria-selected="true"`);
+  }
+  return failures;
+}
+
+async function auditLiveInteractions(page) {
+  const summary = { tabsTested: 0, disclosuresTested: 0, themeToggleTested: false, failures: [] };
+  // 1. Probe visible tabs cleanly and restore initial selection
+  const tabs = await page.$$('[role="tablist"] [role="tab"], [focusgroup*="tablist"] button');
+  let origTab = null;
+  for (const t of tabs) {
+    if (await t.evaluate((el) => el.getAttribute("aria-selected") === "true").catch(() => false)) {
+      origTab = t;
+      break;
+    }
+  }
+  for (const tab of tabs.slice(0, 4)) {
+    if (!(await tab.isVisible().catch(() => false))) continue;
+    const meta = await tab.evaluate((el) => ({
+      id: el.id || "",
+      label: (el.textContent || "").trim().slice(0, 24) || "tab",
+      selected: el.getAttribute("aria-selected") === "true",
+    })).catch(() => null);
+    if (!meta || meta.selected) continue;
+    try {
+      await tab.click({ timeout: 1500 });
+      await page.waitForTimeout(80);
+      const snap = await page.evaluate((tabId) => {
+        const btn = tabId ? document.getElementById(tabId) : null;
+        const panel = tabId ? document.querySelector(`[role="tabpanel"][aria-labelledby="${CSS.escape(tabId)}"]`) : null;
+        return {
+          label: (btn?.textContent || "tab").trim().slice(0, 24),
+          selectionUpdated: btn ? btn.getAttribute("aria-selected") === "true" : true,
+          docOverflow: Math.max(0, Math.round(document.documentElement.scrollWidth - window.innerWidth)),
+          panelOverflow: panel ? Math.max(0, Math.round(panel.scrollWidth - panel.clientWidth)) : 0,
+        };
+      }, meta.id);
+      summary.tabsTested++;
+      summary.failures.push(...validateLiveInteractionSnapshot(snap));
+    } catch {}
+  }
+  if (origTab) {
+    await origTab.click({ timeout: 1000 }).catch(() => {});
+    await page.waitForTimeout(40);
+  }
+
+  // 2. Probe first collapsed <details> summary
+  const detSummary = await page.$("details:not([open]) > summary");
+  if (detSummary && (await detSummary.isVisible().catch(() => false))) {
+    try {
+      await detSummary.click({ timeout: 1500 });
+      await page.waitForTimeout(60);
+      const snap = await page.evaluate(() => ({
+        label: "details:open",
+        docOverflow: Math.max(0, Math.round(document.documentElement.scrollWidth - window.innerWidth)),
+        panelOverflow: 0,
+      }));
+      summary.disclosuresTested++;
+      summary.failures.push(...validateLiveInteractionSnapshot(snap));
+      await detSummary.click({ timeout: 1000 }).catch(() => {});
+    } catch {}
+  }
+
+  // 3. Probe safe explicit theme toggle and restore
+  const tog = await page.$("#theme-toggle-btn, [data-theme-toggle]");
+  if (tog && (await tog.isVisible().catch(() => false))) {
+    try {
+      await tog.click({ timeout: 1500 });
+      await page.waitForTimeout(80);
+      const snap = await page.evaluate(() => ({
+        label: "theme-toggle",
+        docOverflow: Math.max(0, Math.round(document.documentElement.scrollWidth - window.innerWidth)),
+        panelOverflow: 0,
+      }));
+      summary.themeToggleTested = true;
+      summary.failures.push(...validateLiveInteractionSnapshot(snap));
+      await tog.click({ timeout: 1000 }).catch(() => {});
+    } catch {}
+  }
+
+  return summary;
 }
 
 async function auditShellContract(page) {
@@ -1594,6 +1688,9 @@ async function runSelfTest() {
       }),
       []
     );
+    assert.equal(validateLiveInteractionSnapshot({ label: "Floor Fix", selectionUpdated: false, docOverflow: 0, panelOverflow: 0 }).length, 1);
+    assert.equal(validateLiveInteractionSnapshot({ label: "Floor Fix", selectionUpdated: true, docOverflow: 14, panelOverflow: 0 }).length, 1);
+    assert.deepEqual(validateLiveInteractionSnapshot({ label: "Floor Fix", selectionUpdated: true, docOverflow: 0, panelOverflow: 0 }), []);
   } finally {
     rmSync(scratch, { recursive: true, force: true });
   }
@@ -1700,6 +1797,7 @@ async function main() {
         webVitals: await captureWebVitals(page),
         computedVars: await captureComputedRootVars(page),
         shell: null,
+        interactions: null,
         screenshot: null,
         reducedMotion: null,
         pixelBehind: [],
@@ -1710,6 +1808,14 @@ async function main() {
       if (!args.skipShellCheck && basename(target) !== "index.html") {
         fileRes.shell = await auditShellContract(page);
         if (fileRes.shell.failures.length > 0) {
+          fileRes.passed = false;
+          report.allPassed = false;
+        }
+      }
+
+      if (args.live && !args.skipInteractions && !fileRes.shell?.present && !isCdpAttached) {
+        fileRes.interactions = await auditLiveInteractions(page);
+        if (fileRes.interactions.failures.length > 0) {
           fileRes.passed = false;
           report.allPassed = false;
         }
@@ -1914,6 +2020,7 @@ async function main() {
     for (const f of report.files) {
       console.log(`FILE ${f.file}: ${f.passed ? "PASS" : "FAIL"} (pageErrors=${f.pageErrors.length}, LCP=${f.webVitals?.lcpMs ?? "n/a"}ms, CLS=${f.webVitals?.cls ?? 0}, hiddenOverlays=${f.hiddenOverlaysCount})`);
       if (f.shell) console.log(`  shell: ${f.shell.failures.length === 0 ? "PASS" : "FAIL " + JSON.stringify(f.shell.failures)}`);
+      if (f.interactions) console.log(`  interactions: tabs=${f.interactions.tabsTested} details=${f.interactions.disclosuresTested} theme=${f.interactions.themeToggleTested} -> ${f.interactions.failures.length === 0 ? "PASS" : "FAIL " + JSON.stringify(f.interactions.failures)}`);
       if (f.screenshot) console.log(`  screenshot: ${f.screenshot}`);
       if (f.reducedMotion) console.log(`  reducedMotion: mediaMatches=${f.reducedMotion.mediaMatches} unguarded=${f.reducedMotion.unguardedAnimatedCount}`);
       for (const pb of f.pixelBehind) {

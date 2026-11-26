@@ -20,6 +20,8 @@ jobs:
       - run: npm test
       - run: node bin/dsaf.mjs version
       - run: node bin/dsaf.mjs audit --self-test
+      - run: node bin/dsaf.mjs setup --self-test
+      - run: node skill/scripts/generate-html-report.mjs --self-test
       - run: node bin/dsaf.mjs personas --self-test
       - run: node bin/dsaf.mjs init --self-test
       - run: node bin/dsaf.mjs mcp --self-test
@@ -67,13 +69,14 @@ jobs:
           mkdir -p /tmp/dsaf-pw
           npm install --prefix /tmp/dsaf-pw --no-save playwright axe-core
           /tmp/dsaf-pw/node_modules/.bin/playwright install chromium --with-deps
-      - name: Verify Canonical Preview Shell, Storybook Static, Product App & Defect Detection
+      - name: Verify Canonical Preview Shell, Live Report, Storybook Static, Product App & Defect Detection
         env:
           NODE_PATH: /tmp/dsaf-pw/node_modules
         run: |
           node bin/dsaf.mjs runtime skill/resources/preview-shell.html --axe /tmp/dsaf-pw/node_modules/axe-core/axe.min.js
           node bin/dsaf.mjs runtime docs/demo/preview-shell.html --axe /tmp/dsaf-pw/node_modules/axe-core/axe.min.js
           node bin/dsaf.mjs runtime docs/index.html --live --skip-shell-check --extended-viewports --axe /tmp/dsaf-pw/node_modules/axe-core/axe.min.js
+          node bin/dsaf.mjs runtime docs/demo/sample-report.html --live --skip-shell-check --extended-viewports --axe /tmp/dsaf-pw/node_modules/axe-core/axe.min.js
           node bin/dsaf.mjs runtime evolve/fixtures/synthetic/mode-p-app/index.html --live --axe /tmp/dsaf-pw/node_modules/axe-core/axe.min.js
           node bin/dsaf.mjs runtime --storybook evolve/fixtures/synthetic/storybook-static/index.json --axe /tmp/dsaf-pw/node_modules/axe-core/axe.min.js
           if node bin/dsaf.mjs runtime evolve/fixtures/synthetic/mode-p-defects/index.html --live --axe /tmp/dsaf-pw/node_modules/axe-core/axe.min.js; then
@@ -106,4 +109,4 @@ jobs:
         run: |
           test -f .tmp-action-smoke/audit-summary.json
           test -f .tmp-action-smoke/dsaf.sarif
-          node -e 'const fs=require("node:fs"); const s=JSON.parse(fs.readFileSync(".tmp-action-smoke/audit-summary.json","utf8")); if((s.ci?.counts?.floor||0)!==0) process.exit(1); console.log("ACTION_SMOKE_PASSED");'
+          node -e 'const fs=require("node:fs"); const s=JSON.parse(fs.readFileSync(".tmp-action-smoke/audit-summary.json","utf8")); if((s.ciGate?.floor ?? s.ci?.counts?.floor ?? 0)!==0) process.exit(1); console.log("ACTION_SMOKE_PASSED");'

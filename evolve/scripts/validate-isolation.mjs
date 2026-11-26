@@ -109,6 +109,57 @@ function main() {
     process.exit(1);
   }
 
+  // Verify pinned .evolve/STRATEGY.md (auto-evolve-strategy v1.2.0) & zero npm tarball leak
+  const pinnedStrategy = join(REPO_ROOT, ".evolve/STRATEGY.md");
+  if (!existsSync(pinnedStrategy) || !existsSync(join(REPO_ROOT, ".evolve/rules.md")) || !existsSync(join(REPO_ROOT, ".evolve/handoff.md"))) {
+    console.error("ERROR: missing .evolve/ governance files (STRATEGY.md / rules.md / handoff.md)");
+    process.exit(1);
+  }
+  const pinnedText = readFileSync(pinnedStrategy, "utf8");
+  if (!pinnedText.startsWith("# Auto-evolve strategy") || !/Version 1\.2\.0\.\s+Canonical source:.*zintaen\/auto-evolve-strategy/.test(pinnedText)) {
+    console.error("ERROR: .evolve/STRATEGY.md must match pinned zintaen/auto-evolve-strategy Version 1.2.0 header");
+    process.exit(1);
+  }
+  const pkgFiles = Array.isArray(pkg.files) ? pkg.files : [];
+  if (pkgFiles.some((f) => /^\.?evolve\/?$/i.test(String(f).trim()))) {
+    console.error("ERROR: package.json#files must never publish .evolve/ or evolve/");
+    process.exit(1);
+  }
+
+  // Schema & script version contract checks
+  const verMap = [
+    ["scripts/audit-pipeline.mjs", `engine_version: "${pkg.version}"`],
+    ["scripts/init-evolve.mjs", `INIT_VERSION = "${pkg.version}"`],
+    ["scripts/evolve-runner.mjs", `EVOLVE_RUNNER_VERSION = "${pkg.version}"`],
+    ["scripts/generate-personas.mjs", `PERSONAS_VERSION = "${pkg.version}"`],
+    ["scripts/mcp-server.mjs", `MCP_SERVER_VERSION = "${pkg.version}"`],
+    ["scripts/setup.mjs", `SETUP_VERSION = "${pkg.version}"`],
+    ["scripts/generate-html-report.mjs", `HTML_REPORT_VERSION = "${pkg.version}"`],
+    ["scripts/doctor.mjs", `DOCTOR_VERSION = "${pkg.version}"`],
+    ["scripts/ci-report.mjs", `CI_REPORT_VERSION = "${pkg.version}"`],
+    ["scripts/fix-floor.mjs", `FIX_VERSION = "${pkg.version}"`],
+    ["scripts/generate-guardrails.mjs", `GENERATOR_VERSION = "${pkg.version}"`],
+  ];
+  for (const [rel, marker] of verMap) {
+    if (!readFileSync(join(SKILL_DIR, rel), "utf8").includes(marker)) {
+      console.error(`ERROR: skill/${rel} missing version contract '${marker}'`);
+      process.exit(1);
+    }
+  }
+  for (const [rel, schemaId] of [
+    ["scripts/compute-scorecard.mjs", "dsaf-scores/2"],
+    ["scripts/audit-pipeline.mjs", "dsaf-audit/1"],
+    ["scripts/generate-personas.mjs", "dsaf-personas/1"],
+    ["scripts/init-evolve.mjs", "dsaf-init-rules/1"],
+    ["scripts/audit-runtime.mjs", "dsaf-runtime/2"],
+    ["scripts/setup.mjs", "dsaf-setup/1"],
+  ]) {
+    if (!readFileSync(join(SKILL_DIR, rel), "utf8").includes(schemaId)) {
+      console.error(`ERROR: skill/${rel} missing schema contract '${schemaId}'`);
+      process.exit(1);
+    }
+  }
+
   const schema = JSON.parse(readFileSync(join(EVOLVE_DIR, "references/feedback-schema.json"), "utf8"));
   if (!schema.required?.includes("mode") || !schema.properties?.category?.enum?.includes("ds_drift_signal")) {
     console.error("ERROR: feedback-schema.json missing DSAF fields/enums");

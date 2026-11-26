@@ -5,5 +5,9 @@ audit-output/
 draft/
 coverage/
 .tmp/
+.tmp-action-smoke/
+.evolve/repro/
+.evolve/lease.*
+.dsaf/lease.*
 *.log
 *.tgz

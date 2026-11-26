@@ -1,11 +1,11 @@
 ---
 name: dsaf-evolve
-description: "Maintainer-only Tier 2 Closed-Loop Evolution Meta-Skill for DSAF v0.9.1. Mines domain-stripped real-world retro signals (~/.dsaf/feedback-log.jsonl) plus calibration scorecard corpora (dead/saturated criteria & probe gaps), formulates one atomic hypothesis per cycle, executes blind Evaluator/Grader A/B evaluations across Mode S/C/P fixtures against hard guardrails (G1-G8, T1-T10, VG1-VG9, V3-1..6, DS-1..5), enforces zero-contamination isolation, and syncs clean skill releases. NEVER use during normal product or design system audits; use ONLY when evolving DSAF itself."
+description: "Maintainer-only Tier 2 Closed-Loop Evolution Meta-Skill for DSAF v0.9.2. Follows DSAF's pinned .evolve/STRATEGY.md (zintaen/auto-evolve-strategy v1.2.0), mines domain-stripped real-world retro signals (~/.dsaf/feedback-log.jsonl) plus calibration scorecard corpora (dead/saturated criteria & probe gaps), formulates one atomic hypothesis per cycle, executes blind Evaluator/Grader A/B evaluations across Mode S/C/P fixtures against hard guardrails (G1-G8, T1-T10, VG1-VG9, V3-1..6, DS-1..5), enforces zero-contamination isolation, and syncs clean skill releases. NEVER use during normal product or design system audits; use ONLY when evolving DSAF itself."
 ---
 
-# DSAF — Tier 2 Maintainer Closed-Loop Evolution (`v0.9.1`)
+# DSAF — Tier 2 Maintainer Closed-Loop Evolution (`v0.9.2`)
 
-This meta-skill stays strictly isolated inside `evolve/` outside the production `skill/` directory so audit agents never see benchmark answers or mutate production rules mid-run.
+This meta-skill operates alongside DSAF's repo governance in `.evolve/` (pinned `zintaen/auto-evolve-strategy v1.2.0` at `.evolve/STRATEGY.md`, `.evolve/rules.md`, `.evolve/handoff.md`) and stays strictly outside the production `skill/` package so audit agents never see benchmark answers or mutate production rules mid-run.
 
 ## 1. Non-Negotiable Evolution Laws
 

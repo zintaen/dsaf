@@ -1,1255 +1,936 @@
 <!doctype html>
-<html lang="en" data-theme="light" data-uxs-theme="light" data-uxs-view="compare" data-uxs-ambition="L3" data-uxs-viewport="desktop" data-uxs-state="default" data-uxs-pins="off">
+<html lang="en" data-theme="light" data-uxs-ambition="L3" data-uxs-view="compare" data-uxs-viewport="desktop" data-uxs-theme="light" data-uxs-pins="off" data-uxs-state="default">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="color-scheme" content="light dark" />
-  <title>DSAF Dual-Track Draft Preview — Ink &amp; Gold v3</title>
+  <title>DSAF Review Shell — Billing &amp; Seats Specimen</title>
   <style>
     :root {
       color-scheme: light dark;
-      --uxs-font-display: "Manrope", "Be Vietnam Pro", ui-sans-serif, system-ui, -apple-system, sans-serif;
-      --uxs-font-sans: "Be Vietnam Pro", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
-      --uxs-font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-
-      --uxs-bg: #F7F8FA;
-      --uxs-panel: #FFFFFF;
-      --uxs-raised: #EEF1F5;
-      --uxs-wash: #E9EBEF;
-      --uxs-border: #DDE2EA;
-      --uxs-border-ui: #5D708D;
-      --uxs-fg: #0F1B2D;
-      --uxs-muted: #3E4A5E;
+      --uxs-canvas-bg: #F3F4F6;
+      --uxs-surface: #FFFFFF;
+      --uxs-surface-subtle: #F8F9FB;
+      --uxs-border: #D5DBE3;
+      --uxs-border-ui: #5D6B7E;
+      --uxs-fg: #111827;
+      --uxs-muted: #465366;
       --uxs-primary: #14243D;
-      --uxs-primary-hover: #0E1B33;
       --uxs-primary-fg: #FFFFFF;
-      --uxs-ink-deep: #0E1B33;
+      --uxs-ink-card: #122138;
+      --uxs-ink-fg: #F1F5F9;
+      --uxs-ink-muted: #C2CDDC;
       --uxs-accent: #F4BA17;
-      --uxs-accent-fg: #000000;
-      --uxs-accent-deep: #F2AE1C;
-      --uxs-accent-text: #6E5000;
+      --uxs-accent-fg: #0D1420;
+      --uxs-accent-text: #6E4F00;
+      --uxs-accent-soft: #FEF7E0;
+      --uxs-pass-bg: #E8F4ED;
+      --uxs-pass-border: #9ECFBA;
+      --uxs-pass-fg: #0B5936;
+      --uxs-warn-bg: #FDECEC;
+      --uxs-warn-border: #E59D9D;
+      --uxs-warn-fg: #8B1C1C;
+      --uxs-pin-bg: #14243D;
+      --uxs-pin-fg: #FFFFFF;
       --uxs-ring: #14243D;
+      --uxs-font: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+      --uxs-mono: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
 
-      --uxs-info-soft: #E9EFF8;
-      --uxs-teal-soft: #E6F6F6;
-      --uxs-accent-soft: #FDF4DA;
-      --uxs-success-soft: #E6F2ED;
-      --uxs-success-line: #B4D7C9;
-      --uxs-success-text: #06573A;
-      --uxs-warning-soft: #FEF8E8;
-      --uxs-warning-line: #C79A1A;
-      --uxs-warning-text: #5C3006;
-      --uxs-danger-soft: #FAEBEB;
-      --uxs-danger-line: #F0C2C4;
-      --uxs-danger-text: #96232D;
-
-      --uxs-shadow-sm: 0 1px 2px rgb(15 27 45 / 0.08);
-      --uxs-shadow-md: 0 4px 12px rgb(15 27 45 / 0.10);
-      --uxs-aurora:
-        radial-gradient(120% 140% at 0% 0%, var(--uxs-info-soft), transparent 60%),
-        radial-gradient(120% 140% at 100% 0%, var(--uxs-teal-soft), transparent 60%),
-        radial-gradient(120% 120% at 60% 110%, var(--uxs-accent-soft), transparent 60%),
-        var(--uxs-panel);
-      --uxs-ink-grad: linear-gradient(180deg, #162846 0%, #0E1B33 100%);
-      --uxs-ink-fg: #E9EEF6;
-      --uxs-ink-muted: #B8C5D6;
-      --uxs-ink-border: #253247;
-
-      --uxs-dur-fast: 120ms;
-      --uxs-dur-mid: 220ms;
-      --uxs-ease: cubic-bezier(0.2, 0, 0, 1);
-      --uxs-spring: linear(0, 0.008, 0.032, 0.074, 0.135, 0.214, 0.308, 0.415, 0.529, 0.644, 0.753, 0.85, 0.931, 0.992, 1.033, 1.055, 1.062, 1.057, 1.045, 1.031, 1.017, 1.006, 0.999, 0.996, 0.995, 0.997, 0.999, 1);
-
-      --uxs-r-sm: 8px;
-      --uxs-r-md: 12px;
-      --uxs-r-lg: 16px;
-      --uxs-r-pill: 999px;
-      --uxs-max-w: 1320px;
-    }
-
-    html[data-theme="dark"] {
-      --uxs-bg: #0A111D;
-      --uxs-panel: #111A29;
-      --uxs-raised: #182335;
-      --uxs-wash: #171E2A;
-      --uxs-border: #253247;
-      --uxs-border-ui: #66748A;
-      --uxs-fg: #E9EEF6;
-      --uxs-muted: #B8C5D6;
-      --uxs-primary: #E6ECF5;
-      --uxs-primary-hover: #FFFFFF;
-      --uxs-primary-fg: #0A111D;
-      --uxs-ink-deep: #14243D;
-      --uxs-accent: #F4BA17;
-      --uxs-accent-fg: #000000;
-      --uxs-accent-deep: #F2AE1C;
-      --uxs-accent-text: #F4BA17;
-      --uxs-ring: #F4BA17;
-
-      --uxs-info-soft: #23324B;
-      --uxs-teal-soft: #132F35;
-      --uxs-accent-soft: #474025;
-      --uxs-success-soft: #193839;
-      --uxs-success-line: #256552;
-      --uxs-success-text: #64DAA4;
-      --uxs-warning-soft: #342A2A;
-      --uxs-warning-line: #68422B;
-      --uxs-warning-text: #F5C396;
-      --uxs-danger-soft: #362439;
-      --uxs-danger-line: #6E3352;
-      --uxs-danger-text: #FAD0DF;
-
-      --uxs-shadow-sm: 0 1px 2px rgb(0 0 0 / 0.40);
-      --uxs-shadow-md: 0 4px 12px rgb(0 0 0 / 0.45);
-      --uxs-ink-grad: linear-gradient(180deg, #162338 0%, #111A29 100%);
-    }
-
-    @media (prefers-reduced-motion: reduce) {
-      *, *::before, *::after {
-        animation-duration: 0.01ms;
-        transition-duration: 0.01ms;
-        scroll-behavior: auto;
+      &:has(> head > meta[name="color-scheme"][content="dark"]),
+      &[data-theme="dark"] {
+        color-scheme: dark;
+        --uxs-canvas-bg: #0B1018;
+        --uxs-surface: #121925;
+        --uxs-surface-subtle: #182232;
+        --uxs-border: #273449;
+        --uxs-border-ui: #68778E;
+        --uxs-fg: #ECF1F8;
+        --uxs-muted: #B6C2D4;
+        --uxs-primary: #E8EEF7;
+        --uxs-primary-fg: #0B1018;
+        --uxs-ink-card: #18273F;
+        --uxs-ink-fg: #F3F6FA;
+        --uxs-ink-muted: #C3D0E0;
+        --uxs-accent: #F4BA17;
+        --uxs-accent-fg: #0B1018;
+        --uxs-accent-text: #F4BA17;
+        --uxs-accent-soft: #3D3316;
+        --uxs-pass-bg: #133124;
+        --uxs-pass-border: #2D6F51;
+        --uxs-pass-fg: #82DFB3;
+        --uxs-warn-bg: #3C181B;
+        --uxs-warn-border: #964147;
+        --uxs-warn-fg: #F7A8AC;
+        --uxs-pin-bg: #F4BA17;
+        --uxs-pin-fg: #0B1018;
+        --uxs-ring: #F4BA17;
       }
     }
 
+    @media (prefers-color-scheme: dark) {
+      :root:not([data-theme="light"]) {
+        --uxs-canvas-bg: #0B1018;
+        --uxs-surface: #121925;
+        --uxs-surface-subtle: #182232;
+        --uxs-border: #273449;
+        --uxs-border-ui: #68778E;
+        --uxs-fg: #ECF1F8;
+        --uxs-muted: #B6C2D4;
+        --uxs-primary: #E8EEF7;
+        --uxs-primary-fg: #0B1018;
+        --uxs-ink-card: #18273F;
+        --uxs-ink-fg: #F3F6FA;
+        --uxs-ink-muted: #C3D0E0;
+        --uxs-accent: #F4BA17;
+        --uxs-accent-fg: #0B1018;
+        --uxs-accent-text: #F4BA17;
+        --uxs-accent-soft: #3D3316;
+        --uxs-pass-bg: #133124;
+        --uxs-pass-border: #2D6F51;
+        --uxs-pass-fg: #82DFB3;
+        --uxs-warn-bg: #3C181B;
+        --uxs-warn-border: #964147;
+        --uxs-warn-fg: #F7A8AC;
+        --uxs-pin-bg: #F4BA17;
+        --uxs-pin-fg: #0B1018;
+        --uxs-ring: #F4BA17;
+      }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { animation-duration: 0.01ms; transition-duration: 0.01ms; }
+    }
+
     *, *::before, *::after { box-sizing: border-box; }
-
+    html, body { margin: 0; padding: 0; overflow-x: clip; }
     body {
-      margin: 0;
       min-height: 100dvh;
-      font-family: var(--uxs-font-sans);
-      font-size: 15px;
-      line-height: 1.55;
-      background: var(--uxs-bg);
+      background: var(--uxs-canvas-bg);
       color: var(--uxs-fg);
-      -webkit-font-smoothing: antialiased;
+      font-family: var(--uxs-font);
+      font-size: 14px;
+      line-height: 1.5;
     }
 
-    .uxs-skip {
-      position: fixed;
-      left: 16px;
-      top: 12px;
-      width: 1px;
-      height: 1px;
-      padding: 0;
-      border: 0;
-      overflow: hidden;
-      clip-path: inset(50%);
-      z-index: 200;
-      background: var(--uxs-primary);
-      color: var(--uxs-primary-fg);
-      border-radius: var(--uxs-r-sm);
-      font-weight: 600;
-      text-decoration: none;
-    }
-    .uxs-skip:focus-visible {
-      width: auto;
-      height: auto;
-      min-height: 44px;
-      padding: 12px 16px;
-      clip-path: none;
-      outline: 2px solid var(--uxs-accent);
-      outline-offset: 2px;
-    }
-
-    button:focus-visible,
-    select:focus-visible,
-    a:focus-visible,
-    summary:focus-visible,
-    [tabindex]:focus-visible {
+    button:focus-visible, select:focus-visible, a:focus-visible {
       outline: 2px solid var(--uxs-ring);
       outline-offset: 2px;
     }
 
-    .uxs-topbar {
-      position: relative;
-      z-index: 80;
-      background: var(--uxs-panel);
-      border-bottom: 1px solid var(--uxs-border);
-    }
-
-    .uxs-topbar-inner {
-      max-width: var(--uxs-max-w);
-      margin: 0 auto;
-      padding: 12px 20px;
+    /* Quiet Studio Toolbar */
+    .uxs-toolbar {
+      position: sticky;
+      top: 0;
+      z-index: 40;
       display: flex;
-      flex-wrap: wrap;
       align-items: center;
       justify-content: space-between;
-      gap: 12px;
-    }
-
-    .uxs-brand {
-      display: flex;
-      align-items: center;
-      gap: 12px;
-      min-width: 0;
-    }
-
-    .uxs-logo {
-      flex: none;
-      width: 36px;
-      height: 36px;
-      border-radius: var(--uxs-r-sm);
-      background: var(--uxs-ink-deep);
-      border: 1px solid var(--uxs-accent);
-      display: grid;
-      place-items: center;
-      color: var(--uxs-accent);
-      box-shadow: var(--uxs-shadow-sm);
-    }
-
-    .uxs-brand-title {
-      font-family: var(--uxs-font-display);
-      font-size: 16px;
-      font-weight: 800;
-      letter-spacing: -0.02em;
-      color: var(--uxs-fg);
-      margin: 0;
-      line-height: 1.2;
-      white-space: nowrap;
-    }
-
-    /* Pill / badge matches crisp 24px single-line Ink & Gold v3 geometry */
-    .uxs-badge {
-      display: inline-flex;
-      align-items: center;
-      gap: 4px;
-      height: 24px;
-      padding: 0 8px;
-      border-radius: var(--uxs-r-pill);
-      font-family: var(--uxs-font-mono);
-      font-size: 12px;
-      font-weight: 600;
-      line-height: 1;
-      white-space: nowrap;
-      flex-shrink: 0;
-      border: 1px solid var(--uxs-border);
-      background: var(--uxs-raised);
-      color: var(--uxs-fg);
-    }
-
-    .uxs-badge--gold {
-      background: var(--uxs-accent-soft);
-      border-color: var(--uxs-accent-deep);
-      color: var(--uxs-accent-text);
-    }
-
-    .uxs-badge--ok {
-      background: var(--uxs-success-soft);
-      border-color: var(--uxs-success-line);
-      color: var(--uxs-success-text);
-    }
-
-    .uxs-badge--warn {
-      background: var(--uxs-warning-soft);
-      border-color: var(--uxs-warning-line);
-      color: var(--uxs-warning-text);
-    }
-
-    .uxs-controls {
-      display: flex;
       flex-wrap: wrap;
-      align-items: center;
       gap: 8px;
-    }
-
-    .uxs-seg {
-      display: inline-flex;
-      align-items: center;
-      padding: 4px;
-      border-radius: var(--uxs-r-md);
-      background: var(--uxs-raised);
-      border: 1px solid var(--uxs-border-ui);
-      gap: 4px;
-    }
-
-    .uxs-seg-btn {
-      appearance: none;
-      border: 0;
-      background: transparent;
-      color: var(--uxs-fg);
-      font-family: var(--uxs-font-sans);
-      font-size: 13px;
-      font-weight: 600;
-      min-height: 36px;
-      padding: 8px 12px;
-      border-radius: var(--uxs-r-sm);
-      white-space: nowrap;
-      cursor: pointer;
-      transition: background-color var(--uxs-dur-fast) var(--uxs-ease), color var(--uxs-dur-fast) var(--uxs-ease), transform var(--uxs-dur-mid) var(--uxs-spring);
-    }
-
-    .uxs-seg-btn:hover { background: var(--uxs-panel); }
-
-    .uxs-seg-btn[aria-pressed="true"] {
-      background: var(--uxs-primary);
-      color: var(--uxs-primary-fg);
-      box-shadow: var(--uxs-shadow-sm);
-    }
-
-    .uxs-seg-btn[aria-pressed="true"]:hover {
-      background: var(--uxs-primary-hover);
-      color: var(--uxs-primary-fg);
-    }
-
-    .uxs-select-wrap {
-      display: inline-flex;
-      align-items: center;
-      gap: 4px;
-      background: var(--uxs-panel);
-      border: 1px solid var(--uxs-border-ui);
-      border-radius: var(--uxs-r-md);
-      padding: 0 8px 0 12px;
-      min-height: 44px;
-    }
-
-    .uxs-select-label {
-      font-size: 12px;
-      font-weight: 700;
-      color: var(--uxs-muted);
-      white-space: nowrap;
-    }
-
-    .uxs-select {
-      appearance: none;
-      border: 0;
-      background: transparent;
-      color: var(--uxs-fg);
-      font-family: var(--uxs-font-mono);
-      font-size: 12px;
-      font-weight: 600;
-      min-width: 72px;
-      min-height: 44px;
-      padding: 4px 8px;
-      cursor: pointer;
-    }
-
-    .uxs-btn {
-      appearance: none;
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      gap: 8px;
-      min-height: 44px;
-      padding: 8px 12px;
-      border-radius: var(--uxs-r-md);
-      border: 1px solid var(--uxs-border-ui);
-      background: var(--uxs-panel);
-      color: var(--uxs-fg);
-      font-family: var(--uxs-font-sans);
-      font-size: 13px;
-      font-weight: 600;
-      white-space: nowrap;
-      cursor: pointer;
-      transition: background-color var(--uxs-dur-fast) var(--uxs-ease), border-color var(--uxs-dur-fast) var(--uxs-ease);
-    }
-
-    .uxs-btn:hover { background: var(--uxs-raised); }
-
-    .uxs-btn[aria-pressed="true"] {
-      background: var(--uxs-primary);
-      color: var(--uxs-primary-fg);
-      border-color: var(--uxs-primary);
-    }
-
-    .uxs-btn[aria-pressed="true"]:hover {
-      background: var(--uxs-primary-hover);
-      color: var(--uxs-primary-fg);
-    }
-
-    .uxs-btn--accent {
-      background: var(--uxs-accent);
-      color: var(--uxs-accent-fg);
-      border: 0;
-      font-size: 14px;
-      font-weight: 700;
       padding: 8px 16px;
+      background: var(--uxs-surface);
+      border-bottom: 1px solid var(--uxs-border);
     }
-
-    .uxs-btn--accent:hover { background: var(--uxs-accent-deep); }
-
-    .uxs-btn--accent[aria-pressed="true"] {
+    .uxs-toolbar-left {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-weight: 600;
+      font-size: 13px;
+      white-space: nowrap;
+    }
+    .uxs-toolbar-controls {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+    .uxs-group {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 2px;
+      border: 1px solid var(--uxs-border-ui);
+      border-radius: 8px;
+      background: var(--uxs-surface-subtle);
+    }
+    .uxs-tbtn, .uxs-select {
+      appearance: none;
+      border: 1px solid transparent;
+      background: transparent;
+      color: var(--uxs-fg);
+      font-family: var(--uxs-font);
+      font-size: 12.5px;
+      font-weight: 600;
+      min-height: 44px;
+      padding: 0 10px;
+      border-radius: 6px;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    .uxs-select {
+      padding-right: 14px;
+    }
+    .uxs-tbtn[aria-pressed="true"] {
       background: var(--uxs-primary);
       color: var(--uxs-primary-fg);
     }
 
-    .uxs-btn--accent[aria-pressed="true"]:hover {
-      background: var(--uxs-primary-hover);
-      color: var(--uxs-primary-fg);
-    }
-
-    .uxs-shell {
-      max-width: var(--uxs-max-w);
-      margin: 0 auto;
-      padding: 24px 20px 64px;
+    /* Shell Layout */
+    .uxs-shell-body {
       display: grid;
       grid-template-columns: minmax(0, 1fr);
-      gap: 24px;
+      gap: 16px;
+      padding: 16px;
+      max-width: 1520px;
+      margin: 0 auto;
     }
-
-    html[data-uxs-pins="on"] .uxs-shell {
-      grid-template-columns: minmax(0, 1fr) 340px;
+    :root[data-uxs-pins="on"] .uxs-shell-body {
+      grid-template-columns: minmax(0, 1fr) 310px;
       align-items: start;
     }
 
+    .uxs-stage {
+      min-width: 0;
+      display: flex;
+      justify-content: center;
+    }
     .uxs-canvas {
+      width: 100%;
+      min-width: 0;
       container-type: inline-size;
       container-name: uxs-stage;
-      min-width: 0;
-      margin: 0 auto;
-      width: 100%;
-    }
-
-    html[data-uxs-viewport="tablet"] .uxs-canvas { max-width: 768px; }
-    html[data-uxs-viewport="mobile"] .uxs-canvas { max-width: 390px; }
-
-    .uxs-state-banner {
-      display: none;
-      margin-bottom: 20px;
-      padding: 16px;
-      border-radius: var(--uxs-r-md);
-      border: 1px solid var(--uxs-border-ui);
-      font-size: 14px;
-      font-weight: 600;
-    }
-
-    html[data-uxs-state="empty"] .uxs-state-banner--empty {
-      display: block;
-      background: var(--uxs-info-soft);
-      color: var(--uxs-fg);
-    }
-
-    html[data-uxs-state="error"] .uxs-state-banner--error {
-      display: block;
-      background: var(--uxs-danger-soft);
-      border-color: var(--uxs-danger-line);
-      color: var(--uxs-danger-text);
-    }
-
-    html[data-uxs-state="stress"] .uxs-stress-only { display: block; }
-    .uxs-stress-only { display: none; margin-top: 8px; font-size: 12px; color: var(--uxs-muted); }
-
-    .uxs-banner {
-      background-color: var(--uxs-panel);
-      background-image: var(--uxs-aurora);
-      border: 1px solid var(--uxs-border);
-      border-radius: var(--uxs-r-lg);
-      padding: 24px;
-      box-shadow: var(--uxs-shadow-md);
-      margin-bottom: 20px;
       display: grid;
-      grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr);
-      gap: 24px;
-      align-items: center;
+      gap: 16px;
     }
-
-    .uxs-eyebrow-row {
-      display: flex;
-      flex-wrap: wrap;
-      align-items: center;
-      gap: 8px;
-      margin-bottom: 8px;
-    }
-
-    .uxs-eyebrow {
-      font-family: var(--uxs-font-mono);
-      font-size: 12px;
-      font-weight: 700;
-      color: var(--uxs-accent-text);
-      margin: 0;
-    }
-
-    .uxs-h1 {
-      font-family: var(--uxs-font-display);
-      font-size: clamp(22px, 2.8vw, 32px);
-      font-weight: 800;
-      letter-spacing: -0.025em;
-      line-height: 1.15;
-      margin: 0 0 12px;
-      color: var(--uxs-fg);
-    }
-
-    .uxs-lead {
-      margin: 0;
-      font-size: 15px;
-      color: var(--uxs-muted);
-      max-width: 60ch;
-    }
-
-    .uxs-banner > * { min-width: 0; }
-
-    .uxs-kpis {
-      display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 12px;
-      min-width: 0;
-    }
-
-    .uxs-kpi {
-      background: var(--uxs-panel);
-      border: 1px solid var(--uxs-border);
-      border-radius: var(--uxs-r-md);
-      padding: 16px;
-      box-shadow: var(--uxs-shadow-sm);
-      min-width: 0;
-    }
-
-    .uxs-kpi-label {
-      font-size: 12px;
-      font-weight: 600;
-      color: var(--uxs-muted);
-      margin: 0 0 4px;
-    }
-
-    .uxs-kpi-val {
-      font-family: var(--uxs-font-display);
-      font-size: clamp(16px, 4.5cqi, 24px);
-      font-weight: 800;
-      font-variant-numeric: tabular-nums;
-      letter-spacing: -0.02em;
-      color: var(--uxs-fg);
-      margin: 0;
-    }
+    :root[data-uxs-viewport="tablet"] .uxs-canvas { max-width: 768px; }
+    :root[data-uxs-viewport="mobile"] .uxs-canvas { max-width: 390px; }
 
     .uxs-panes {
       display: grid;
       grid-template-columns: minmax(0, 1fr);
-      gap: 20px;
+      gap: 16px;
     }
-
-    html[data-uxs-view="before"] [data-pane="track-a"],
-    html[data-uxs-view="before"] [data-pane="track-b"] { display: none; }
-
-    html[data-uxs-view="track-a"] [data-pane="before"],
-    html[data-uxs-view="track-a"] [data-pane="track-b"] { display: none; }
-
-    html[data-uxs-view="track-b"] [data-pane="before"],
-    html[data-uxs-view="track-b"] [data-pane="track-a"] { display: none; }
-
-    html[data-uxs-view="compare"] .uxs-panes {
-      grid-template-columns: repeat(2, minmax(0, 1fr));
+    :root[data-uxs-view="compare"] .uxs-panes {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
     }
-
-    html[data-uxs-view="compare"] [data-pane="before"] {
-      grid-column: 1 / -1;
+    @container uxs-stage (max-width: 1020px) {
+      :root[data-uxs-view="compare"] .uxs-panes {
+        grid-template-columns: minmax(0, 1fr);
+      }
     }
 
     .uxs-pane {
+      display: none;
+      min-width: 0;
       container-type: inline-size;
       container-name: uxs-pane;
-      background: var(--uxs-panel);
+      background: var(--uxs-surface);
       border: 1px solid var(--uxs-border);
-      border-radius: var(--uxs-r-lg);
-      padding: 24px;
-      box-shadow: var(--uxs-shadow-sm);
-      position: relative;
-      min-width: 0;
+      border-radius: 10px;
+      overflow: hidden;
     }
+    :root[data-uxs-view="compare"] .uxs-pane { display: block; }
+    :root[data-uxs-view="before"] [data-pane="before"] { display: block; }
+    :root[data-uxs-view="track-a"] [data-pane="track-a"] { display: block; }
+    :root[data-uxs-view="track-b"] [data-pane="track-b"] { display: block; }
 
-    .uxs-pane--before {
-      background: var(--uxs-wash);
-    }
-
-    .uxs-pane--northstar {
-      background-color: var(--uxs-ink-deep);
-      background-image: var(--uxs-ink-grad);
-      color: var(--uxs-ink-fg);
-      border-color: var(--uxs-ink-border);
-      box-shadow: var(--uxs-shadow-md);
-    }
-
-    .uxs-pane--northstar .uxs-pane-sub { color: var(--uxs-ink-muted); }
-
-    .uxs-pane--northstar .uxs-card {
-      background: color-mix(in srgb, var(--uxs-ink-fg) 6%, var(--uxs-ink-deep));
-      border-color: var(--uxs-ink-border);
-    }
-
-    .uxs-pane--northstar .uxs-card p { color: var(--uxs-ink-muted); }
-
-    .uxs-pane--northstar .uxs-code-chip {
-      background: color-mix(in srgb, var(--uxs-ink-fg) 10%, var(--uxs-ink-deep));
-      border-color: var(--uxs-ink-border);
-      color: var(--uxs-ink-fg);
-    }
-
-    .uxs-pane--northstar .uxs-table-wrap {
-      background: color-mix(in srgb, var(--uxs-ink-fg) 4%, var(--uxs-ink-deep));
-      border-color: var(--uxs-ink-border);
-    }
-
-    .uxs-pane--northstar th {
-      background: color-mix(in srgb, var(--uxs-ink-fg) 8%, var(--uxs-ink-deep));
-      color: var(--uxs-ink-fg);
-      border-color: var(--uxs-ink-border);
-    }
-
-    .uxs-pane--northstar td {
-      background: color-mix(in srgb, var(--uxs-ink-fg) 4%, var(--uxs-ink-deep));
-      color: var(--uxs-ink-fg);
-      border-color: var(--uxs-ink-border);
-    }
-
-    .uxs-pane-head {
-      display: flex;
-      flex-wrap: wrap;
-      align-items: flex-start;
-      justify-content: space-between;
-      gap: 12px;
-      padding-bottom: 16px;
-      margin-bottom: 16px;
-      border-bottom: 1px solid var(--uxs-border);
-    }
-
-    .uxs-pane--northstar .uxs-pane-head { border-bottom-color: var(--uxs-ink-border); }
-
-    .uxs-pane-title {
-      font-family: var(--uxs-font-display);
-      font-size: 19px;
-      font-weight: 800;
-      letter-spacing: -0.015em;
-      margin: 0 0 4px;
-    }
-
-    .uxs-pane-sub {
-      margin: 0;
-      font-size: 13px;
-      color: var(--uxs-muted);
-    }
-
-    .uxs-grid {
-      display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 16px;
-      margin-bottom: 16px;
-    }
-
-    .uxs-grid--3 {
-      grid-template-columns: repeat(3, minmax(0, 1fr));
-      margin-bottom: 0;
-    }
-
-    .uxs-card {
-      background: var(--uxs-raised);
-      border: 1px solid var(--uxs-border);
-      border-radius: var(--uxs-r-md);
-      padding: 16px;
-      position: relative;
-      min-width: 0;
-    }
-
-    .uxs-card h3 {
-      font-family: var(--uxs-font-display);
-      font-size: 15px;
-      font-weight: 700;
-      margin: 0 0 8px;
+    .uxs-pane-bar {
       display: flex;
       align-items: center;
       justify-content: space-between;
       gap: 8px;
-      min-width: 0;
-    }
-
-    .uxs-card h3 > span {
-      min-width: 0;
-      overflow-wrap: break-word;
-    }
-
-    .uxs-card p {
-      margin: 0;
-      font-size: 13px;
+      padding: 10px 16px;
+      background: var(--uxs-surface-subtle);
+      border-bottom: 1px solid var(--uxs-border);
+      font-size: 12px;
+      font-weight: 600;
       color: var(--uxs-muted);
     }
+    .uxs-pane-tag {
+      display: inline-flex;
+      align-items: center;
+      height: 22px;
+      padding: 0 8px;
+      border-radius: 999px;
+      border: 1px solid var(--uxs-border);
+      background: var(--uxs-surface);
+      color: var(--uxs-fg);
+      font-size: 11px;
+      font-weight: 600;
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+    .uxs-pane-tag--northstar {
+      background: var(--uxs-ink-card);
+      border-color: var(--uxs-border);
+      color: var(--uxs-ink-fg);
+    }
 
-    /* Visual 26px pill inside a 44x44px hit-box so scrollWidth === clientWidth */
-    .uxs-pin {
-      appearance: none;
+    /* Specimen Content Shared & Track Styling */
+    .uxs-app {
+      padding: 18px 16px;
+      display: grid;
+      gap: 16px;
+    }
+    .uxs-app-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 12px;
+      padding-bottom: 14px;
+      border-bottom: 1px solid var(--uxs-border);
+    }
+    .uxs-app-title-wrap {
+      min-width: 0;
+      flex: 1 1 200px;
+    }
+    .uxs-app h1, .uxs-app h2, .uxs-app h3 {
+      margin: 0;
+      color: var(--uxs-fg);
+      line-height: 1.25;
+      overflow-wrap: anywhere;
+    }
+    .uxs-app-title { font-size: 18px; font-weight: 700; letter-spacing: -0.015em; }
+    .uxs-app-sub { margin: 4px 0 0; font-size: 13px; color: var(--uxs-muted); }
+
+    .uxs-btn {
       display: inline-flex;
       align-items: center;
       justify-content: center;
-      flex-shrink: 0;
-      width: 44px;
-      height: 44px;
-      margin: -8px 0;
-      padding: 0;
-      border: 0;
-      border-radius: var(--uxs-r-pill);
-      background: transparent;
-      color: inherit;
+      min-height: 44px;
+      padding: 0 14px;
+      border-radius: 8px;
+      border: 1px solid var(--uxs-border-ui);
+      background: var(--uxs-surface);
+      color: var(--uxs-fg);
+      font-family: var(--uxs-font);
+      font-size: 13px;
+      font-weight: 600;
       cursor: pointer;
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+    .uxs-btn:hover { background: var(--uxs-surface-subtle); }
+    .uxs-btn--primary {
+      background: var(--uxs-primary);
+      border-color: var(--uxs-primary);
+      color: var(--uxs-primary-fg);
+    }
+    .uxs-btn--primary:hover { opacity: 0.92; background: var(--uxs-primary); }
+    .uxs-btn--accent {
+      background: var(--uxs-accent);
+      border-color: var(--uxs-accent);
+      color: var(--uxs-accent-fg);
     }
 
+    /* Before specimen: flat boxy legacy chrome */
+    .legacy-box {
+      border: 1px solid var(--uxs-border-ui);
+      padding: 12px;
+      border-radius: 4px;
+      background: var(--uxs-surface-subtle);
+      display: grid;
+      gap: 8px;
+    }
+    .legacy-label { font-size: 12px; color: var(--uxs-muted); margin: 0; }
+    .legacy-val { font-size: 15px; font-weight: 700; margin: 0; }
+    .legacy-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+
+    /* Track A: crisp structured polish on identical layout */
+    .polish-band {
+      display: grid;
+      gap: 12px;
+    }
+    .polish-stats {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
+    .polish-stat {
+      padding: 12px 14px;
+      border: 1px solid var(--uxs-border);
+      border-radius: 8px;
+      background: var(--uxs-surface-subtle);
+    }
+    .polish-stat-k { font-size: 12px; font-weight: 600; color: var(--uxs-muted); margin: 0 0 2px; }
+    .polish-stat-v { font-size: 17px; font-weight: 700; font-variant-numeric: tabular-nums; margin: 0; }
+
+    /* Track B: asymmetric North-Star 2-column grid */
+    .ns-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1.35fr) minmax(240px, 1fr);
+      gap: 16px;
+      align-items: start;
+    }
+    @container uxs-pane (max-width: 659px) {
+      .ns-grid, .polish-stats {
+        grid-template-columns: minmax(0, 1fr);
+      }
+    }
+    .ns-main { display: grid; gap: 16px; min-width: 0; }
+    .ns-section {
+      padding-bottom: 14px;
+      border-bottom: 1px solid var(--uxs-border);
+    }
+    .ns-section:last-child { padding-bottom: 0; border-bottom: 0; }
+    .ns-k { font-size: 12px; font-weight: 600; color: var(--uxs-muted); margin: 0 0 4px; }
+    .ns-price { font-size: 24px; font-weight: 700; font-variant-numeric: tabular-nums; margin: 0; letter-spacing: -0.02em; }
+    .meter-track {
+      height: 8px;
+      border-radius: 999px;
+      background: var(--uxs-surface-subtle);
+      border: 1px solid var(--uxs-border);
+      overflow: hidden;
+      margin: 8px 0 4px;
+    }
+    .meter-fill {
+      height: 100%;
+      width: 80%;
+      background: var(--uxs-primary);
+    }
+    .ns-summary-rail {
+      background: var(--uxs-ink-card);
+      color: var(--uxs-ink-fg);
+      border: 1px solid var(--uxs-border);
+      border-radius: 10px;
+      padding: 16px;
+      display: grid;
+      gap: 12px;
+    }
+    .ns-summary-rail h2, .ns-summary-rail h3 { color: var(--uxs-ink-fg); font-size: 15px; }
+    .ns-summary-rail p { margin: 0; color: var(--uxs-ink-muted); font-size: 13px; }
+    .ns-summary-row {
+      display: flex;
+      justify-content: space-between;
+      gap: 8px;
+      font-size: 13px;
+      padding-top: 8px;
+      border-top: 1px solid var(--uxs-border);
+      font-variant-numeric: tabular-nums;
+    }
+
+    /* Status & Alert states */
+    .uxs-alert {
+      padding: 10px 12px;
+      border-radius: 8px;
+      border: 1px solid var(--uxs-warn-border);
+      background: var(--uxs-warn-bg);
+      color: var(--uxs-warn-fg);
+      font-size: 13px;
+      font-weight: 600;
+    }
+    .uxs-empty {
+      padding: 16px;
+      border-radius: 8px;
+      border: 1px dashed var(--uxs-border-ui);
+      background: var(--uxs-surface-subtle);
+      font-size: 13px;
+      color: var(--uxs-muted);
+    }
+    .uxs-status-pill {
+      display: inline-flex;
+      align-items: center;
+      height: 22px;
+      padding: 0 8px;
+      border-radius: 999px;
+      border: 1px solid var(--uxs-pass-border);
+      background: var(--uxs-pass-bg);
+      color: var(--uxs-pass-fg);
+      font-size: 11px;
+      font-weight: 600;
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+
+    /* Invoice Table (Container Query stacked responsive) */
+    .uxs-table-wrap {
+      overflow: auto;
+      max-inline-size: 100%;
+      border: 1px solid var(--uxs-border);
+      border-radius: 8px;
+    }
+    .uxs-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+      font-variant-numeric: tabular-nums;
+    }
+    .uxs-table th, .uxs-table td {
+      padding: 9px 12px;
+      text-align: left;
+      border-bottom: 1px solid var(--uxs-border);
+    }
+    .uxs-table thead th {
+      background: var(--uxs-surface-subtle);
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .uxs-table tbody tr:last-child th,
+    .uxs-table tbody tr:last-child td { border-bottom: 0; }
+    @container uxs-pane (max-width: 460px) {
+      .uxs-table, .uxs-table thead, .uxs-table tbody, .uxs-table tr, .uxs-table th, .uxs-table td {
+        display: block;
+      }
+      .uxs-table thead { display: none; }
+      .uxs-table tbody tr {
+        padding: 10px 12px;
+        border-bottom: 1px solid var(--uxs-border);
+      }
+      .uxs-table tbody tr:last-child { border-bottom: 0; }
+      .uxs-table tbody th, .uxs-table tbody td {
+        padding: 3px 0;
+        border-bottom: 0;
+      }
+      .uxs-table tbody td[data-col]::before {
+        content: attr(data-col) ": ";
+        font-weight: 600;
+        color: var(--uxs-muted);
+      }
+    }
+
+    /* State visibility */
+    .uxs-state-block { display: none; }
+    :root[data-uxs-state="default"] .uxs-state-block[data-state-id="default"] { display: block; }
+    :root[data-uxs-state="empty"] .uxs-state-block[data-state-id="empty"] { display: block; }
+    :root[data-uxs-state="stress"] .uxs-state-block[data-state-id="stress"] { display: block; }
+    :root[data-uxs-state="error"] .uxs-state-block[data-state-id="error"] { display: block; }
+
+    /* Finding Pins & Drawer */
+    .uxs-pin-host {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .uxs-pin {
+      display: none;
+      align-items: center;
+      justify-content: center;
+      width: 44px;
+      height: 44px;
+      padding: 0;
+      border: 0;
+      background: transparent;
+      color: var(--uxs-pin-fg);
+      cursor: pointer;
+      flex: none;
+    }
+    :root[data-uxs-pins="on"] .uxs-pin { display: inline-flex; }
     .uxs-pin-pill {
       display: inline-flex;
       align-items: center;
       justify-content: center;
-      height: 26px;
-      min-width: 32px;
-      padding: 0 8px;
-      border-radius: var(--uxs-r-pill);
-      background: var(--uxs-accent);
-      color: var(--uxs-accent-fg);
-      font-family: var(--uxs-font-mono);
-      font-size: 12px;
+      min-width: 26px;
+      height: 24px;
+      padding: 0 7px;
+      border-radius: 999px;
+      background-color: var(--uxs-pin-bg);
+      color: var(--uxs-pin-fg);
+      font-family: var(--uxs-mono);
+      font-size: 11px;
       font-weight: 700;
-      box-shadow: var(--uxs-shadow-sm);
-      transition: background-color var(--uxs-dur-fast) var(--uxs-ease), color var(--uxs-dur-fast) var(--uxs-ease);
-    }
-
-    .uxs-pin[data-active="true"] .uxs-pin-pill {
-      background: var(--uxs-primary);
-      color: var(--uxs-primary-fg);
-    }
-
-    .uxs-table-wrap {
-      overflow-x: auto;
-      border: 1px solid var(--uxs-border);
-      border-radius: var(--uxs-r-md);
-      background: var(--uxs-panel);
-    }
-
-    table {
-      width: 100%;
-      border-collapse: collapse;
-      font-size: 13px;
-    }
-
-    th, td {
-      padding: 12px 16px;
-      text-align: left;
-      border-bottom: 1px solid var(--uxs-border);
-    }
-
-    th {
-      background: var(--uxs-wash);
-      font-family: var(--uxs-font-display);
-      font-weight: 700;
-      color: var(--uxs-fg);
-    }
-
-    tr:last-child td { border-bottom: 0; }
-
-    .uxs-code-chip {
-      font-family: var(--uxs-font-mono);
-      font-size: 12px;
-      background: var(--uxs-raised);
-      border: 1px solid var(--uxs-border);
-      padding: 0 8px;
-      border-radius: 6px;
-      color: var(--uxs-fg);
-      white-space: nowrap;
+      line-height: 1;
     }
 
     .uxs-drawer {
-      background: var(--uxs-panel);
-      border: 1px solid var(--uxs-border);
-      border-radius: var(--uxs-r-lg);
-      padding: 20px;
-      box-shadow: var(--uxs-shadow-md);
-      position: sticky;
-      top: 24px;
       display: none;
+      background: var(--uxs-surface);
+      border: 1px solid var(--uxs-border);
+      border-radius: 10px;
+      padding: 14px;
+      gap: 10px;
     }
-
-    html[data-uxs-pins="on"] .uxs-drawer { display: block; }
-
+    :root[data-uxs-pins="on"] .uxs-drawer { display: grid; }
     .uxs-drawer-head {
       display: flex;
       align-items: center;
       justify-content: space-between;
       gap: 8px;
-      padding-bottom: 12px;
-      margin-bottom: 16px;
+      padding-bottom: 8px;
       border-bottom: 1px solid var(--uxs-border);
     }
-
-    .uxs-drawer-head h2 {
-      font-family: var(--uxs-font-display);
-      font-size: 16px;
-      font-weight: 800;
-      margin: 0;
-    }
-
-    .uxs-note-list {
-      list-style: none;
-      margin: 0;
-      padding: 0;
-      display: grid;
-      gap: 12px;
-    }
-
+    .uxs-drawer-head h2 { margin: 0; font-size: 14px; font-weight: 700; }
     .uxs-note-item {
-      padding: 12px;
-      border-radius: var(--uxs-r-md);
-      border: 1px solid var(--uxs-border);
-      background: var(--uxs-raised);
-      transition: border-color var(--uxs-dur-fast) var(--uxs-ease), background-color var(--uxs-dur-fast) var(--uxs-ease);
+      padding: 8px 0;
+      border-bottom: 1px solid var(--uxs-border);
     }
-
-    .uxs-note-item[data-selected="true"] {
-      border-color: var(--uxs-accent-deep);
-      background: var(--uxs-accent-soft);
-    }
-
-    .uxs-note-item strong {
+    .uxs-note-item:last-child { border-bottom: 0; padding-bottom: 0; }
+    .uxs-note-title {
       display: flex;
       align-items: center;
-      gap: 8px;
+      gap: 6px;
       font-size: 13px;
-      color: var(--uxs-fg);
-      margin-bottom: 4px;
+      font-weight: 700;
+      margin: 0 0 3px;
     }
+    .uxs-note-desc { margin: 0; font-size: 12.5px; color: var(--uxs-muted); }
 
-    .uxs-note-item p {
-      margin: 0;
-      font-size: 12px;
-      color: var(--uxs-muted);
-    }
-
-    /* Size-aware layout: adapts authentically on both real viewports AND desktop 768px/390px preview toggles */
-    @container uxs-stage (max-width: 860px) {
-      html[data-uxs-view="compare"] .uxs-panes { grid-template-columns: minmax(0, 1fr); }
-    }
-
-    @container uxs-stage (max-width: 820px) {
-      .uxs-banner { grid-template-columns: minmax(0, 1fr); padding: 20px; gap: 16px; }
-      .uxs-pane { padding: 16px; }
-      .uxs-grid--3 { grid-template-columns: minmax(0, 1fr); }
-    }
-
-    @container uxs-stage (max-width: 440px) {
-      .uxs-banner { padding: 16px; }
-      .uxs-kpis { gap: 10px; }
-      .uxs-kpi { padding: 12px; }
-      .uxs-kpi-val { font-size: 18px; }
-    }
-
-    @container uxs-pane (max-width: 410px) {
-      .uxs-grid, .uxs-grid--3 { grid-template-columns: minmax(0, 1fr); }
-      .uxs-code-chip { white-space: normal; overflow-wrap: anywhere; }
-      .uxs-table-wrap table,
-      .uxs-table-wrap tbody,
-      .uxs-table-wrap tr,
-      .uxs-table-wrap td {
-        display: block;
-        width: 100%;
+    @media (max-width: 960px) {
+      :root[data-uxs-pins="on"] .uxs-shell-body {
+        grid-template-columns: minmax(0, 1fr);
       }
-      .uxs-table-wrap thead { display: none; }
-      .uxs-table-wrap tr {
-        padding: 12px 16px;
-        border-bottom: 1px solid var(--uxs-border);
-      }
-      .uxs-pane--northstar .uxs-table-wrap tr { border-bottom-color: var(--uxs-ink-border); }
-      .uxs-table-wrap tr:last-child { border-bottom: 0; }
-      .uxs-table-wrap td {
-        padding: 4px 0;
-        border-bottom: 0;
-        display: flex;
-        flex-wrap: wrap;
-        justify-content: space-between;
-        align-items: baseline;
-        gap: 8px;
-      }
-      .uxs-table-wrap td::before {
-        content: attr(data-label);
-        font-family: var(--uxs-font-mono);
-        font-size: 12px;
-        font-weight: 600;
-        color: var(--uxs-muted);
-      }
-      .uxs-pane--northstar .uxs-table-wrap td::before { color: var(--uxs-ink-muted); }
-    }
-
-    @media (max-width: 1120px) {
-      html[data-uxs-pins="on"] .uxs-shell { grid-template-columns: minmax(0, 1fr); }
-      .uxs-drawer { position: static; }
-      html[data-uxs-view="compare"] .uxs-panes { grid-template-columns: minmax(0, 1fr); }
-    }
-
-    @media (max-width: 760px) {
-      [data-uxs-group="viewport"] { display: none; }
-      .uxs-topbar-inner { padding: 12px 16px; gap: 8px; }
-      .uxs-shell { padding: 16px 16px 48px; }
-      .uxs-seg-btn { min-height: 44px; padding: 8px 12px; font-size: 12px; }
-      [data-uxs-group="view"] { width: 100%; justify-content: space-between; }
-      [data-uxs-group="view"] .uxs-seg-btn { flex: 1 1 auto; text-align: center; padding: 8px; }
-    }
-
-    /* Fallback stacked table layout for legacy viewports if @container is unavailable */
-    @supports not (container-type: inline-size) {
-      @media (max-width: 640px) {
-        .uxs-banner { grid-template-columns: minmax(0, 1fr); padding: 20px; }
-        .uxs-pane { padding: 16px; }
-        .uxs-grid, .uxs-grid--3 { grid-template-columns: minmax(0, 1fr); }
-        .uxs-table-wrap table,
-        .uxs-table-wrap tbody,
-        .uxs-table-wrap tr,
-        .uxs-table-wrap td {
-          display: block;
-          width: 100%;
-        }
-        .uxs-table-wrap thead { display: none; }
-        .uxs-table-wrap td::before { content: attr(data-label); }
+      :root[data-uxs-view="compare"] .uxs-panes {
+        grid-template-columns: minmax(0, 1fr);
       }
     }
   </style>
 </head>
 <body>
-  <a class="uxs-skip" href="#main-content">Skip to main preview</a>
-
-  <header class="uxs-topbar">
-    <div class="uxs-topbar-inner">
-      <div class="uxs-brand">
-        <div class="uxs-logo" aria-hidden="true">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <rect x="3" y="3" width="18" height="18" rx="4"></rect>
-            <path d="M8 8h5a4 4 0 0 1 0 8H8z"></path>
-          </svg>
-        </div>
-        <p class="uxs-brand-title" id="uxs-shell-title">DSAF Audit Shell</p>
-        <span class="uxs-badge uxs-badge--gold">Ink &amp; Gold v3</span>
+  <header class="uxs-toolbar" data-ux-shell-toolbar="v3.0">
+    <div class="uxs-toolbar-left">
+      <span>Preview Workbench</span>
+      <span class="uxs-pane-tag">Billing Specimen</span>
+    </div>
+    <div class="uxs-toolbar-controls">
+      <div class="uxs-group" data-uxs-group="view" role="group" aria-label="Track view">
+        <button type="button" class="uxs-tbtn" data-view="before" aria-pressed="false">Before</button>
+        <button type="button" class="uxs-tbtn" data-view="track-a" aria-pressed="false">Track A</button>
+        <button type="button" class="uxs-tbtn" data-view="track-b" aria-pressed="false">Track B</button>
+        <button type="button" class="uxs-tbtn" data-view="compare" aria-pressed="true">Compare</button>
       </div>
-
-      <div class="uxs-controls" data-ux-shell-toolbar="v3.0" role="toolbar" aria-label="Canonical preview toolbar">
-        <div class="uxs-seg" data-uxs-group="view" role="group" aria-label="Track view">
-          <button type="button" class="uxs-seg-btn" id="uxs-btn-before" data-view="before" aria-pressed="false">Before</button>
-          <button type="button" class="uxs-seg-btn" id="uxs-btn-track-a" data-view="track-a" aria-pressed="false">Track A</button>
-          <button type="button" class="uxs-seg-btn" id="uxs-btn-track-b" data-view="track-b" aria-pressed="false">Track B</button>
-          <button type="button" class="uxs-seg-btn" id="uxs-btn-compare" data-view="compare" aria-pressed="true">Compare</button>
-        </div>
-
-        <div class="uxs-seg" data-uxs-group="viewport" role="group" aria-label="Viewport size">
-          <button type="button" class="uxs-seg-btn" data-vp-btn="desktop" aria-pressed="true">1440px</button>
-          <button type="button" class="uxs-seg-btn" data-vp-btn="tablet" aria-pressed="false">768px</button>
-          <button type="button" class="uxs-seg-btn" data-vp-btn="mobile" aria-pressed="false">390px</button>
-        </div>
-
-        <div data-uxs-group="state" class="uxs-select-wrap">
-          <label for="uxs-state-select" class="uxs-select-label">State</label>
-          <select id="uxs-state-select" class="uxs-select">
-            <option value="default" selected>default</option>
-            <option value="empty">empty</option>
-            <option value="stress">stress</option>
-            <option value="error">error</option>
-          </select>
-        </div>
-
-        <div data-uxs-group="theme">
-          <button type="button" class="uxs-btn" id="uxs-theme-btn" aria-pressed="false">
-            <span id="uxs-theme-label">Dark</span>
-          </button>
-        </div>
-
-        <div data-uxs-group="pins">
-          <button type="button" class="uxs-btn uxs-btn--accent" id="uxs-pins-btn" aria-pressed="false" aria-controls="uxs-drawer">
-            Pins (4)
-          </button>
-        </div>
+      <div class="uxs-group" data-uxs-group="viewport" role="group" aria-label="Canvas width">
+        <button type="button" class="uxs-tbtn" data-vp-btn="desktop" aria-pressed="true">1440px</button>
+        <button type="button" class="uxs-tbtn" data-vp-btn="tablet" aria-pressed="false">768px</button>
+        <button type="button" class="uxs-tbtn" data-vp-btn="mobile" aria-pressed="false">390px</button>
+      </div>
+      <div class="uxs-group" data-uxs-group="state">
+        <select class="uxs-select" id="uxs-state-select" aria-label="Specimen UI state">
+          <option value="default" selected>State: Active</option>
+          <option value="empty">State: Trial (Empty)</option>
+          <option value="stress">State: Long Locale</option>
+          <option value="error">State: Card Declined</option>
+        </select>
+      </div>
+      <div class="uxs-group" data-uxs-group="theme">
+        <button type="button" class="uxs-tbtn" id="uxs-theme-btn" aria-pressed="false">Light</button>
+      </div>
+      <div class="uxs-group" data-uxs-group="pins">
+        <button type="button" class="uxs-tbtn" id="uxs-pins-btn" aria-pressed="false">Notes (4)</button>
       </div>
     </div>
   </header>
 
-  <main id="main-content" class="uxs-shell">
-    <div class="uxs-canvas">
-      <div class="uxs-state-banner uxs-state-banner--empty" role="status">
-        Empty state simulated: zero active workspace diffs queued. Toggle Track A or Track B to inspect candidate changes.
-      </div>
-      <div class="uxs-state-banner uxs-state-banner--error" role="alert">
-        Error state simulated: Floor token drift detected on un-tokenized component primitive.
-      </div>
+  <div class="uxs-shell-body">
+    <main class="uxs-stage">
+      <div class="uxs-canvas">
+        <div class="uxs-panes">
+          <!-- BEFORE: Legacy Unpolished UI -->
+          <section class="uxs-pane" data-pane="before" aria-label="Before baseline UI">
+            <div class="uxs-pane-bar">
+              <span>Current UI</span>
+              <span class="uxs-pane-tag">Baseline</span>
+            </div>
+            <div class="uxs-app">
+              <div class="uxs-app-head">
+                <div class="uxs-app-title-wrap">
+                  <h1 class="uxs-app-title">Subscription &amp; Billing Administration</h1>
+                  <p class="uxs-app-sub">Manage organization plan subscription tier settings and invoices.</p>
+                </div>
+                <div class="legacy-actions">
+                  <button type="button" class="uxs-btn">Download CSV</button>
+                  <button type="button" class="uxs-btn uxs-btn--primary">Change Plan</button>
+                </div>
+              </div>
 
-      <section class="uxs-banner" aria-labelledby="uxs-hero-heading">
-        <div>
-          <div class="uxs-eyebrow-row">
-            <p class="uxs-eyebrow">ISOLATED PREVIEW HARNESS</p>
-            <span class="uxs-badge uxs-badge--ok">Floor 0 PASS</span>
-          </div>
-          <h1 id="uxs-hero-heading" class="uxs-h1">Dual-Track Pragmatic vs North-Star Draft Workbench</h1>
-          <p class="uxs-lead">Compare baseline UI findings against low-risk Track A drop-in patches and full Track B Ink &amp; Gold v3 structural hierarchy.</p>
-          <p class="uxs-stress-only">Stress mode copy active: verifying multi-line Vietnamese diacritics (Tiếng Việt có dấu đầy đủ Ổ, Ẫ) and long monospaced identifiers inside constrained viewport widths without clipping.</p>
+              <div class="uxs-state-block" data-state-id="error">
+                <div class="uxs-alert" role="alert">Payment failed on card ending in 4242. Update billing card to keep seats active.</div>
+              </div>
+
+              <div class="uxs-state-block" data-state-id="empty">
+                <div class="uxs-empty">Your 14-day workspace trial has no billing history or paid invoices yet.</div>
+              </div>
+
+              <div class="uxs-state-block" data-state-id="default">
+                <div class="legacy-box">
+                  <p class="legacy-label">Active Tier: Team Monthly ($49.00/mo billed to Visa ****4242)</p>
+                  <p class="legacy-val">Assigned Workspace Seats: 8 of 10</p>
+                </div>
+              </div>
+
+              <div class="uxs-state-block" data-state-id="stress">
+                <div class="legacy-box">
+                  <p class="legacy-label">Tổ Chức Công Nghệ Đường Dài — Gói Doanh Nghiệp Toàn Cầu ($1,240.00/mo)</p>
+                  <p class="legacy-val">240 / 250 Seats Active</p>
+                </div>
+              </div>
+
+              <div class="uxs-table-wrap">
+                <table class="uxs-table">
+                  <thead>
+                    <tr>
+                      <th>Invoice Date</th>
+                      <th>Amount</th>
+                      <th>Status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr>
+                      <th scope="row">Nov 01, 2026</th>
+                      <td data-col="Amount">$49.00</td>
+                      <td data-col="Status">Paid</td>
+                    </tr>
+                    <tr>
+                      <th scope="row">Oct 01, 2026</th>
+                      <td data-col="Amount">$49.00</td>
+                      <td data-col="Status">Paid</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </section>
+
+          <!-- TRACK A: Pragmatic Polish -->
+          <section class="uxs-pane" data-pane="track-a" aria-label="Track A pragmatic fix">
+            <div class="uxs-pane-bar">
+              <span>Track A · Pragmatic</span>
+              <span class="uxs-pane-tag">Minimal diff</span>
+            </div>
+            <div class="uxs-app">
+              <div class="uxs-app-head">
+                <div class="uxs-app-title-wrap">
+                  <div class="uxs-pin-host">
+                    <h2 class="uxs-app-title">Billing &amp; Seats</h2>
+                    <button type="button" class="uxs-pin" data-pin-target="1" aria-label="Inspect Note 1"><span class="uxs-pin-pill">#1</span></button>
+                  </div>
+                  <p class="uxs-app-sub">Monthly workspace plan and team seat quota.</p>
+                </div>
+                <button type="button" class="uxs-btn uxs-btn--primary" data-primary-cta="track-a">Upgrade Plan</button>
+              </div>
+
+              <div class="uxs-state-block" data-state-id="error">
+                <div class="uxs-alert" role="alert">Card ending in 4242 declined — update payment method within 5 days.</div>
+              </div>
+
+              <div class="uxs-state-block" data-state-id="empty">
+                <div class="uxs-empty">Trial active (14 days left). No invoices issued yet — add a card before trial ends.</div>
+              </div>
+
+              <div class="polish-band uxs-state-block" data-state-id="default">
+                <div class="polish-stats">
+                  <div class="polish-stat">
+                    <p class="polish-stat-k">Plan Rate</p>
+                    <p class="polish-stat-v">$49.00 / mo</p>
+                  </div>
+                  <div class="polish-stat">
+                    <p class="polish-stat-k">Seat Usage</p>
+                    <p class="polish-stat-v">8 / 10 active</p>
+                  </div>
+                </div>
+              </div>
+
+              <div class="polish-band uxs-state-block" data-state-id="stress">
+                <div class="polish-stats">
+                  <div class="polish-stat">
+                    <p class="polish-stat-k">Phòng Kỹ Thuật Nền Tảng — Gói Năm</p>
+                    <p class="polish-stat-v">$1,240.00 / mo</p>
+                  </div>
+                  <div class="polish-stat">
+                    <p class="polish-stat-k">Seat Usage</p>
+                    <p class="polish-stat-v">240 / 250 active</p>
+                  </div>
+                </div>
+              </div>
+
+              <div class="uxs-table-wrap">
+                <table class="uxs-table">
+                  <thead>
+                    <tr>
+                      <th>Date</th>
+                      <th>Amount</th>
+                      <th>Status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr>
+                      <th scope="row">Nov 01, 2026</th>
+                      <td data-col="Amount">$49.00</td>
+                      <td data-col="Status"><span class="uxs-status-pill">Paid</span></td>
+                    </tr>
+                    <tr>
+                      <th scope="row">Oct 01, 2026</th>
+                      <td data-col="Amount">$49.00</td>
+                      <td data-col="Status"><span class="uxs-status-pill">Paid</span></td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </section>
+
+          <!-- TRACK B: North-Star Layout -->
+          <section class="uxs-pane" data-pane="track-b" aria-label="Track B north-star redesign">
+            <div class="uxs-pane-bar">
+              <span>Track B · North-Star</span>
+              <span class="uxs-pane-tag uxs-pane-tag--northstar">Target Layout</span>
+            </div>
+            <div class="uxs-app">
+              <div class="uxs-app-head">
+                <div class="uxs-app-title-wrap">
+                  <div class="uxs-pin-host">
+                    <h2 class="uxs-app-title">Northwind Workspace</h2>
+                    <button type="button" class="uxs-pin" data-pin-target="2" aria-label="Inspect Note 2"><span class="uxs-pin-pill">#2</span></button>
+                  </div>
+                  <p class="uxs-app-sub">Clean billing hierarchy with live seat capacity and dedicated summary rail.</p>
+                </div>
+              </div>
+
+              <div class="uxs-state-block" data-state-id="error">
+                <div class="uxs-alert" role="alert">Charge of $49.00 failed on Visa 4242. Update card to prevent seat lock.</div>
+              </div>
+
+              <div class="ns-grid">
+                <div class="ns-main">
+                  <div class="ns-section uxs-state-block" data-state-id="default">
+                    <p class="ns-k">Seats allocated</p>
+                    <p class="ns-price">8 of 10 seats</p>
+                    <div class="meter-track" aria-hidden="true"><div class="meter-fill"></div></div>
+                    <p class="ns-k">2 seats remaining before auto-billing</p>
+                  </div>
+
+                  <div class="ns-section uxs-state-block" data-state-id="empty">
+                    <div class="uxs-empty">Trial Workspace · 14 days remaining. Connect a payment method only when you invite member #4.</div>
+                  </div>
+
+                  <div class="ns-section uxs-state-block" data-state-id="stress">
+                    <p class="ns-k">Nguyễn Hoàng Phương Thảo — Tổ Chức Enterprise</p>
+                    <p class="ns-price">240 of 250 seats</p>
+                    <div class="meter-track" aria-hidden="true"><div class="meter-fill"></div></div>
+                    <p class="ns-k">Line-height preserves full Vietnamese diacritics across narrow panes.</p>
+                  </div>
+
+                  <div class="ns-section">
+                    <div class="uxs-pin-host" style="margin-bottom: 8px;">
+                      <h3>Recent Invoices</h3>
+                      <button type="button" class="uxs-pin" data-pin-target="4" aria-label="Inspect Note 4"><span class="uxs-pin-pill">#4</span></button>
+                    </div>
+                    <div class="uxs-table-wrap">
+                      <table class="uxs-table">
+                        <thead>
+                          <tr>
+                            <th>Period</th>
+                            <th>Total</th>
+                            <th>State</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          <tr>
+                            <th scope="row">Nov 2026</th>
+                            <td data-col="Total">$49.00</td>
+                            <td data-col="State"><span class="uxs-status-pill">Paid</span></td>
+                          </tr>
+                          <tr>
+                            <th scope="row">Oct 2026</th>
+                            <td data-col="Total">$49.00</td>
+                            <td data-col="State"><span class="uxs-status-pill">Paid</span></td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                </div>
+
+                <aside class="ns-summary-rail" aria-label="Next invoice summary">
+                  <div class="uxs-pin-host">
+                    <h3 data-pixel-behind>Next Charge</h3>
+                    <button type="button" class="uxs-pin" data-pin-target="3" aria-label="Inspect Note 3"><span class="uxs-pin-pill">#3</span></button>
+                  </div>
+                  <p>Dec 01, 2026 · Visa ****4242</p>
+                  <div class="ns-summary-row">
+                    <span>Base Plan</span>
+                    <span>$49.00</span>
+                  </div>
+                  <div class="ns-summary-row">
+                    <span>Extra Seats</span>
+                    <span>$0.00</span>
+                  </div>
+                  <button type="button" class="uxs-btn uxs-btn--accent" data-primary-cta="track-b">Manage Plan</button>
+                </aside>
+              </div>
+            </div>
+          </section>
         </div>
-        <div class="uxs-kpis">
-          <div class="uxs-kpi">
-            <p class="uxs-kpi-label">Weighted Score Gain</p>
-            <p class="uxs-kpi-val">+24 pts</p>
-          </div>
-          <div class="uxs-kpi">
-            <p class="uxs-kpi-label">APCA Body Contrast</p>
-            <p class="uxs-kpi-val">Lc 86.4</p>
-          </div>
-          <div class="uxs-kpi">
-            <p class="uxs-kpi-label">Floor Violations</p>
-            <p class="uxs-kpi-val">0 blocking</p>
-          </div>
-          <div class="uxs-kpi">
-            <p class="uxs-kpi-label">Token Compliance</p>
-            <p class="uxs-kpi-val">100.0%</p>
-          </div>
-        </div>
-      </section>
-
-      <div class="uxs-panes" id="uxs-panes">
-        <section class="uxs-pane uxs-pane--before" data-pane="before" aria-labelledby="uxs-before-h">
-          <div class="uxs-pane-head">
-            <div>
-              <h2 id="uxs-before-h" class="uxs-pane-title">Baseline: Current Production State</h2>
-              <p class="uxs-pane-sub">Observed bottlenecks prior to remediation across tokens, keyboard focus, and mobile tap targets.</p>
-            </div>
-            <span class="uxs-badge uxs-badge--warn">66 Floor Issues</span>
-          </div>
-          <div class="uxs-grid uxs-grid--3">
-            <div class="uxs-card">
-              <h3>Naked Focus Outline</h3>
-              <p>Bare <code class="uxs-code-chip">outline: none</code> on interactive cards without keyboard <code class="uxs-code-chip">:focus-visible</code> ring.</p>
-            </div>
-            <div class="uxs-card">
-              <h3>Hardcoded Hex Drift</h3>
-              <p>Ad-hoc RGB/hex colors outside semantic surface tokens lowering light/dark contrast.</p>
-            </div>
-            <div class="uxs-card">
-              <h3>Sub-44px Touch Targets</h3>
-              <p>Toolbar toggles at 32px height failing mobile accessibility minimum target geometry.</p>
-            </div>
-          </div>
-        </section>
-
-        <!-- DSAF_TRACK_PRAGMATIC -->
-        <section class="uxs-pane" data-pane="track-a" aria-labelledby="uxs-pragmatic-h">
-          <div class="uxs-pane-head">
-            <div>
-              <h2 id="uxs-pragmatic-h" class="uxs-pane-title">Track A: Pragmatic Polish</h2>
-              <p class="uxs-pane-sub">Low-risk drop-in diffs targeting existing classes, focus rings, and spacing parity.</p>
-            </div>
-            <span class="uxs-badge uxs-badge--ok">Same-day merge</span>
-          </div>
-
-          <div class="uxs-grid">
-            <article class="uxs-card">
-              <h3>
-                <span>Tokenized Surfaces</span>
-                <button type="button" class="uxs-pin" data-pin-trigger="1" aria-label="Inspect pin 1: Tokenized surfaces"><span class="uxs-pin-pill">#1</span></button>
-              </h3>
-              <p>Mapped raw hex literals to Ink &amp; Gold neutral hierarchy (<code class="uxs-code-chip">#F7F8FA</code>, <code class="uxs-code-chip">#FFFFFF</code>, <code class="uxs-code-chip">#EEF1F5</code>) across light and dark modes.</p>
-            </article>
-            <article class="uxs-card">
-              <h3>
-                <span>Focus Discipline</span>
-                <button type="button" class="uxs-pin" data-pin-trigger="2" aria-label="Inspect pin 2: Focus discipline"><span class="uxs-pin-pill">#2</span></button>
-              </h3>
-              <p>Replaced bare <code class="uxs-code-chip">outline: none</code> with <code class="uxs-code-chip">:focus-visible</code> high-contrast Brand Ink / Gold rings.</p>
-            </article>
-          </div>
-
-          <div class="uxs-table-wrap" tabindex="0" role="region" aria-label="Track A remediation table">
-            <table>
-              <thead>
-                <tr>
-                  <th>Surface Rule</th>
-                  <th>Before</th>
-                  <th>Track A Patch</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr>
-                  <td data-label="Surface Rule">Tap targets (390px)</td>
-                  <td data-label="Before">32px buttons</td>
-                  <td data-label="Track A Patch"><code class="uxs-code-chip">min-height: 44px</code></td>
-                </tr>
-                <tr>
-                  <td data-label="Surface Rule">Secondary contrast</td>
-                  <td data-label="Before">Lc 54</td>
-                  <td data-label="Track A Patch"><code class="uxs-code-chip">Lc 76 (#3E4A5E)</code></td>
-                </tr>
-                <tr>
-                  <td data-label="Surface Rule">Transition scope</td>
-                  <td data-label="Before"><code class="uxs-code-chip">transition: all</code></td>
-                  <td data-label="Track A Patch">Compositor properties only</td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-        </section>
-
-        <!-- DSAF_TRACK_NORTHSTAR -->
-        <section class="uxs-pane uxs-pane--northstar" data-pane="track-b" aria-labelledby="uxs-northstar-h">
-          <div class="uxs-pane-head">
-            <div>
-              <h2 id="uxs-northstar-h" class="uxs-pane-title">Track B: North-Star Ink Surface</h2>
-              <p class="uxs-pane-sub">Intentional asymmetric rhythm, Ink Dark cards, and W3C DTCG design grammar.</p>
-            </div>
-            <span class="uxs-badge uxs-badge--gold">Target v3</span>
-          </div>
-
-          <div class="uxs-grid">
-            <article class="uxs-card">
-              <h3>
-                <span>Ink &amp; Aurora Accent</span>
-                <button type="button" class="uxs-pin" data-pin-trigger="3" aria-label="Inspect pin 3: Ink and aurora accent"><span class="uxs-pin-pill">#3</span></button>
-              </h3>
-              <p>Pairs cool neutral slate with Ink Dark elevation and Signal Gold reserved for focal proofs.</p>
-            </article>
-            <article class="uxs-card">
-              <h3>
-                <span>Linear Spring Motion</span>
-                <button type="button" class="uxs-pin" data-pin-trigger="4" aria-label="Inspect pin 4: Spring motion"><span class="uxs-pin-pill">#4</span></button>
-              </h3>
-              <p>Zero-JS <code class="uxs-code-chip">linear()</code> springs on segmented controls with hard reduced-motion override.</p>
-            </article>
-          </div>
-
-          <div class="uxs-table-wrap" tabindex="0" role="region" aria-label="Track B comparison table">
-            <table>
-              <thead>
-                <tr>
-                  <th>Dimension</th>
-                  <th>Track A</th>
-                  <th>Track B</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr>
-                  <td data-label="Dimension">Typography</td>
-                  <td data-label="Track A">Display scale +15%</td>
-                  <td data-label="Track B">Manrope display + Be Vietnam Pro</td>
-                </tr>
-                <tr>
-                  <td data-label="Dimension">Surface cadence</td>
-                  <td data-label="Track A">Uniform 20px cards</td>
-                  <td data-label="Track B">Asymmetric focal + Ink panel</td>
-                </tr>
-                <tr>
-                  <td data-label="Dimension">Diff footprint</td>
-                  <td data-label="Track A">&le; 5 files</td>
-                  <td data-label="Track B">Primitives + token grammar</td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-        </section>
       </div>
-    </div>
+    </main>
 
-    <aside id="uxs-drawer" class="uxs-drawer" aria-label="Audit Decision Pins">
+    <aside class="uxs-drawer" id="uxs-drawer" aria-label="Design review annotations">
       <div class="uxs-drawer-head">
-        <h2>Decision Rationale Pins</h2>
-        <button type="button" class="uxs-btn" id="uxs-close-pins">Close</button>
+        <h2>Review Notes</h2>
+        <button type="button" class="uxs-tbtn" id="uxs-drawer-close">Close</button>
       </div>
-      <ol class="uxs-note-list" id="uxs-note-list">
-        <li class="uxs-note-item" data-pin-note="1" data-selected="false">
-          <strong><span class="uxs-badge uxs-badge--gold">#1</span> Ink &amp; Gold Surface Step</strong>
-          <p>Three neutral elevations (<code class="uxs-code-chip">#F7F8FA</code>, <code class="uxs-code-chip">#FFFFFF</code>, <code class="uxs-code-chip">#EEF1F5</code>) eliminate muddy grey borders without heavy drop shadows.</p>
-        </li>
-        <li class="uxs-note-item" data-pin-note="2" data-selected="false">
-          <strong><span class="uxs-badge uxs-badge--gold">#2</span> Non-Optional Focus Ring</strong>
-          <p>Enforces <code class="uxs-code-chip">2px solid var(--uxs-ring)</code> with 2px offset across buttons, switches, and skip links.</p>
-        </li>
-        <li class="uxs-note-item" data-pin-note="3" data-selected="false">
-          <strong><span class="uxs-badge uxs-badge--gold">#3</span> Restrained Ink &amp; Aurora</strong>
-          <p>Radial 3-stop wash + Ink dark elevation reserve Signal Gold for signature accents rather than saturating every card.</p>
-        </li>
-        <li class="uxs-note-item" data-pin-note="4" data-selected="false">
-          <strong><span class="uxs-badge uxs-badge--gold">#4</span> Accessible Motion Contract</strong>
-          <p>Only GPU-composited transform and color transitions run, automatically suppressed under reduced motion.</p>
-        </li>
-      </ol>
+      <div class="uxs-note-item" data-pin-card="1">
+        <p class="uxs-note-title"><span class="uxs-pin-pill">#1</span> Scannable Hierarchy</p>
+        <p class="uxs-note-desc">Cuts verbose admin filler to concise labels so plan cost and seats scan in under 2 seconds without breaking existing markup.</p>
+      </div>
+      <div class="uxs-note-item" data-pin-card="2">
+        <p class="uxs-note-title"><span class="uxs-pin-pill">#2</span> Tabular Quota &amp; Diacritics</p>
+        <p class="uxs-note-desc">Uses tabular figures and generous line-height so long multilingual workspace names wrap cleanly at 390px.</p>
+      </div>
+      <div class="uxs-note-item" data-pin-card="3">
+        <p class="uxs-note-title"><span class="uxs-pin-pill">#3</span> Dedicated Summary Rail</p>
+        <p class="uxs-note-desc">Separates payment summary from usage settings on wide containers, stacking gracefully at @container width &lt; 660px.</p>
+      </div>
+      <div class="uxs-note-item" data-pin-card="4">
+        <p class="uxs-note-title"><span class="uxs-pin-pill">#4</span> Container-Stacked Table</p>
+        <p class="uxs-note-desc">Invoice tables convert to clean key-value rows based on parent pane width rather than global browser width.</p>
+      </div>
     </aside>
-  </main>
+  </div>
 
   <script>
-    (function () {
+    (function() {
       var root = document.documentElement;
-      var pinsBtn = document.getElementById("uxs-pins-btn");
-      var closePinsBtn = document.getElementById("uxs-close-pins");
+      function pressGroup(attr, value) {
+        var btns = document.querySelectorAll("[" + attr + "]");
+        for (var i = 0; i < btns.length; i++) {
+          btns[i].setAttribute("aria-pressed", String(btns[i].getAttribute(attr) === value));
+        }
+      }
+
+      document.querySelectorAll("[data-view]").forEach(function(btn) {
+        btn.addEventListener("click", function() {
+          var v = btn.getAttribute("data-view");
+          root.setAttribute("data-uxs-view", v);
+          pressGroup("data-view", v);
+        });
+      });
+
+      document.querySelectorAll("[data-vp-btn]").forEach(function(btn) {
+        btn.addEventListener("click", function() {
+          var vp = btn.getAttribute("data-vp-btn");
+          root.setAttribute("data-uxs-viewport", vp);
+          pressGroup("data-vp-btn", vp);
+        });
+      });
+
+      var stateSel = document.getElementById("uxs-state-select");
+      if (stateSel) {
+        stateSel.addEventListener("change", function() {
+          root.setAttribute("data-uxs-state", stateSel.value);
+        });
+      }
+
       var themeBtn = document.getElementById("uxs-theme-btn");
-      var themeLabel = document.getElementById("uxs-theme-label");
-      var stateSelect = document.getElementById("uxs-state-select");
-
-      function setView(view) {
-        root.setAttribute("data-uxs-view", view);
-        document.querySelectorAll("[data-view]").forEach(function (btn) {
-          btn.setAttribute("aria-pressed", String(btn.getAttribute("data-view") === view));
+      if (themeBtn) {
+        themeBtn.addEventListener("click", function() {
+          var next = root.getAttribute("data-theme") === "dark" ? "light" : "dark";
+          root.setAttribute("data-theme", next);
+          root.setAttribute("data-uxs-theme", next);
+          themeBtn.textContent = next === "dark" ? "Dark" : "Light";
+          themeBtn.setAttribute("aria-pressed", String(next === "dark"));
         });
       }
 
-      function setViewport(vp) {
-        root.setAttribute("data-uxs-viewport", vp);
-        document.querySelectorAll("[data-vp-btn]").forEach(function (btn) {
-          btn.setAttribute("aria-pressed", String(btn.getAttribute("data-vp-btn") === vp));
-        });
+      var pinsBtn = document.getElementById("uxs-pins-btn");
+      var closeBtn = document.getElementById("uxs-drawer-close");
+      function togglePins(force) {
+        var on = typeof force === "boolean" ? force : root.getAttribute("data-uxs-pins") !== "on";
+        root.setAttribute("data-uxs-pins", on ? "on" : "off");
+        if (pinsBtn) pinsBtn.setAttribute("aria-pressed", String(on));
       }
-
-      function setTheme(theme) {
-        root.setAttribute("data-theme", theme);
-        root.setAttribute("data-uxs-theme", theme);
-        var isDark = theme === "dark";
-        themeBtn.setAttribute("aria-pressed", String(isDark));
-        themeLabel.textContent = isDark ? "Light" : "Dark";
-      }
-
-      function setPinsOpen(open) {
-        root.setAttribute("data-uxs-pins", open ? "on" : "off");
-        pinsBtn.setAttribute("aria-pressed", String(open));
-      }
-
-      function setStateMode(st) {
-        root.setAttribute("data-uxs-state", st);
-        if (stateSelect.value !== st) stateSelect.value = st;
-      }
-
-      function selectPin(pinId) {
-        setPinsOpen(true);
-        document.querySelectorAll("[data-pin-trigger]").forEach(function (btn) {
-          btn.setAttribute("data-active", String(btn.getAttribute("data-pin-trigger") === pinId));
-        });
-        document.querySelectorAll("[data-pin-note]").forEach(function (item) {
-          var match = item.getAttribute("data-pin-note") === pinId;
-          item.setAttribute("data-selected", String(match));
-          if (match) item.scrollIntoView({ block: "nearest" });
-        });
-      }
-
-      document.querySelectorAll("[data-view]").forEach(function (btn) {
-        btn.addEventListener("click", function () { setView(btn.getAttribute("data-view")); });
-      });
-
-      document.querySelectorAll("[data-vp-btn]").forEach(function (btn) {
-        btn.addEventListener("click", function () { setViewport(btn.getAttribute("data-vp-btn")); });
-      });
-
-      themeBtn.addEventListener("click", function () {
-        var next = root.getAttribute("data-theme") === "dark" ? "light" : "dark";
-        setTheme(next);
-      });
-
-      pinsBtn.addEventListener("click", function () {
-        var open = root.getAttribute("data-uxs-pins") !== "on";
-        setPinsOpen(open);
-      });
-
-      closePinsBtn.addEventListener("click", function () { setPinsOpen(false); });
-      stateSelect.addEventListener("change", function () { setStateMode(stateSelect.value); });
-
-      document.querySelectorAll("[data-pin-trigger]").forEach(function (btn) {
-        btn.addEventListener("click", function () { selectPin(btn.getAttribute("data-pin-trigger")); });
-      });
-
-      var params = new URLSearchParams(window.location.search);
-      if (params.get("view")) setView(params.get("view"));
-      if (params.get("theme")) setTheme(params.get("theme"));
-      else if (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches) setTheme("dark");
-      if (params.get("state")) setStateMode(params.get("state"));
-      if (params.get("pins") === "1" || params.get("pins") === "on") setPinsOpen(true);
-
-      document.addEventListener("keydown", function (e) {
-        if (e.target && /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName)) return;
-        if (e.key === "1") setView("before");
-        else if (e.key === "2") setView("track-a");
-        else if (e.key === "3") setView("track-b");
-        else if (e.key === "4") setView("compare");
-        else if (e.key === "t" || e.key === "T") setTheme(root.getAttribute("data-theme") === "dark" ? "light" : "dark");
-        else if (e.key === "p" || e.key === "P") setPinsOpen(root.getAttribute("data-uxs-pins") !== "on");
-      });
+      if (pinsBtn) pinsBtn.addEventListener("click", function() { togglePins(); });
+      if (closeBtn) closeBtn.addEventListener("click", function() { togglePins(false); });
     })();
   </script>
 </body>

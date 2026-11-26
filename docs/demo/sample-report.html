@@ -1,0 +1,640 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="color-scheme" content="light dark" />
+  <script>
+    try {
+      var saved = localStorage.getItem("dsaf-report-theme");
+      if (saved === "light" || saved === "dark") {
+        document.querySelector('meta[name="color-scheme"]').content = saved;
+      }
+    } catch (e) {}
+  </script>
+  <title>DSAF Audit Report — northwind-billing-web (Sample Audit)</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #F6F7F9;
+      --surface: #FFFFFF;
+      --surface-alt: #EEF1F5;
+      --border: #D8DFE8;
+      --border-strong: #5E6F88;
+      --fg: #101926;
+      --muted: #455264;
+      --accent: #132540;
+      --accent-fg: #FFFFFF;
+      --pass-bg: #E7F3EC;
+      --pass-border: #A9D4BC;
+      --pass-fg: #0D5935;
+      --warn-bg: #FCF3DC;
+      --warn-border: #D9B75A;
+      --warn-fg: #664900;
+      --fail-bg: #FDECEC;
+      --fail-border: #E5A5A5;
+      --fail-fg: #8E1B1B;
+      --ring: #132540;
+      --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+      --font-mono: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+
+      &:has(> head > meta[name="color-scheme"][content="dark"]) {
+        color-scheme: dark;
+        --bg: #0B111B;
+        --surface: #121B29;
+        --surface-alt: #182334;
+        --border: #283549;
+        --border-strong: #6A7A91;
+        --fg: #EBF0F7;
+        --muted: #B6C2D4;
+        --accent: #F4BA17;
+        --accent-fg: #0B111B;
+        --pass-bg: #123326;
+        --pass-border: #2A6E53;
+        --pass-fg: #7DE0B1;
+        --warn-bg: #362C12;
+        --warn-border: #8A6E1C;
+        --warn-fg: #F7D469;
+        --fail-bg: #3D191B;
+        --fail-border: #8F373B;
+        --fail-fg: #F7A3A7;
+        --ring: #F4BA17;
+      }
+
+      &:has(> head > meta[name="color-scheme"][content="light"]) {
+        color-scheme: light;
+      }
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root:not(:has(> head > meta[name="color-scheme"][content="light"])) {
+        --bg: #0B111B;
+        --surface: #121B29;
+        --surface-alt: #182334;
+        --border: #283549;
+        --border-strong: #6A7A91;
+        --fg: #EBF0F7;
+        --muted: #B6C2D4;
+        --accent: #F4BA17;
+        --accent-fg: #0B111B;
+        --pass-bg: #123326;
+        --pass-border: #2A6E53;
+        --pass-fg: #7DE0B1;
+        --warn-bg: #362C12;
+        --warn-border: #8A6E1C;
+        --warn-fg: #F7D469;
+        --fail-bg: #3D191B;
+        --fail-border: #8F373B;
+        --fail-fg: #F7A3A7;
+        --ring: #F4BA17;
+      }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { transition-duration: 0.01ms; animation-duration: 0.01ms; }
+    }
+
+    *, *::before, *::after { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100dvh;
+      background: var(--bg);
+      color: var(--fg);
+      font-family: var(--font-sans);
+      font-size: 15px;
+      line-height: 1.55;
+    }
+
+    a:focus-visible, button:focus-visible, [tabindex]:focus-visible {
+      outline: 2px solid var(--ring);
+      outline-offset: 2px;
+    }
+
+    .topbar {
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+    }
+    .wrap {
+      max-width: 1120px;
+      margin: 0 auto;
+      padding: 0 20px;
+    }
+    .topbar-inner {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 12px 0;
+      flex-wrap: wrap;
+    }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-weight: 700;
+      font-size: 16px;
+    }
+    .top-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 44px;
+      padding: 8px 14px;
+      border-radius: 8px;
+      border: 1px solid var(--border-strong);
+      background: var(--surface);
+      color: var(--fg);
+      font-family: var(--font-sans);
+      font-size: 14px;
+      font-weight: 600;
+      text-decoration: none;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    .btn:hover { background: var(--surface-alt); }
+
+    .report-head {
+      padding: 28px 0 20px;
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-end;
+      gap: 16px;
+      flex-wrap: wrap;
+    }
+    h1 {
+      margin: 0 0 6px;
+      font-size: clamp(1.375rem, 1rem + 1.5vw, 2rem);
+      line-height: 1.2;
+      letter-spacing: -0.02em;
+    }
+    .meta-line {
+      margin: 0;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .summary-strip {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 12px;
+      margin-bottom: 24px;
+    }
+    .stat {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 14px 16px;
+    }
+    .stat-label {
+      margin: 0 0 4px;
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    .stat-val {
+      margin: 0;
+      font-size: 24px;
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+      line-height: 1.15;
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      height: 24px;
+      padding: 0 10px;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      background: var(--surface-alt);
+      color: var(--fg);
+      font-family: var(--font-mono);
+      font-size: 12px;
+      font-weight: 600;
+      white-space: nowrap;
+      line-height: 1;
+    }
+    .pill--pass { background: var(--pass-bg); border-color: var(--pass-border); color: var(--pass-fg); }
+    .pill--warn { background: var(--warn-bg); border-color: var(--warn-border); color: var(--warn-fg); }
+    .pill--fail { background: var(--fail-bg); border-color: var(--fail-border); color: var(--fail-fg); }
+
+    .tablist {
+      display: flex;
+      overflow-x: auto;
+      gap: 4px;
+      border-bottom: 1px solid var(--border);
+      margin-bottom: 16px;
+      scrollbar-width: thin;
+    }
+    [role="tab"] {
+      position: relative;
+      flex: none;
+      appearance: none;
+      border: 0;
+      background: transparent;
+      color: var(--muted);
+      font-family: var(--font-sans);
+      font-size: 14px;
+      font-weight: 600;
+      min-height: 44px;
+      padding: 10px 14px;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    [role="tab"]:hover { color: var(--fg); }
+    [role="tab"][aria-selected="true"] {
+      color: var(--fg);
+    }
+    [role="tab"][aria-selected="true"]::after {
+      content: "";
+      position: absolute;
+      inset: auto 8px 0;
+      border-block-end: 3px solid var(--accent);
+    }
+
+    [role="tabpanel"] {
+      margin: 0;
+      padding: 0;
+      border: 0;
+    }
+    .panel-box {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      overflow: hidden;
+    }
+
+    .table-wrap {
+      overflow: auto;
+      max-inline-size: 100%;
+      container-type: inline-size;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 14px;
+    }
+    th, td {
+      padding: 12px 16px;
+      text-align: left;
+      border-bottom: 1px solid var(--border);
+      vertical-align: top;
+      overflow-wrap: anywhere;
+    }
+    thead th {
+      background: var(--surface-alt);
+      font-weight: 700;
+      font-size: 13px;
+    }
+    tbody tr:last-child th,
+    tbody tr:last-child td { border-bottom: 0; }
+    code, .mono-text {
+      font-family: var(--font-mono);
+      font-size: 12.5px;
+      overflow-wrap: anywhere;
+    }
+    .sub-line {
+      margin-top: 3px;
+      font-weight: 400;
+      color: var(--muted);
+      font-size: 13px;
+    }
+    .muted-cell {
+      color: var(--muted);
+      padding: 20px 16px;
+    }
+
+    @container (width < 600px) {
+      table, thead, tbody, tr, th, td { display: block; }
+      thead { display: none; }
+      tbody tr {
+        padding: 12px 16px;
+        border-bottom: 1px solid var(--border);
+      }
+      tbody tr:last-child { border-bottom: 0; }
+      tbody th, tbody td {
+        padding: 4px 0;
+        border-bottom: 0;
+      }
+      tbody td[data-label]::before {
+        content: attr(data-label) ": ";
+        font-weight: 600;
+        color: var(--muted);
+        margin-right: 6px;
+      }
+    }
+
+    .metrics-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 1px;
+      background: var(--border);
+    }
+    .metric-cell {
+      background: var(--surface);
+      padding: 14px 16px;
+    }
+    .metric-k { font-size: 12.5px; color: var(--muted); margin: 0 0 2px; }
+    .metric-v { font-family: var(--font-mono); font-size: 15px; font-weight: 600; margin: 0; }
+
+    .report-foot {
+      padding: 24px 0 36px;
+      color: var(--muted);
+      font-size: 13px;
+      display: flex;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 12px;
+    }
+
+    @media (max-width: 720px) {
+      .summary-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .metrics-grid { grid-template-columns: minmax(0, 1fr); }
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="wrap topbar-inner">
+      <div class="brand">
+        <span>DSAF Audit Report</span>
+        <span class="pill pill--pass">PASS</span>
+      </div>
+      <div class="top-actions">
+        <a class="btn btn-secondary" href="./preview-shell.html">Open Preview Shell</a>
+        <button type="button" class="btn" id="theme-toggle-btn">Switch theme</button>
+      </div>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <section class="report-head">
+      <div>
+        <h1>northwind-billing-web (Sample Audit)</h1>
+        <p class="meta-line">Topology: <strong>Mode P</strong> (Mode P — Product UX/UI (No Formal Design System)) · Surface: <strong>operate</strong> · DSAF v0.9.2</p>
+      </div>
+      <span class="pill">2026-11-26</span>
+    </section>
+
+    <section class="summary-strip" aria-label="Audit key counts">
+      <div class="stat">
+        <p class="stat-label">Floor Defects</p>
+        <p class="stat-val">0</p>
+      </div>
+      <div class="stat">
+        <p class="stat-label">Reflex Warnings</p>
+        <p class="stat-val">3</p>
+      </div>
+      <div class="stat">
+        <p class="stat-label">Token Compliance</p>
+        <p class="stat-val">50%</p>
+      </div>
+      <div class="stat">
+        <p class="stat-label">Personas Checked</p>
+        <p class="stat-val">10</p>
+      </div>
+    </section>
+
+    <div class="tabs">
+      <div role="tablist" class="tablist" focusgroup="tablist nomemory" aria-label="Audit report sections">
+        <button type="button" role="tab" id="tab-findings" aria-selected="true" focusgroupstart>Findings (4)</button>
+        <button type="button" role="tab" id="tab-personas" aria-selected="false">Persona Matrix (10)</button>
+        <button type="button" role="tab" id="tab-tokens" aria-selected="false">Tokens &amp; Telemetry</button>
+      </div>
+
+      <div role="tabpanel" aria-labelledby="tab-findings">
+        <div class="panel-box">
+          <div class="table-wrap" tabindex="0" role="region" aria-label="Active findings mapped to personas">
+            <table>
+              <thead>
+                <tr>
+                  <th>Rule &amp; Detail</th>
+                  <th>Tier</th>
+                  <th>Location</th>
+                  <th>Personas Impacted</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+              <th scope="row" data-label="Rule"><code>dsaf/hardcoded-color</code><div class="sub-line">Hardcoded hex color `#cbd5e1` outside token definitions.</div></th>
+              <td data-label="Tier"><span class="pill pill--warn">Reflex</span></td>
+              <td data-label="Location"><code>src/app/billing/styles.css:1</code></td>
+              <td data-label="Personas"><span class="mono-text">P04</span></td>
+            </tr>
+<tr>
+              <th scope="row" data-label="Rule"><code>dsaf/hardcoded-color</code><div class="sub-line">Hardcoded hex color `#334155` outside token definitions.</div></th>
+              <td data-label="Tier"><span class="pill pill--warn">Reflex</span></td>
+              <td data-label="Location"><code>src/app/billing/styles.css:2</code></td>
+              <td data-label="Personas"><span class="mono-text">P04</span></td>
+            </tr>
+<tr>
+              <th scope="row" data-label="Rule"><code>dsaf/off-grid-spacing</code><div class="sub-line">Off-grid spacing `padding: 13px`; use 4px/8px grid token.</div></th>
+              <td data-label="Tier"><span class="pill pill--warn">Reflex</span></td>
+              <td data-label="Location"><code>src/app/billing/styles.css:2</code></td>
+              <td data-label="Personas"><span class="mono-text">P01</span></td>
+            </tr>
+<tr>
+              <th scope="row" data-label="Rule"><code>dsaf/semantic-orphan-var</code><div class="sub-line">Unused semantic CSS custom property `--accent`.</div></th>
+              <td data-label="Tier"><span class="pill">Finish</span></td>
+              <td data-label="Location"><code>src/tokens.css:1</code></td>
+              <td data-label="Personas"><span class="mono-text">P01</span></td>
+            </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <div role="tabpanel" aria-labelledby="tab-personas" hidden="until-found">
+        <div class="panel-box">
+          <div class="table-wrap" tabindex="0" role="region" aria-label="Persona impact matrix">
+            <table>
+              <thead>
+                <tr>
+                  <th>Persona &amp; Axis</th>
+                  <th>Viewport</th>
+                  <th>Signal</th>
+                  <th>Impact</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+              <th scope="row" data-label="Persona"><strong>P01</strong> · First-Time Visitor (Cold Arrival)<div class="sub-line">Onboarding &amp; Information Architecture</div></th>
+              <td data-label="Viewport">1440x900</td>
+              <td data-label="Source"><code>signal:baseline</code></td>
+              <td data-label="Impact"><span class="pill pill--warn">2 issues</span><div class="sub-line"><code>dsaf/off-grid-spacing</code>, <code>dsaf/semantic-orphan-var</code></div></td>
+            </tr>
+<tr>
+              <th scope="row" data-label="Persona"><strong>P02</strong> · Keyboard-Only Power User<div class="sub-line">Keyboard Navigation &amp; Focus Discipline</div></th>
+              <td data-label="Viewport">1280x800</td>
+              <td data-label="Source"><code>signal:baseline</code></td>
+              <td data-label="Impact"><span class="pill pill--pass">Clean</span></td>
+            </tr>
+<tr>
+              <th scope="row" data-label="Persona"><strong>P03</strong> · Mobile Commuter (390px One-Handed + 3G)<div class="sub-line">Responsive Layout &amp; Touch Ergonomics</div></th>
+              <td data-label="Viewport">390x844</td>
+              <td data-label="Source"><code>signal:baseline</code></td>
+              <td data-label="Impact"><span class="pill pill--pass">Clean</span></td>
+            </tr>
+<tr>
+              <th scope="row" data-label="Persona"><strong>P04</strong> · Low-Vision &amp; Reduced-Motion Reader<div class="sub-line">Contrast, Zoom 200% &amp; Motion Sensitivity</div></th>
+              <td data-label="Viewport">720x900</td>
+              <td data-label="Source"><code>signal:baseline</code></td>
+              <td data-label="Impact"><span class="pill pill--warn">2 issues</span><div class="sub-line"><code>dsaf/hardcoded-color</code></div></td>
+            </tr>
+<tr>
+              <th scope="row" data-label="Persona"><strong>P05</strong> · International / Heavy-Data Stress User<div class="sub-line">Localization Diacritics &amp; Scale Resilience</div></th>
+              <td data-label="Viewport">768x1024</td>
+              <td data-label="Source"><code>signal:baseline</code></td>
+              <td data-label="Impact"><span class="pill pill--pass">Clean</span></td>
+            </tr>
+<tr>
+              <th scope="row" data-label="Persona"><strong>P06</strong> · Frequent Returning Operator<div class="sub-line">Repeat Workflow Speed &amp; State Retention</div></th>
+              <td data-label="Viewport">1440x900</td>
+              <td data-label="Source"><code>signal:operate_returning</code></td>
+              <td data-label="Impact"><span class="pill pill--pass">Clean</span></td>
+            </tr>
+<tr>
+              <th scope="row" data-label="Persona"><strong>P07</strong> · Spotty-Network &amp; Fault Recovery User<div class="sub-line">Error Tolerance &amp; T2-Mock Resilience</div></th>
+              <td data-label="Viewport">390x844</td>
+              <td data-label="Source"><code>signal:fault_resilience</code></td>
+              <td data-label="Impact"><span class="pill pill--pass">Clean</span></td>
+            </tr>
+<tr>
+              <th scope="row" data-label="Persona"><strong>P08</strong> · Permission-Constrained / Guest Reviewer<div class="sub-line">Auth Boundary &amp; Read-Only Safety</div></th>
+              <td data-label="Viewport">1280x800</td>
+              <td data-label="Source"><code>signal:auth_boundary</code></td>
+              <td data-label="Impact"><span class="pill pill--pass">Clean</span></td>
+            </tr>
+<tr>
+              <th scope="row" data-label="Persona"><strong>P09</strong> · Form-Error &amp; Browser Autofill User<div class="sub-line">Form Validation, Labels &amp; Autofill Ergonomics</div></th>
+              <td data-label="Viewport">390x844</td>
+              <td data-label="Source"><code>signal:forms_autofill</code></td>
+              <td data-label="Impact"><span class="pill pill--pass">Clean</span></td>
+            </tr>
+<tr>
+              <th scope="row" data-label="Persona"><strong>P10</strong> · Dense-Data Table &amp; Filter Analyst<div class="sub-line">Dense Information Scannability &amp; Narrow-Container Adaptation</div></th>
+              <td data-label="Viewport">768x1024</td>
+              <td data-label="Source"><code>signal:dense_tables</code></td>
+              <td data-label="Impact"><span class="pill pill--pass">Clean</span></td>
+            </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <div role="tabpanel" aria-labelledby="tab-tokens" hidden="until-found">
+        <div class="panel-box">
+          <div class="metrics-grid">
+            <div class="metric-cell"><p class="metric-k">UI &amp; Style Files Scanned</p><p class="metric-v">3</p></div>
+            <div class="metric-cell"><p class="metric-k">DTCG Tokens</p><p class="metric-v">0</p></div>
+            <div class="metric-cell"><p class="metric-k">Hardcoded Colors / var() Refs</p><p class="metric-v">2 / 2</p></div>
+            <div class="metric-cell"><p class="metric-k">CSS Orphans (Semantic / Scale)</p><p class="metric-v">1 / 0</p></div>
+            <div class="metric-cell"><p class="metric-k">!important / Off-Grid Spacing</p><p class="metric-v">0 / 1</p></div>
+            <div class="metric-cell"><p class="metric-k">Waived / Unused Ignores</p><p class="metric-v">0 / 0</p></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <footer class="wrap report-foot">
+    <span>Generated offline by @zintaen/dsaf v0.9.2</span>
+    <span>Read-Only Tier 0 Evidence Report</span>
+  </footer>
+
+  <script>
+    (function() {
+      var meta = document.querySelector('meta[name="color-scheme"]');
+      var themeBtn = document.getElementById("theme-toggle-btn");
+      var mq = window.matchMedia("(prefers-color-scheme: dark)");
+      function currentScheme() {
+        if (meta && (meta.content === "light" || meta.content === "dark")) return meta.content;
+        return mq.matches ? "dark" : "light";
+      }
+      function syncThemeBtn() {
+        if (!themeBtn) return;
+        var next = currentScheme() === "dark" ? "light" : "dark";
+        themeBtn.textContent = next === "dark" ? "Dark theme" : "Light theme";
+        themeBtn.setAttribute("aria-label", "Switch to " + next + " theme");
+      }
+      if (themeBtn && meta) {
+        syncThemeBtn();
+        themeBtn.addEventListener("click", function() {
+          var target = currentScheme() === "dark" ? "light" : "dark";
+          var sys = mq.matches ? "dark" : "light";
+          try {
+            if (target === sys) {
+              localStorage.removeItem("dsaf-report-theme");
+              meta.content = "light dark";
+            } else {
+              localStorage.setItem("dsaf-report-theme", target);
+              meta.content = target;
+            }
+          } catch (e) {
+            meta.content = target;
+          }
+          syncThemeBtn();
+        });
+      }
+
+      var tablist = document.querySelector('[focusgroup^="tablist"]');
+      if (tablist) {
+        var tabs = Array.prototype.slice.call(tablist.querySelectorAll("button"));
+        var panels = Array.prototype.slice.call(document.querySelectorAll('[role="tabpanel"]'));
+        function selectTab(nextTab, shouldFocus) {
+          for (var i = 0; i < tabs.length; i++) {
+            var isSel = tabs[i] === nextTab;
+            tabs[i].setAttribute("aria-selected", String(isSel));
+            tabs[i].setAttribute("role", "tab");
+            tabs[i].tabIndex = isSel ? 0 : -1;
+            if (isSel) tabs[i].setAttribute("focusgroupstart", "");
+            else tabs[i].removeAttribute("focusgroupstart");
+          }
+          for (var j = 0; j < panels.length; j++) {
+            if (panels[j].getAttribute("aria-labelledby") === nextTab.id) {
+              panels[j].removeAttribute("hidden");
+            } else {
+              panels[j].setAttribute("hidden", "until-found");
+            }
+          }
+          if (shouldFocus) nextTab.focus();
+        }
+        selectTab(tabs[0], false);
+        for (var i = 0; i < tabs.length; i++) {
+          (function(tab, idx) {
+            tab.addEventListener("click", function() { selectTab(tab, false); });
+            tab.addEventListener("keydown", function(e) {
+              var next = -1;
+              if (e.key === "ArrowRight") next = (idx + 1) % tabs.length;
+              else if (e.key === "ArrowLeft") next = (idx - 1 + tabs.length) % tabs.length;
+              else if (e.key === "Home") next = 0;
+              else if (e.key === "End") next = tabs.length - 1;
+              if (next !== -1) {
+                e.preventDefault();
+                selectTab(tabs[next], true);
+              }
+            });
+          })(tabs[i], i);
+        }
+        for (var k = 0; k < panels.length; k++) {
+          panels[k].addEventListener("beforematch", function(ev) {
+            var id = ev.currentTarget.getAttribute("aria-labelledby");
+            var owner = tabs.find(function(t) { return t.id === id; });
+            if (owner) selectTab(owner, false);
+          });
+        }
+      }
+    })();
+  </script>
+</body>
+</html>

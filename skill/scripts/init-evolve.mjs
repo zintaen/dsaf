@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 /**
- * DSAF v0.9.1 — Universal Repo Auto-Evolution Bootstrap (`dsaf init`).
- * Scaffolds `.dsaf/` governance (pinned STRATEGY.md, rules.json circuit breakers,
- * decision-queue.md, strategy-feedback.md, handoff.md, personas.json) plus optional
- * edit-time hooks, CI guardrails, and workflow files. Zero external dependencies.
+ * DSAF v0.9.2 — Universal Repo Auto-Evolution Bootstrap (`dsaf init`).
+ * Scaffolds `.dsaf/` governance aligned with zintaen/auto-evolve-strategy v1.2.0
+ * (pinned STRATEGY.md, rules.json circuit breakers & numbered leases, decision-queue.md,
+ * strategy-feedback.md, handoff.md, personas.json) plus optional edit-time hooks,
+ * CI guardrails, and workflow files. Zero external dependencies.
  */
 
 import assert from "node:assert/strict";
@@ -16,7 +17,8 @@ import { installAgentHook } from "./dsaf-hook.mjs";
 import { generateGuardrails } from "./generate-guardrails.mjs";
 import { generatePersonas } from "./generate-personas.mjs";
 
-export const INIT_VERSION = "0.9.1";
+export const INIT_VERSION = "0.9.2";
+export const UPSTREAM_STRATEGY_VERSION = "zintaen/auto-evolve-strategy v1.2.0";
 
 const RESOURCE_STRATEGY_PATH = decodeURIComponent(
   new URL("../resources/evolve-strategy.md", import.meta.url).pathname
@@ -55,11 +57,14 @@ function buildRulesConfig({ repoName, recon, mode, guardrailsEnabled, hooksInsta
   return {
     schema: "dsaf-init-rules/1",
     strategyVersion: INIT_VERSION,
+    upstreamStrategy: UPSTREAM_STRATEGY_VERSION,
     repository: repoName,
     mode,
     surfaceMode,
     loopMode: "focused",
     killSwitchFile: ".dsaf/STOP",
+    altKillSwitchFile: ".evolve/STOP",
+    leasePattern: ".dsaf/lease.<n>",
     circuitBreakerFile: ".dsaf/circuit-breaker.json",
     budgets: {
       maxFilesPerRound: 5,
@@ -109,11 +114,17 @@ function buildStrategyFeedback(repoName) {
 
 function buildHandoff({ repoName, mode, surfaceMode, hooksInstalled, guardrailsEnabled, personaCount }) {
   return [
+    "owner: none | heartbeat: unstarted | expires: unstarted | integration: main",
+    "state: running",
+    "mode: focused",
+    "next: Run Step 0 recon and baseline check before applying Floor/Reflex fixes",
+    "",
     `# DSAF Evolve Handoff — ${repoName}`,
     "",
-    `- **Engine Version:** ${INIT_VERSION}`,
+    `- **Engine Version:** ${INIT_VERSION} (${UPSTREAM_STRATEGY_VERSION})`,
     `- **Detected Mode:** ${mode} | **Surface:** ${surfaceMode}`,
-    `- **Loop Mode:** focused (create \`.dsaf/STOP\` to halt cleanly at next checkpoint)`,
+    `- **Loop Mode:** focused (create \`.dsaf/STOP\` or \`.evolve/STOP\` to halt cleanly at next checkpoint)`,
+    `- **Lease Contract (A9.4):** Atomic numbered \`.dsaf/lease.<n>\`, released via \`owner: none\``,
     `- **Persona Matrix:** ${personaCount > 0 ? `.dsaf/personas.json (${personaCount} signal-driven personas; add unlimited domain roles via .dsaf/personas.custom.json)` : "skipped (--skip-personas)"}`,
     `- **Edit-Time Hooks:** ${hooksInstalled.length > 0 ? hooksInstalled.join(", ") : "not installed (pass --with-hook)"}`,
     `- **CI Guardrails:** ${guardrailsEnabled ? "enabled (.dsaf-guardrails/)" : "not generated (pass --with-guardrails)"}`,
@@ -121,6 +132,7 @@ function buildHandoff({ repoName, mode, surfaceMode, hooksInstalled, guardrailsE
     "## Verification Baseline Commands",
     "",
     "```bash",
+    "npx @zintaen/dsaf check .",
     "npx @zintaen/dsaf hook check . --tier floor",
     "npx @zintaen/dsaf tokens . --json",
     "npx @zintaen/dsaf audit . --out ./audit-output",
@@ -342,6 +354,8 @@ function runSelfTest() {
     const parsedRules = JSON.parse(readFileSync(join(scratch, ".dsaf/rules.json"), "utf8"));
     assert.equal(parsedRules.schema, "dsaf-init-rules/1");
     assert.equal(parsedRules.strategyVersion, INIT_VERSION);
+    assert.equal(parsedRules.upstreamStrategy, UPSTREAM_STRATEGY_VERSION);
+    assert.equal(parsedRules.leasePattern, ".dsaf/lease.<n>");
     assert.equal(parsedRules.budgets.allowWaiverFloor, false);
     assert.equal(parsedRules.killSwitchFile, ".dsaf/STOP");
     assert.match(readFileSync(join(scratch, ".github/workflows/dsaf-gate.yml"), "utf8"), /fail-on-floor/);
