@@ -4,7 +4,7 @@
   "description": "DSAF — Agent-native Design System & Product UX/UI Audit Framework with deterministic runtime verification, token drift analysis, 3-vertex Figma triangulation, Dual-Track drafts, CI guardrails, and closed-loop evolution.",
   "type": "module",
   "bin": {
-    "dsaf": "./bin/dsaf.mjs"
+    "dsaf": "bin/dsaf.mjs"
   },
   "files": [
     "bin/",
@@ -34,7 +34,7 @@
   "author": "Stephen Cheng <zintaen@gmail.com>",
   "repository": {
     "type": "git",
-    "url": "https://github.com/zintaen/dsaf.git"
+    "url": "git+https://github.com/zintaen/dsaf.git"
   },
   "engines": {
     "node": ">=20"
