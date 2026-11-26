@@ -24,6 +24,8 @@ jobs:
       - run: node bin/dsaf.mjs mcp --self-test
       - run: node skill/scripts/ci-report.mjs --self-test
       - run: node bin/dsaf.mjs hook --self-test
+      - run: node bin/dsaf.mjs fix --self-test
+      - run: node bin/dsaf.mjs evolve --self-test
       - run: node bin/dsaf.mjs install-skill --self-test
       - run: node bin/dsaf.mjs doctor --self-test
       - run: node bin/dsaf.mjs figma-diff --self-test

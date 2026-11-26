@@ -4,6 +4,14 @@ Concise version highlights for **DSAF (`@zintaen/dsaf`)**. Follows [Semantic Ver
 
 ---
 
+## v0.8.0 (2026-11-26) — Ink & Gold v3 Theme, Safe Floor Auto-Fix (`dsaf fix`) & Repo Auto-Evolve (`dsaf evolve`)
+
+- **Ink & Gold v3 Aesthetic (`preview-shell.html`, `docs/`):** Rebuilt canonical `preview-shell.html`, `docs/index.html`, `docs/styles.css`, `docs/favicon.svg`, `docs/assets/og-card.png`, and `docs/assets/preview-shell-showcase.png` around an Ink & Gold v3 token hierarchy (`#F7F8FA`/`#0A111D`, `#14243D` Ink, `#F4BA17` Gold, 3-stop blue/teal/gold aurora wash, `Manrope` + `Be Vietnam Pro` + `JetBrains Mono`) passing WCAG 2.2 AA & APCA `Lc` (`0` hardcoded colors, `0` orphans, `0` `!important`).
+- **Safe Floor Auto-Remediator (`dsaf fix`):** Previews (`--dry-run`) and applies (`--apply --backup`) deterministic Floor fixes for `transition: all`, `width: 100vw` / `w-[100vw]`, naked `outline: none`, and unmuted `<video autoplay>` while respecting `.dsaf/rules.json` `protectedFiles`.
+- **Supervised Repo Evolution Runner (`dsaf evolve`):** Enforces `.dsaf/STOP` kill switches, `.dsaf/circuit-breaker.json` consecutive failure caps, bounded Floor remediations, and automatic `.dsaf/handoff.md` telemetry logs.
+- **External DS Focus Awareness (`--ds-css`) & Noise Filtering:** `dsaf hook` discovers ancestor DS CSS packages (`node_modules/@*/design*/dist/*.css`, `--ds-css`) to honor parent `:focus-within` / `:has(...:focus-visible)` focus rings cleanly, while `recon`, `audit-tokens`, and `dsaf-hook` ignore `playwright-report/` and `test-results/`.
+- **8-Tool Stdio MCP Server (`dsaf mcp`):** Added read-only `dsaf_fix_preview` and `dsaf_evolve_status` alongside existing audit tools.
+
 ## v0.7.0 (2026-11-26) — Preview Studio & Docs Redesign, Repo Auto-Evolve (`dsaf init`), Stdio MCP & 2-Vertex Diff
 
 - **Studio & Docs Visual Redesign (`preview-shell.html`, `docs/`):** Rebuilt canonical `preview-shell.html` (100% offline, generic `--uxs-*` vars, zero external assets) and the GitHub Pages showcase (`docs/`) with Warm Alabaster, Deep Umber, and Ochre palettes, composite focus halos, realistic Before/Pragmatic/North-Star specimens, `1200x630` OG card, and passing 5–7 viewport Playwright + APCA checks (`axe=0`, `hardcodedColorHits=0`).

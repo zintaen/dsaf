@@ -39,13 +39,15 @@ const SKIP_DIRS = new Set([
   ".turbo",
   ".vite",
   "coverage",
+  "playwright-report",
+  "test-results",
   "audit-output",
   "draft",
   "__pycache__",
   ".venv",
 ]);
 
-function extractCssRuleBlocks(cleanedCss) {
+export function extractCssRuleBlocks(cleanedCss) {
   const blocks = [];
   let idx = 0;
   let depth = 0;
@@ -92,6 +94,123 @@ function maskSvgAndStyleTokens(raw, isStyle) {
     maskRangePreservingLines(chars, m.index, m.index + m[0].length);
   }
   return chars.join("");
+}
+
+function findAncestorDsCssFiles(startDir, maxLevels = 3, maxFiles = 6, maxBytes = 512 * 1024) {
+  const found = [];
+  const seen = new Set();
+  let cur = resolve(startDir || ".");
+  for (let lvl = 0; lvl <= maxLevels && found.length < maxFiles; lvl++) {
+    const nm = join(cur, "node_modules");
+    if (existsSync(nm)) {
+      let entries = [];
+      try {
+        entries = readdirSync(nm, { withFileTypes: true });
+      } catch {
+        entries = [];
+      }
+      for (const entry of entries) {
+        if (found.length >= maxFiles) break;
+        if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
+        if (entry.name.startsWith("@")) {
+          const scopeDir = join(nm, entry.name);
+          let pkgs = [];
+          try {
+            pkgs = readdirSync(scopeDir, { withFileTypes: true });
+          } catch {
+            continue;
+          }
+          for (const pkg of pkgs) {
+            if (found.length >= maxFiles) break;
+            if (!/^(?:design|ui)/i.test(pkg.name)) continue;
+            const distDir = join(scopeDir, pkg.name, "dist");
+            if (!existsSync(distDir)) continue;
+            try {
+              for (const f of readdirSync(distDir, { withFileTypes: true })) {
+                if (found.length >= maxFiles) break;
+                if (!f.name.endsWith(".css")) continue;
+                const full = join(distDir, f.name);
+                if (!seen.has(full) && statSync(full).size <= maxBytes) {
+                  seen.add(full);
+                  found.push(full);
+                }
+              }
+            } catch {
+              /* ignore unreadable dist */
+            }
+          }
+        } else if (/design-system/i.test(entry.name)) {
+          const distDir = join(nm, entry.name, "dist");
+          if (existsSync(distDir)) {
+            try {
+              for (const f of readdirSync(distDir, { withFileTypes: true })) {
+                if (found.length >= maxFiles) break;
+                if (!f.name.endsWith(".css")) continue;
+                const full = join(distDir, f.name);
+                if (!seen.has(full) && statSync(full).size <= maxBytes) {
+                  seen.add(full);
+                  found.push(full);
+                }
+              }
+            } catch {
+              /* ignore unreadable dist */
+            }
+          }
+        }
+      }
+    }
+    const parent = dirname(cur);
+    if (parent === cur) break;
+    cur = parent;
+  }
+  return found;
+}
+
+const FOCUS_INDICATOR_RE =
+  /\b(?:box-shadow|border(?:-color|-width)?|outline-offset)\s*:|\boutline\s*:\s*(?!none\b|0\b)[^;}\n]+/i;
+
+export function discoverExternalDsCss(startDir = ".", explicitPaths = []) {
+  const paths = [];
+  const seen = new Set();
+  for (const rawP of Array.isArray(explicitPaths) ? explicitPaths : explicitPaths ? [explicitPaths] : []) {
+    for (const part of String(rawP).split(",")) {
+      const p = part.trim();
+      if (!p) continue;
+      const candCwd = resolve(p);
+      const candStart = resolve(startDir || ".", p);
+      const chosen = existsSync(candCwd) ? candCwd : candStart;
+      if (!existsSync(chosen) || !statSync(chosen).isFile()) {
+        throw new Error(`External DS CSS file not found: ${p}`);
+      }
+      if (!seen.has(chosen)) {
+        seen.add(chosen);
+        paths.push(chosen);
+      }
+    }
+  }
+  for (const autoP of findAncestorDsCssFiles(startDir)) {
+    if (!seen.has(autoP)) {
+      seen.add(autoP);
+      paths.push(autoP);
+    }
+  }
+
+  const focusBlocks = [];
+  for (const p of paths) {
+    let raw = "";
+    try {
+      raw = readFileSync(p, "utf8");
+    } catch {
+      continue;
+    }
+    const clean = stripCommentsPreservingLines(raw);
+    for (const blk of extractCssRuleBlocks(clean)) {
+      if (/(?::focus-within\b|:has\([^)]*:focus(?:-visible)?\b)/i.test(blk.selector) && FOCUS_INDICATOR_RE.test(blk.body)) {
+        focusBlocks.push({ selector: blk.selector, body: blk.body, source: p });
+      }
+    }
+  }
+  return focusBlocks;
 }
 
 export function scanUiContent(raw, filePath, options = {}) {
@@ -157,8 +276,9 @@ export function scanUiContent(raw, filePath, options = {}) {
 
     // 4. Floor: outline: none / 0 without visible focus replacement or accessible composite pattern
     const cssBlocks = extractCssRuleBlocks(slice.text);
-    const hasVisibleFocusIndicator = (body) =>
-      /\b(?:box-shadow|border(?:-color|-width)?|outline-offset)\s*:|\boutline\s*:\s*(?!none\b|0\b)[^;}\n]+/i.test(body);
+    const externalBlocks = Array.isArray(options.externalCssBlocks) ? options.externalCssBlocks : [];
+    const combinedFocusBlocks = [...cssBlocks, ...externalBlocks];
+    const hasVisibleFocusIndicator = (body) => FOCUS_INDICATOR_RE.test(body);
     const SKIP_FOCUS_RE =
       /(?:^|[\s,])(?:#(?:main|content|main-content|app)|main|\[tabindex\s*=\s*["']?-1["']?\])(?::focus(?:-visible)?|$)/i;
     const hasBranchSiblingFocusVisible = (p) => {
@@ -175,12 +295,16 @@ export function scanUiContent(raw, filePath, options = {}) {
       const ancestor = p.slice(0, idx).trim().toLowerCase();
       const tokens = ancestor.match(/[#.][a-zA-Z0-9_-]+/g) || [];
       for (const tok of [ancestor, ...tokens]) {
-        const targetWithin = `${tok.toLowerCase()}:focus-within`;
+        const esc = tok.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        const pat = new RegExp(
+          `(?:^|[\\s>~+,])${esc}(?::[a-z-]+(?:\\([^)]*\\))?|\\.[a-zA-Z0-9_-]+)*(?::focus-within\\b|:has\\([^)]*:focus(?:-visible)?\\))`,
+          "i"
+        );
         if (
-          cssBlocks.some(
+          combinedFocusBlocks.some(
             (other) =>
               hasVisibleFocusIndicator(other.body) &&
-              other.selector.split(",").some((os) => os.trim().toLowerCase().includes(targetWithin))
+              other.selector.split(",").some((os) => pat.test(os.trim()))
           )
         ) {
           return true;
@@ -337,10 +461,16 @@ export function checkFile(filePath, options = {}) {
   }
   const raw = readFileSync(abs, "utf8");
   const rel = options.displayPath || filePath;
-  return scanUiContent(raw, rel, options);
+  const externalCssBlocks =
+    Array.isArray(options.externalCssBlocks)
+      ? options.externalCssBlocks
+      : options.dsCss === false
+      ? []
+      : discoverExternalDsCss(dirname(abs), options.dsCss || []);
+  return scanUiContent(raw, rel, { ...options, externalCssBlocks });
 }
 
-function collectUiFiles(targetPath) {
+export function collectUiFiles(targetPath) {
   const abs = resolve(targetPath);
   if (!existsSync(abs)) throw new Error(`Target not found: ${abs}`);
   const st = statSync(abs);
@@ -514,15 +644,45 @@ function runSelfTest() {
     const mixedRes = checkFile(mixedCss, { tier: "floor", displayPath: "mixed-focus.css" });
     assert.equal(mixedRes.active.length, 2, "Must flag comma selectors where at least one branch lacks focus indicator");
 
-    // 3b. checkTarget must exclude ios/App/App/public, _audit, storybook-static
+    // 3b. checkTarget must exclude ios/App/App/public, _audit, storybook-static, playwright-report, test-results
     const subProj = join(scratch, "sub-proj");
     mkdirSync(join(subProj, "web/ios/App/App/public/assets"), { recursive: true });
     mkdirSync(join(subProj, "_audit"), { recursive: true });
+    mkdirSync(join(subProj, "playwright-report"), { recursive: true });
+    mkdirSync(join(subProj, "test-results"), { recursive: true });
     mkdirSync(join(subProj, "web/src"), { recursive: true });
     writeFileSync(join(subProj, "web/ios/App/App/public/assets/index.css"), ".x{transition:all 1s}");
     writeFileSync(join(subProj, "_audit/probe.css"), ".x{transition:all 1s}");
+    writeFileSync(join(subProj, "playwright-report/index.html"), "<style>.x{transition:all 1s}</style>");
+    writeFileSync(join(subProj, "test-results/trace.css"), ".x{transition:all 1s}");
     writeFileSync(join(subProj, "web/src/ok.css"), ".x{transition:opacity 150ms}");
-    assert.equal(checkTarget(subProj, { tier: "floor" }).passed, true, "Must skip built WebView & _audit paths");
+    assert.equal(checkTarget(subProj, { tier: "floor" }).passed, true, "Must skip built WebView, _audit, playwright-report & test-results");
+
+    // 3c. External DS focus awareness (--ds-css + auto-discovered node_modules/@acme/design/dist/*.css)
+    const dsProj = join(scratch, "ds-proj");
+    mkdirSync(join(dsProj, "src"), { recursive: true });
+    mkdirSync(join(dsProj, "node_modules/@acme/design/dist"), { recursive: true });
+    const explicitDs = join(scratch, "explicit-ds.css");
+    writeFileSync(
+      explicitDs,
+      ".ds-field:focus-within { outline: 2px solid #14243D; }\n.ds-combo:has(input:focus-visible) { box-shadow: 0 0 0 2px #F4BA17; }\n"
+    );
+    writeFileSync(
+      join(dsProj, "node_modules/@acme/design/dist/styles.css"),
+      ".pkg-field:focus-within { outline: 2px solid #14243D; }\n"
+    );
+    writeFileSync(
+      join(dsProj, "src/app.css"),
+      ".ds-field input:focus { outline: none; }\n.ds-combo input:focus { outline: none; }\n.orphan input:focus { outline: none; }\n"
+    );
+    const explicitRes = checkTarget(join(dsProj, "src"), { tier: "floor", dsCss: [explicitDs] });
+    assert.equal(explicitRes.counts.floor, 1, "Explicit --ds-css must satisfy .ds-field & .ds-combo while still flagging .orphan");
+    writeFileSync(
+      join(dsProj, "src/app.css"),
+      ".pkg-field input:focus { outline: none; }\n"
+    );
+    const autoDsRes = checkTarget(join(dsProj, "src"), { tier: "floor" });
+    assert.equal(autoDsRes.counts.floor, 0, "Auto-discovered node_modules/@acme/design/dist/styles.css must satisfy .pkg-field input:focus");
 
     // 4. Stdin hook payload
     const hookOut = runHookStdin(JSON.stringify({ tool_input: { file_path: badCss } }));
@@ -546,13 +706,17 @@ function runSelfTest() {
 
 function parseFlagArgs(argv) {
   const positionals = [];
-  const flags = { tier: "floor", agent: "claude", dir: ".", local: false, json: false, github: false, reportUnusedIgnores: false, sarif: null, selfTest: false, help: false };
+  const flags = { tier: "floor", agent: "claude", dir: ".", local: false, json: false, github: false, reportUnusedIgnores: false, sarif: null, dsCss: [], selfTest: false, help: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--tier") flags.tier = argv[++i] || "floor";
     else if (a === "--agent") flags.agent = argv[++i] || "claude";
     else if (a === "--dir") flags.dir = argv[++i] || ".";
     else if (a === "--sarif") flags.sarif = argv[++i];
+    else if (a === "--ds-css") {
+      const val = argv[++i];
+      if (val) flags.dsCss.push(...val.split(",").map((s) => s.trim()).filter(Boolean));
+    }
     else if (a === "--local") flags.local = true;
     else if (a === "--json") flags.json = true;
     else if (a === "--github") flags.github = true;
@@ -567,6 +731,10 @@ function parseFlagArgs(argv) {
 export function checkTarget(target, options = {}) {
   const tier = options.tier || "floor";
   const reportUnusedIgnores = Boolean(options.reportUnusedIgnores);
+  const absTarget = resolve(target);
+  const startDir = existsSync(absTarget) && statSync(absTarget).isFile() ? dirname(absTarget) : absTarget;
+  const externalCssBlocks =
+    options.dsCss === false ? [] : discoverExternalDsCss(startDir, options.dsCss || []);
   const files = collectUiFiles(target);
   const allActive = [];
   const allWaived = [];
@@ -576,6 +744,7 @@ export function checkTarget(target, options = {}) {
       tier,
       displayPath: f.rel,
       reportUnusedIgnores,
+      externalCssBlocks,
     });
     allActive.push(...r.active);
     allWaived.push(...r.waived);
@@ -606,7 +775,7 @@ function main() {
       [
         `DSAF v${CI_REPORT_VERSION} — Edit-Time Design Hook`,
         "Usage:",
-        "  dsaf hook check <file-or-dir> [--tier floor|all] [--sarif <file>] [--github] [--report-unused-ignores] [--json]",
+        "  dsaf hook check <file-or-dir> [--tier floor|all] [--ds-css <path>] [--sarif <file>] [--github] [--report-unused-ignores] [--json]",
         "  dsaf hook stdin [--tier floor|all]",
         "  dsaf hook install [--agent claude|cursor|codex] [--dir <project>] [--local]",
         "  dsaf hook --self-test",
@@ -634,6 +803,7 @@ function main() {
   const { filesScanned, passed, counts, active: allActive, waived: allWaived, unusedIgnores: allUnused } = checkTarget(target, {
     tier: flags.tier,
     reportUnusedIgnores: flags.reportUnusedIgnores,
+    dsCss: flags.dsCss,
   });
 
   if (flags.sarif) {

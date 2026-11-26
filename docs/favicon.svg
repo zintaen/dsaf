@@ -1,5 +1,7 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="DSAF mark">
-  <rect width="64" height="64" rx="14" fill="#45210E"/>
-  <rect x="4" y="4" width="56" height="56" rx="11" fill="none" stroke="#F4BA17" stroke-width="2.5"/>
-  <text x="32" y="42" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="26" font-weight="700" fill="#F4BA17">DS</text>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32" role="img" aria-label="DSAF Ink and Gold emblem">
+  <rect x="1.5" y="1.5" width="29" height="29" rx="7" fill="#14243D" stroke="#F4BA17" stroke-width="1.5"/>
+  <path d="M9 8.5h6.2c4.4 0 7.3 2.9 7.3 7.5s-2.9 7.5-7.3 7.5H9V8.5zm3.3 2.9v9.2h2.8c2.6 0 4.1-1.7 4.1-4.6s-1.5-4.6-4.1-4.6h-2.8z" fill="#F7F8FA"/>
+  <rect x="7" y="7" width="4" height="1.8" rx="0.9" fill="#F4BA17"/>
+  <rect x="7" y="23.2" width="4" height="1.8" rx="0.9" fill="#F4BA17"/>
+  <circle cx="24" cy="8.2" r="2" fill="#F4BA17"/>
 </svg>

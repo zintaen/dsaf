@@ -40,6 +40,8 @@ const SKIP_DIRS = new Set([
   ".turbo",
   ".vite",
   "coverage",
+  "playwright-report",
+  "test-results",
   "audit-output",
   "draft",
   "__pycache__",

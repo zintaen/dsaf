@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * DSAF v0.7.0 — Universal Repo Auto-Evolution Bootstrap (`dsaf init`).
+ * DSAF v0.8.0 — Universal Repo Auto-Evolution Bootstrap (`dsaf init`).
  * Scaffolds `.dsaf/` governance (pinned STRATEGY.md, rules.json circuit breakers,
  * decision-queue.md, strategy-feedback.md, handoff.md) plus optional edit-time
  * hooks, CI guardrails, and workflow files. Zero external dependencies.
@@ -15,7 +15,7 @@ import { analyzeDirectory } from "./recon.mjs";
 import { installAgentHook } from "./dsaf-hook.mjs";
 import { generateGuardrails } from "./generate-guardrails.mjs";
 
-export const INIT_VERSION = "0.7.0";
+export const INIT_VERSION = "0.8.0";
 
 const RESOURCE_STRATEGY_PATH = decodeURIComponent(
   new URL("../resources/evolve-strategy.md", import.meta.url).pathname

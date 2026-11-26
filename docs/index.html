@@ -2,380 +2,299 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="color-scheme" content="light dark" />
-  <title>DSAF — Design System &amp; UX Audit Framework (@zintaen/dsaf)</title>
-  <meta name="description" content="Deterministic design system and UX audit CLI, zero-dep edit-time Floor hooks, Figma/DTCG triangulation, Playwright + APCA runtime checks, and repository auto-evolution bootstrap." />
-  <meta property="og:title" content="DSAF — Design System &amp; UX Audit Framework (v0.7.0)" />
-  <meta property="og:description" content="Zero-dependency Node ESM verification gate for W3C DTCG tokens, APCA/WCAG 2.2 contrast, edit-time AI hooks, and autonomous repository evolution." />
+  <title>DSAF v0.8.0 — Design System &amp; Product UX/UI Audit Engine</title>
+  <meta name="description" content="Zero-dependency Node ESM &amp; Playwright audit engine for Design Systems, W3C DTCG tokens, WCAG 2.2 AA / APCA Lc, safe Floor auto-remediation, and repo auto-evolution." />
   <meta property="og:type" content="website" />
-  <meta property="og:url" content="https://zintaen.github.io/dsaf/" />
+  <meta property="og:title" content="DSAF v0.8.0 — Design System &amp; Product UX/UI Audit Engine" />
+  <meta property="og:description" content="Deterministic design system audit, Playwright verification, safe Floor remediation (dsaf fix), and repo auto-evolution (dsaf evolve) — zero runtime dependencies." />
   <meta property="og:image" content="https://zintaen.github.io/dsaf/assets/og-card.png" />
   <meta name="twitter:card" content="summary_large_image" />
-  <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
+  <meta name="twitter:image" content="https://zintaen.github.io/dsaf/assets/og-card.png" />
+  <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600;700&family=Space+Grotesk:wght@600;700&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&family=Manrope:wght@600;700;800&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="./styles.css" />
-  <script>
-    (() => {
-      try {
-        const saved = localStorage.getItem("color-scheme");
-        if (saved === "light" || saved === "dark") {
-          document.querySelector('meta[name="color-scheme"]').content = saved;
-        }
-      } catch {}
-    })();
-  </script>
 </head>
 <body>
-  <a class="skip-link" href="#main-content">Skip to main content</a>
+  <a class="skip-link" href="#main">Skip to main content</a>
 
   <header class="site-header">
-    <div class="container header-inner">
-      <a class="brand-link" href="./">
-        <span class="brand-mark" aria-hidden="true">DS</span>
-        <span>DSAF</span>
+    <div class="container nav-bar">
+      <a class="brand-link" href="#top" aria-label="DSAF home">
+        <span class="logo-badge" aria-hidden="true">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="3" y="3" width="18" height="18" rx="4"></rect>
+            <path d="M8 8h5a4 4 0 0 1 0 8H8z"></path>
+          </svg>
+        </span>
+        <span class="brand-title">DSAF v0.8.0</span>
       </a>
 
-      <nav class="nav-row" aria-label="Primary navigation">
-        <a class="nav-link" href="#showcase">Studio</a>
-        <a class="nav-link" href="#inspector">Inspector</a>
-        <a class="nav-link" href="#compare">Compare</a>
-        <a class="nav-link" href="#toolchain">Toolchain</a>
-        <a class="nav-link" href="#releases">Releases</a>
-        <a class="nav-link" href="https://github.com/zintaen/dsaf">GitHub</a>
-        <button type="button" id="theme-toggle-btn" class="theme-toggle" aria-label="Switch to dark theme">
-          Theme
-        </button>
+      <nav class="nav-links" aria-label="Primary navigation">
+        <a class="nav-link" href="#architecture">Architecture</a>
+        <a class="nav-link" href="#cli-workbench">CLI Workbench</a>
+        <a class="nav-link" href="#showcase">Preview Shell</a>
+        <a class="nav-link" href="#releases">Release Notes</a>
       </nav>
+
+      <div class="nav-actions">
+        <button type="button" class="btn btn-secondary" id="theme-toggle-btn" aria-pressed="false">
+          <span id="theme-toggle-label">Switch Theme</span>
+        </button>
+        <a class="btn btn-accent" href="https://www.npmjs.com/package/@zintaen/dsaf">npm @zintaen/dsaf</a>
+      </div>
     </div>
   </header>
 
-  <main id="main-content">
-    <section class="hero" aria-labelledby="hero-heading">
+  <main id="main">
+    <section id="top" class="hero-section">
       <div class="container">
-        <span class="hero-eyebrow">v0.7.0 · Zero-Dep CLI + Agent Skill + Stdio MCP</span>
-        <h1 id="hero-heading">Deterministic Design System &amp; UX Verification Gate</h1>
-        <p class="hero-lead">
-          DSAF pairs promptable UX taste with a zero-dependency Node ESM measurement engine: W3C DTCG token parity, 2/3-vertex Figma triangulation, edit-time AI agent Floor hooks, Playwright + APCA runtime checks, and repository auto-evolution.
-        </p>
+        <div class="hero-card">
+          <div>
+            <p class="eyebrow">ZERO-DEPENDENCY DESIGN SYSTEM AUDIT ENGINE</p>
+            <h1 class="hero-title">Measure every pixel, enforce every token, and evolve your UI automatically.</h1>
+            <p class="lead">DSAF v0.8.0 combines deterministic Node ESM scanners, Playwright + axe-core visual checks, safe Floor auto-remediation (<code>dsaf fix</code>), and bounded repo evolution loops (<code>dsaf evolve</code>) inside one fast CLI and stdio MCP server.</p>
+            <div class="hero-cta">
+              <a class="btn btn-primary" href="#cli-workbench">Install CLI &amp; MCP</a>
+              <a class="btn btn-secondary" href="./demo/preview-shell.html">Open Live Preview Shell</a>
+            </div>
+            <div class="hero-badges">
+              <span class="badge badge--gold">Ink &amp; Gold v3 Theme</span>
+              <span class="badge badge--mono">8 MCP Tools</span>
+              <span class="badge badge--ok">0 Runtime Deps</span>
+              <span class="badge badge--warn">SARIF 2.1.0 + CI</span>
+            </div>
+          </div>
 
-        <div class="hero-actions">
-          <a class="btn-primary" href="#quickstart">Quick Start</a>
-          <a class="btn-secondary" href="./demo/preview-shell.html">Open Live Studio Specimen</a>
-        </div>
-
-        <div class="install-bar">
-          <code id="cli-install-cmd" class="install-cmd" tabindex="0">npm install -D @zintaen/dsaf &amp;&amp; npx dsaf init</code>
-          <button type="button" class="copy-btn" data-copy-target="cli-install-cmd">Copy</button>
-        </div>
-
-        <div class="hero-badges" aria-label="Engine highlights">
-          <span class="badge-pill badge-pill-pass">0 Runtime Dependencies</span>
-          <span class="badge-pill">Node &gt;= 20 ESM</span>
-          <span class="badge-pill">MIT Licensed</span>
-          <span class="badge-pill">WCAG 2.2 + APCA-W3</span>
-          <span class="badge-pill">SARIF 2.1.0 + GitHub Action</span>
+          <div class="hero-metrics" aria-label="Measured engine benchmarks">
+            <div class="metric-tile">
+              <p class="metric-val">19</p>
+              <p class="metric-label">Deterministic CLI subcommands</p>
+            </div>
+            <div class="metric-tile">
+              <p class="metric-val">3 Tiers</p>
+              <p class="metric-label">Floor, Reflex &amp; Finish gates</p>
+            </div>
+            <div class="metric-tile">
+              <p class="metric-val">Lc 65+</p>
+              <p class="metric-label">APCA-W3 + WCAG 2.2 AA floor</p>
+            </div>
+            <div class="metric-tile">
+              <p class="metric-val">0 ms</p>
+              <p class="metric-label">Third-party runtime overhead</p>
+            </div>
+          </div>
         </div>
       </div>
     </section>
 
-    <section id="showcase" class="section" aria-labelledby="showcase-heading">
+    <section id="architecture" class="section">
       <div class="container">
-        <p class="section-eyebrow">Dual-Track Artifact Preview</p>
-        <h2 id="showcase-heading" class="section-title">Before · Pragmatic · North-Star in One Offline Studio</h2>
-        <p class="section-lead">
-          Every product audit generates an interactive single-file studio comparing the baseline snapshot against Track A (minimum-diff Floor fixes) and Track B (North-Star visual craft) across Light/Dark themes, container viewports, states, and Finding Pins.
-        </p>
+        <div class="section-head">
+          <div>
+            <h2 class="section-title">Three Surface Modes, Dual-Track Clarity</h2>
+            <p class="section-sub">Auto-detects Mode S (Design System core), Mode C (Product consuming a DS), and Mode P (Product without formal DS), with built-in Pragmatic vs North-Star guidance.</p>
+          </div>
+          <span class="badge badge--mono">Node ESM &ge; 20</span>
+        </div>
 
-        <figure class="showcase-card">
-          <img
-            class="showcase-img"
-            src="./assets/preview-shell-showcase.png"
-            alt="DSAF Preview Studio showing Before, Track A Pragmatic, and Track B North-Star side-by-side with active Finding Pins"
-            width="1440"
-            height="900"
-            loading="eager"
-          />
-          <figcaption class="showcase-caption">
-            <p class="showcase-caption-text">
-              Canonical <code>preview-shell.html</code> rendered with Warm Alabaster / Deep Umber / Ochre surfaces, composite focus halos, and live Finding Pins inspector.
-            </p>
-            <a class="link-accent" href="./demo/preview-shell.html">Interact with live HTML specimen</a>
-          </figcaption>
+        <div class="grid-3">
+          <article class="card">
+            <h3>1. Deterministic Scanners</h3>
+            <p>Measures W3C DTCG tokens, orphan CSS variables, Tailwind arbitrary color drift, external DS focus inheritance (<code>--ds-css</code>), and layout-transition footguns in milliseconds.</p>
+            <span class="pass-chip">dsaf tokens &amp; hook</span>
+          </article>
+          <article class="card">
+            <h3>2. Safe Floor Auto-Fix</h3>
+            <p><code>dsaf fix</code> performs bounded, AST-safe Floor patches across <code>outline: none</code> focus traps and <code>transition: all</code> rules, with dry-run previews and one-step backups.</p>
+            <span class="pass-chip">dsaf fix --apply</span>
+          </article>
+          <article class="card">
+            <h3>3. Bounded Repo Evolution</h3>
+            <p><code>dsaf evolve</code> enforces <code>.dsaf/rules.json</code> kill switches, circuit breakers, protected file paths, and non-regression deltas on every improvement cycle.</p>
+            <span class="guard-chip">.dsaf/STOP ready</span>
+          </article>
+        </div>
+
+        <div class="grid-2 grid-2--spaced">
+          <article class="track-card">
+            <h3>Track A: Pragmatic Polish</h3>
+            <p>Conservative, low-blast-radius changes tailored for urgent same-day merges: fixes focus rings, tap target sizing, color token mappings, and compositor-safe transitions without altering product IA.</p>
+          </article>
+          <article class="track-card track-card--northstar">
+            <h3>Track B: North-Star Re-Architecture</h3>
+            <p>Structural visual upgrades showcasing Ink &amp; Gold typography cadence, 3-stop aurora washes on anchor panels, DTCG variable extraction, and isolated draft prototypes.</p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section id="cli-workbench" class="section">
+      <div class="container">
+        <div class="section-head">
+          <div>
+            <h2 class="section-title">Interactive CLI, Fixer &amp; MCP Workbench</h2>
+            <p class="section-sub">Switch tabs with <kbd>Tab</kbd> or arrow keys to inspect installation, Floor auto-remediation, repo evolution governance, and the 8-tool MCP server.</p>
+          </div>
+        </div>
+
+        <div role="tablist" aria-label="DSAF workflow commands" focusgroup="tablist nomemory" class="tab-list">
+          <button type="button" role="tab" id="tab-install" aria-selected="true" aria-controls="panel-install" class="tab-btn">Quickstart &amp; Audit</button>
+          <button type="button" role="tab" id="tab-fix" aria-selected="false" aria-controls="panel-fix" class="tab-btn">Floor Fix (v0.8)</button>
+          <button type="button" role="tab" id="tab-evolve" aria-selected="false" aria-controls="panel-evolve" class="tab-btn">Repo Evolve (v0.8)</button>
+          <button type="button" role="tab" id="tab-mcp" aria-selected="false" aria-controls="panel-mcp" class="tab-btn">Stdio MCP &amp; CI</button>
+        </div>
+
+        <div class="panels-stack">
+        <div role="tabpanel" id="panel-install" aria-labelledby="tab-install">
+          <div class="panel-card">
+            <h3>Run a Full Audit Without Global Installation</h3>
+            <p>Use <code>npx @zintaen/dsaf</code> cleanly on any workspace or bootstrap repo governance with <code>dsaf init</code>.</p>
+            <div class="code-block">
+              <div class="code-head">
+                <span class="badge badge--mono">Shell</span>
+                <button type="button" class="copy-btn" data-copy-target="cmd-install">Copy</button>
+              </div>
+              <pre tabindex="0" aria-label="Quickstart and audit CLI commands"><code id="cmd-install">npx -y @zintaen/dsaf@0.8.0 recon . --json
+npx -y @zintaen/dsaf@0.8.0 hook check src --tier floor
+npx -y @zintaen/dsaf@0.8.0 tokens src --strict
+npx -y @zintaen/dsaf@0.8.0 init .</code></pre>
+            </div>
+            <p class="callout-info">Tip: Install the Claude Code / Agent Skill globally via <code>npx -y @zintaen/dsaf@0.8.0 install-skill --agent claude --scope user</code> to load SKILL.md and reference scripts automatically.</p>
+          </div>
+        </div>
+
+        <div role="tabpanel" id="panel-fix" aria-labelledby="tab-fix" hidden="until-found">
+          <div class="panel-card">
+            <h3>Inspect &amp; Apply Deterministic Floor Fixes</h3>
+            <p>Preview safe fixes for <code>dsaf/no-outline-none-naked</code> and <code>dsaf/no-transition-all</code> before modifying a single line of CSS.</p>
+            <div class="code-block">
+              <div class="code-head">
+                <span class="badge badge--mono">dsaf fix</span>
+                <button type="button" class="copy-btn" data-copy-target="cmd-fix">Copy</button>
+              </div>
+              <pre tabindex="0" aria-label="Floor auto-remediation CLI commands"><code id="cmd-fix">npx @zintaen/dsaf fix src --dry-run
+npx @zintaen/dsaf fix src --apply --backup
+npx @zintaen/dsaf hook check src --tier floor</code></pre>
+            </div>
+            <ul class="list-clean">
+              <li>Never touches files matching <code>.dsaf/rules.json</code> protected paths.</li>
+              <li>Supports <code>--rule</code> filtering and skips generated <code>playwright-report/</code> &amp; <code>test-results/</code> artifacts automatically.</li>
+            </ul>
+          </div>
+        </div>
+
+        <div role="tabpanel" id="panel-evolve" aria-labelledby="tab-evolve" hidden="until-found">
+          <div class="panel-card">
+            <h3>Supervised Multi-Round Evolution With Hard Circuit Breakers</h3>
+            <p>Verify baselines, record round telemetry into <code>.dsaf/handoff.md</code>, and enforce no-regression gates across Floor, Reflex, and Token compliance.</p>
+            <div class="code-block">
+              <div class="code-head">
+                <span class="badge badge--mono">dsaf evolve</span>
+                <button type="button" class="copy-btn" data-copy-target="cmd-evolve">Copy</button>
+              </div>
+              <pre tabindex="0" aria-label="Repo evolution CLI commands"><code id="cmd-evolve">npx @zintaen/dsaf init .
+npx @zintaen/dsaf evolve . --status --json
+npx @zintaen/dsaf evolve . --verify --max-rounds 1 --dry-run
+npx @zintaen/dsaf doctor .</code></pre>
+            </div>
+            <ul class="list-clean">
+              <li>Halts immediately if <code>.dsaf/STOP</code> exists or <code>maxConsecutiveFailures</code> trips in <code>.dsaf/circuit-breaker.json</code>.</li>
+              <li>External DS focus rings (e.g. <code>:focus-within</code> / <code>:has(...:focus-visible)</code>) are automatically inherited via <code>--ds-css</code>.</li>
+            </ul>
+          </div>
+        </div>
+
+        <div role="tabpanel" id="panel-mcp" aria-labelledby="tab-mcp" hidden="until-found">
+          <div class="panel-card">
+            <h3>8-Tool Stdio MCP Server &amp; SARIF GitHub Annotations</h3>
+            <p>Connect DSAF to any MCP-compatible IDE or GitHub Actions workflow using Content-Length or NDJSON stdio framing.</p>
+            <div class="code-block">
+              <div class="code-head">
+                <span class="badge badge--mono">MCP &amp; GitHub Actions</span>
+                <button type="button" class="copy-btn" data-copy-target="cmd-mcp">Copy</button>
+              </div>
+              <pre tabindex="0" aria-label="Stdio MCP and SARIF commands"><code id="cmd-mcp">npx @zintaen/dsaf mcp
+# Tools: dsaf_recon, dsaf_tokens, dsaf_doctor, dsaf_hook_check,
+#        dsaf_figma_diff, dsaf_audit, dsaf_fix_preview, dsaf_evolve_status
+npx @zintaen/dsaf hook check src --sarif dsaf.sarif --github</code></pre>
+            </div>
+          </div>
+        </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="showcase" class="section">
+      <div class="container">
+        <div class="section-head">
+          <div>
+            <h2 class="section-title">Dual-Track Preview Shell Showcase</h2>
+            <p class="section-sub">Rendered offline with Ink &amp; Gold v3 tokens, interactive decision pins, Light/Dark contrast verification, and zero runtime external fonts required.</p>
+          </div>
+          <a class="btn btn-secondary" href="./demo/preview-shell.html">Open Standalone Demo</a>
+        </div>
+
+        <figure class="showcase-frame">
+          <img src="./assets/preview-shell-showcase.png" alt="DSAF v0.8.0 Dual-Track Preview Shell displaying Ink and Gold v3 Pragmatic and North-Star panes with annotated rationale drawer" width="1280" height="720" loading="lazy" />
         </figure>
       </div>
     </section>
 
-    <section id="inspector" class="section section-alt" aria-labelledby="inspector-heading">
+    <section id="releases" class="section">
       <div class="container">
-        <p class="section-eyebrow">Interactive Outputs</p>
-        <h2 id="inspector-heading" class="section-title">Inspect Pipeline Artifacts Before Merging</h2>
-        <p class="section-lead">
-          Every run emits machine-verifiable reports for developers, CI pipelines, and MCP clients.
-        </p>
-
-        <div class="tabs-bar" role="tablist" aria-label="Artifact samples" focusgroup="tablist nomemory">
-          <button type="button" id="tab-audit" class="tab-btn" role="tab" aria-selected="true" aria-controls="panel-audit" tabindex="0" focusgroupstart>Unified Audit</button>
-          <button type="button" id="tab-figma" class="tab-btn" role="tab" aria-selected="false" aria-controls="panel-figma" tabindex="-1">Vertex Triangulation</button>
-          <button type="button" id="tab-sarif" class="tab-btn" role="tab" aria-selected="false" aria-controls="panel-sarif" tabindex="-1">CI Annotations &amp; SARIF</button>
-          <button type="button" id="tab-diff" class="tab-btn" role="tab" aria-selected="false" aria-controls="panel-diff" tabindex="-1">Auto-Evolve &amp; MCP</button>
+        <div class="section-head">
+          <div>
+            <h2 class="section-title">Release Notes</h2>
+            <p class="section-sub">Concise highlights across DSAF milestones.</p>
+          </div>
+          <a class="btn btn-secondary" href="https://github.com/zintaen/dsaf/releases">All GitHub Releases</a>
         </div>
 
-        <div class="panels-stack">
-          <div id="panel-audit" role="tabpanel" aria-labelledby="tab-audit">
-            <div class="panel-card">
-              <h3>Single Command End-to-End Verification</h3>
-              <p>Orchestrates stack recon, token parity, edit-time Floor discipline, Figma/Defined/Shipped diff, scorecard gating, and Markdown/JSON summaries.</p>
-              <pre class="code-block" tabindex="0"><code>$ npx @zintaen/dsaf audit ./src --out ./audit-output
-Recon: Mode C (Product on DS) | Surface: Operate
-Tokens: parity=100.0% hardcodedColors=0 svgPalette=0 swatchTables=0 important=0
-Floor Hooks: floor=0 reflex=0 waived=0 unusedIgnores=0
-Scorecard: Floor PASS | Reflex PASS | Composite 96.4/100 (No regressions)</code></pre>
-            </div>
-          </div>
-
-          <div id="panel-figma" role="tabpanel" aria-labelledby="tab-figma" hidden="until-found">
-            <div class="panel-card">
-              <h3>2-Vertex (Defined ↔ Shipped) &amp; 3-Vertex (Figma ↔ Defined ↔ Shipped)</h3>
-              <p>Cross-checks CSS/DTCG variables directly against live browser computed custom properties — even when no Figma token dump is connected.</p>
-              <pre class="code-block" tabindex="0"><code>$ npx @zintaen/dsaf figma-diff --tokens ./src --runtime ./runtime.json
-Status: 2-vertex (Defined &lt;-&gt; Shipped)
-Defined Tokens Sampled: 48 | Shipped Computed Vars: 48
-Shipped Matches: 48/48 (100.0%) | Runtime Drift: 0 | Defined-Not-Shipped: 0</code></pre>
-            </div>
-          </div>
-
-          <div id="panel-sarif" role="tabpanel" aria-labelledby="tab-sarif" hidden="until-found">
-            <div class="panel-card">
-              <h3>Line-Pinned SARIF 2.1.0 &amp; GitHub Annotations</h3>
-              <p>Routes inline color hexes, suppressed focus outlines, and missing labels directly to GitHub Code Scanning and PR diff lines.</p>
-              <pre class="code-block" tabindex="0"><code>$ npx @zintaen/dsaf tokens ./src --sarif ./audit-output/dsaf.sarif --github-annotations
-[warning] file=src/Card.tsx,line=42 :: [dsaf/hardcoded-color] Inline color literal outside tokens
-[error]   file=src/nav.css,line=18 :: [dsaf/focus-outline-removed] Missing fallback</code></pre>
-            </div>
-          </div>
-
-          <div id="panel-diff" role="tabpanel" aria-labelledby="tab-diff" hidden="until-found">
-            <div class="panel-card">
-              <h3>Repo Auto-Evolution Bootstrap &amp; Zero-Dep MCP Server</h3>
-              <p>Scaffolds <code>.dsaf/</code> adversarial verification governance (C1–C10) into any repo and exposes 6 read-only audit tools over stdio JSON-RPC.</p>
-              <pre class="code-block" tabindex="0"><code>$ npx @zintaen/dsaf init --with-hook --with-guardrails
-Created: .dsaf/STRATEGY.md, .dsaf/rules.json, .dsaf/decision-queue.md,
-         .dsaf/strategy-feedback.md, .dsaf/handoff.md
-$ npx @zintaen/dsaf mcp   # 6 read-only JSON-RPC tools over stdio</code></pre>
-            </div>
-          </div>
-        </div>
-      </div>
-    </section>
-
-    <section id="compare" class="section" aria-labelledby="compare-heading">
-      <div class="container">
-        <p class="section-eyebrow">Why Teams Choose DSAF</p>
-        <h2 id="compare-heading" class="section-title">Prompt-Only Skills vs. Deterministic Audit Engine</h2>
-        <p class="section-lead">
-          Instruction-only skills suggest taste; DSAF backs every critique with AST/regex static scanning, Playwright + APCA measurements, edit-time Floor blocking, and CI gates.
-        </p>
-
-        <div class="table-wrap" tabindex="0">
+        <div class="table-wrap" tabindex="0" role="region" aria-label="Release notes summary table">
           <table>
-            <thead>
+            <thead class="table-head">
               <tr>
-                <th scope="col">Capability</th>
-                <th scope="col">Prompt-Only Design Skills</th>
-                <th scope="col">DSAF v0.7 Engine</th>
+                <th>Version</th>
+                <th>Key Upgrades</th>
+                <th>Verification Standard</th>
               </tr>
             </thead>
             <tbody>
               <tr>
-                <td>Token Drift &amp; Parity</td>
-                <td>Advisory Markdown prose</td>
-                <td>Deterministic DTCG / CSS scanner + <code>svgPalette</code> &amp; <code>swatchTables</code> precision + SARIF</td>
+                <td><span class="badge badge--gold">v0.8.0</span></td>
+                <td>Ink &amp; Gold v3 theme on Preview Shell &amp; Docs, <code>dsaf fix</code> auto-remediator, <code>dsaf evolve</code> governance runner, external DS <code>:focus-within</code> detection (<code>--ds-css</code>), <code>playwright-report</code> ignore, and 8 MCP tools.</td>
+                <td><span class="pass-chip">Zero-Dep + OIDC</span></td>
               </tr>
               <tr>
-                <td>Runtime &amp; Contrast Proof</td>
-                <td>Visual guess</td>
-                <td>Playwright across 5–7 viewports + pixel-behind contrast + APCA-W3 Lc + <code>--screenshot-diff</code></td>
+                <td><span class="badge badge--mono">v0.7.0</span></td>
+                <td>3-Vertex Figma Diff, <code>dsaf init</code> repo governance bootstrap, <code>dsaf mcp</code> stdio server, <code>dsaf doctor</code> health diagnostics, and N-of-1 component signatures.</td>
+                <td><span class="pass-chip">CI + Playwright</span></td>
               </tr>
               <tr>
-                <td>Edit-Time Agent Guard</td>
-                <td>None</td>
-                <td><code>dsaf hook install</code> blocks Claude / Cursor / Codex on Floor failures before diff finish</td>
-              </tr>
-              <tr>
-                <td>Figma ↔ Code ↔ Live</td>
-                <td>Single-frame read</td>
-                <td>2-vertex (<code>Defined ↔ Shipped</code>) &amp; 3-vertex (<code>Figma ↔ Defined ↔ Shipped</code>)</td>
-              </tr>
-              <tr>
-                <td>Repo Auto-Evolution</td>
-                <td>Ad-hoc chat memory</td>
-                <td><code>dsaf init</code> scaffolds C1–C10 adversarial verifier, kill-switch &amp; decision queue</td>
+                <td><span class="badge badge--mono">v0.6.0</span></td>
+                <td>SARIF 2.1.0 CI annotations, pixel-behind AA contrast measurement, keyboard tab map, RTL hygiene, and composite GitHub Action.</td>
+                <td><span class="pass-chip">APCA Lc &ge; 65</span></td>
               </tr>
             </tbody>
           </table>
-        </div>
-      </div>
-    </section>
-
-    <section id="toolchain" class="section section-alt" aria-labelledby="toolchain-heading">
-      <div class="container">
-        <p class="section-eyebrow">CLI Reference</p>
-        <h2 id="toolchain-heading" class="section-title">Zero-Dependency Subcommands</h2>
-
-        <div class="table-wrap" tabindex="0">
-          <table>
-            <thead>
-              <tr>
-                <th scope="col">Command</th>
-                <th scope="col">Purpose</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr>
-                <td class="cmd-code">dsaf init [--with-hook] [--with-guardrails]</td>
-                <td>Bootstrap <code>.dsaf/</code> auto-evolution strategy, circuit breakers, decision queue &amp; hooks</td>
-              </tr>
-              <tr>
-                <td class="cmd-code">dsaf mcp</td>
-                <td>Run zero-dependency JSON-RPC 2.0 stdio MCP server exposing 6 read-only audit tools</td>
-              </tr>
-              <tr>
-                <td class="cmd-code">dsaf recon &lt;target&gt;</td>
-                <td>Classify Mode (S/C/P), Surface (Persuade/Operate/Read/Experience), and token stack</td>
-              </tr>
-              <tr>
-                <td class="cmd-code">dsaf tokens &lt;target&gt; [--sarif &lt;file&gt;]</td>
-                <td>Measure DTCG parity, CSS vars, SVG/swatch separation, forced-priority overrides &amp; spacing grid</td>
-              </tr>
-              <tr>
-                <td class="cmd-code">dsaf figma-diff [--figma x] --tokens y [--runtime r]</td>
-                <td>Run 2-vertex or 3-vertex Designed ↔ Defined ↔ Shipped token triangulation</td>
-              </tr>
-              <tr>
-                <td class="cmd-code">dsaf runtime &lt;target&gt; [--screenshot-diff base.png]</td>
-                <td>Playwright layout overflow, tap targets, pixel-behind APCA, axe-core &amp; pixel diff gate</td>
-              </tr>
-              <tr>
-                <td class="cmd-code">dsaf hook &lt;install|check&gt;</td>
-                <td>Enforce Floor rules (unnamed controls, missing focus fallback on all selector branches)</td>
-              </tr>
-              <tr>
-                <td class="cmd-code">dsaf audit &lt;target&gt;</td>
-                <td>Full pipeline producing scorecard JSON, SARIF, PR comment &amp; remediation summary</td>
-              </tr>
-              <tr>
-                <td class="cmd-code">dsaf doctor / dsaf install-skill</td>
-                <td>Validate setup health and sync <code>SKILL.md</code> into local AI agents</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      </div>
-    </section>
-
-    <section id="quickstart" class="section" aria-labelledby="quickstart-heading">
-      <div class="container">
-        <p class="section-eyebrow">Quick Start</p>
-        <h2 id="quickstart-heading" class="section-title">Three Ways to Wire DSAF Into Your Workflow</h2>
-
-        <div class="grid-3">
-          <article class="card">
-            <span class="card-tag">01 · Local Skill + MCP</span>
-            <h3>Equip AI Coding Agents</h3>
-            <p>Install the skill globally across Claude Code, Codex, and Antigravity, then start the read-only stdio MCP server.</p>
-            <pre class="code-block" tabindex="0"><code>npx @zintaen/dsaf install-skill
-dsaf mcp</code></pre>
-          </article>
-
-          <article class="card">
-            <span class="card-tag">02 · Any Repository</span>
-            <h3>Bootstrap Auto-Evolution</h3>
-            <p>Initialize <code>.dsaf/</code> governance, edit-time Floor hooks, and pre-merge guardrails inside any repo in one command.</p>
-            <pre class="code-block" tabindex="0"><code>npx @zintaen/dsaf init \
-  --with-hook --with-guardrails</code></pre>
-          </article>
-
-          <article class="card">
-            <span class="card-tag">03 · GitHub Actions</span>
-            <h3>Gate Every Pull Request</h3>
-            <p>Run the zero-dep composite GitHub Action to block hardcoded tokens and accessibility regressions with SARIF annotations.</p>
-            <pre class="code-block" tabindex="0"><code>- uses: zintaen/dsaf@v0.7.0
-  with:
-    target: src
-    sarif-file: dsaf.sarif</code></pre>
-          </article>
-        </div>
-      </div>
-    </section>
-
-    <section id="releases" class="section section-alt" aria-labelledby="releases-heading">
-      <div class="container">
-        <p class="section-eyebrow">Changelog</p>
-        <h2 id="releases-heading" class="section-title">Recent Releases</h2>
-
-        <div class="release-list">
-          <article class="release-card">
-            <div class="release-head">
-              <h3 class="release-version">v0.7.0</h3>
-              <span class="badge-pill badge-pill-pass">Latest</span>
-            </div>
-            <ul class="release-points">
-              <li>Added <code>dsaf init</code> universal repo auto-evolution bootstrap with C1–C10 strategy, decision queue, and kill-switch.</li>
-              <li>Added <code>dsaf mcp</code> zero-dep stdio MCP server + 2-vertex <code>Defined ↔ Shipped</code> triangulation + <code>--screenshot-diff</code> pixel gate.</li>
-              <li>Separated TSX <code>&lt;svg&gt;</code> &amp; swatch tables in <code>tokens</code>; enforced all-branch focus checks in <code>hook</code>; redesigned preview shell &amp; docs site.</li>
-            </ul>
-          </article>
-
-          <article class="release-card">
-            <div class="release-head">
-              <h3 class="release-version">v0.6.0</h3>
-              <span class="badge-pill">Shipped</span>
-            </div>
-            <ul class="release-points">
-              <li>Added <code>dsaf install-skill</code> across Antigravity, Claude Code, and Codex with automated version &amp; leak isolation tests.</li>
-              <li>Upgraded <code>tokens</code> &amp; <code>hook</code> from field audits on production Next.js/Tailwind v4 apps (<code>_audit</code> skip, <code>--animate-*</code> tracking).</li>
-              <li>Migrated npm release workflow to OIDC Trusted Publishing and enabled GitHub Pages live demo deployment.</li>
-            </ul>
-          </article>
-
-          <article class="release-card">
-            <div class="release-head">
-              <h3 class="release-version">v0.5.0</h3>
-              <span class="badge-pill">Shipped</span>
-            </div>
-            <ul class="release-points">
-              <li>Added unified <code>dsaf audit</code> CLI orchestrating recon, tokens, hooks, figma-diff, and scorecard into PR-ready outputs.</li>
-              <li>Shipped zero-dep edit-time Floor hooks for AI agents and automated <code>dsaf doctor</code> health diagnostics.</li>
-              <li>Added SARIF 2.1.0 + GitHub Actions workflow annotations and composite GitHub Action support.</li>
-            </ul>
-          </article>
-
-          <article class="release-card">
-            <div class="release-head">
-              <h3 class="release-version">v0.4.0</h3>
-              <span class="badge-pill">Shipped</span>
-            </div>
-            <ul class="release-points">
-              <li>Introduced Mode S / Mode C / Mode P auto-detection and Surface Modes (Persuade, Operate, Read, Experience).</li>
-              <li>Built Dual-Track Pragmatic vs. North-Star offline preview shell with container queries and Finding Pins.</li>
-              <li>Integrated Playwright + axe-core + APCA-W3 Lc pixel-behind runtime verification.</li>
-            </ul>
-          </article>
         </div>
       </div>
     </section>
   </main>
 
   <footer class="site-footer">
-    <div class="container footer-inner">
-      <p>DSAF v0.7.0 · MIT License · Zero Runtime Dependencies</p>
+    <div class="container footer-row">
+      <div>
+        <strong>DSAF v0.8.0</strong> — MIT Licensed Zero-Dependency Design System Audit Toolkit
+      </div>
       <div class="footer-links">
-        <a class="link-accent" href="https://github.com/zintaen/dsaf">Repository</a>
-        <a class="link-accent" href="https://www.npmjs.com/package/@zintaen/dsaf">npm Package</a>
-        <a class="link-accent" href="./demo/preview-shell.html">Preview Studio</a>
+        <a href="https://github.com/zintaen/dsaf">GitHub Repository</a>
+        <a href="https://www.npmjs.com/package/@zintaen/dsaf">npm Registry</a>
+        <a href="./demo/preview-shell.html">Preview Shell</a>
       </div>
     </div>
   </footer>

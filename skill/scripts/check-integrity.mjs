@@ -30,6 +30,8 @@ const REQUIRED_FILES = [
   "resources/preview-shell.html",
   "scripts/audit-pipeline.mjs",
   "scripts/init-evolve.mjs",
+  "scripts/fix-floor.mjs",
+  "scripts/evolve-runner.mjs",
   "scripts/mcp-server.mjs",
   "scripts/recon.mjs",
   "scripts/audit-tokens.mjs",
@@ -134,6 +136,8 @@ function main() {
     "init-evolve.mjs",
     "ci-report.mjs",
     "dsaf-hook.mjs",
+    "fix-floor.mjs",
+    "evolve-runner.mjs",
     "install-skill.mjs",
     "doctor.mjs",
     "audit-tokens.mjs",
@@ -154,7 +158,7 @@ function main() {
     }
   }
 
-  console.log("SKILL_INTEGRITY_ALL_PASSED (v0.7.0)");
+  console.log("SKILL_INTEGRITY_ALL_PASSED (v0.8.0)");
 }
 
 main();

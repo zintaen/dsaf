@@ -13,7 +13,7 @@ import { resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { isBoilerplateReason } from "./ci-report.mjs";
 
-export const ENGINE_VERSION = "0.7.0";
+export const ENGINE_VERSION = "0.8.0";
 
 const USABILITY_PILLARS = [
   ["P1", "Onboarding & Value Clarity", ["U01", "U02", "U03"]],

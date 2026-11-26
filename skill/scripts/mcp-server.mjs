@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
- * DSAF v0.7.0 — Zero-Dependency Stdio MCP Server (`dsaf mcp`).
- * Exposes 6 read-only audit tools over JSON-RPC 2.0 stdio (supporting both
+ * DSAF v0.8.0 — Zero-Dependency Stdio MCP Server (`dsaf mcp`).
+ * Exposes 8 read-only audit tools over JSON-RPC 2.0 stdio (supporting both
  * Content-Length LSP framing and newline-delimited JSON-RPC messages).
  */
 
@@ -16,8 +16,10 @@ import { runDoctor } from "./doctor.mjs";
 import { checkTarget } from "./dsaf-hook.mjs";
 import { compareDefinedToShipped, compareVertices } from "./audit-figma-diff.mjs";
 import { runAuditPipeline } from "./audit-pipeline.mjs";
+import { planFloorFixes } from "./fix-floor.mjs";
+import { readGovernanceStatus } from "./evolve-runner.mjs";
 
-export const MCP_SERVER_VERSION = "0.7.0";
+export const MCP_SERVER_VERSION = "0.8.0";
 export const MCP_PROTOCOL_VERSION = "2024-11-05";
 
 export const TOOL_DEFINITIONS = [
@@ -99,6 +101,32 @@ export const TOOL_DEFINITIONS = [
       required: ["target"],
     },
   },
+  {
+    name: "dsaf_fix_preview",
+    description: "Read-only dry-run planner for deterministic Floor remediations (respects .dsaf/rules.json protectedFiles).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        target: { type: "string", description: "Target directory or file path." },
+        rule: { type: "array", items: { type: "string" }, description: "Optional Floor rule ID filter." },
+        maxFiles: { type: "number", description: "Optional maximum files budget." },
+        ignoreProtected: { type: "boolean", description: "Include protectedFiles in preview." },
+        dsCss: { type: "array", items: { type: "string" }, description: "Optional external DS stylesheet paths." },
+      },
+      required: ["target"],
+    },
+  },
+  {
+    name: "dsaf_evolve_status",
+    description: "Read-only status check for .dsaf/ auto-evolution governance (kill switch, circuit breaker, budgets, and gates).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        target: { type: "string", description: "Target repository directory." },
+      },
+      required: ["target"],
+    },
+  },
 ];
 
 function executeTool(name, args = {}) {
@@ -146,6 +174,27 @@ function executeTool(name, args = {}) {
         figmaPath: args.figmaPath || undefined,
         outDir: args.outDir || undefined,
       });
+    case "dsaf_fix_preview": {
+      const plan = planFloorFixes(resolve(args.target || "."), {
+        rules: Array.isArray(args.rule) ? args.rule : undefined,
+        maxFiles: typeof args.maxFiles === "number" ? args.maxFiles : undefined,
+        ignoreProtected: Boolean(args.ignoreProtected),
+        dsCss: Array.isArray(args.dsCss) ? args.dsCss : undefined,
+      });
+      return {
+        ...plan,
+        files: plan.files.map(({ file, rel, patchCount, patches, skipped, changed }) => ({
+          file,
+          rel,
+          patchCount,
+          patches,
+          skipped,
+          changed,
+        })),
+      };
+    }
+    case "dsaf_evolve_status":
+      return readGovernanceStatus(resolve(args.target || "."));
     default:
       throw new Error(`Unknown tool: ${name}`);
   }
@@ -338,13 +387,15 @@ function runSelfTest() {
         JSON.stringify({ jsonrpc: "2.0", id: 5, method: "tools/call", params: { name: "dsaf_hook_check", arguments: { target: join(scratch, "src"), tier: "all" } } }),
         JSON.stringify({ jsonrpc: "2.0", id: 6, method: "tools/call", params: { name: "dsaf_doctor", arguments: { target: scratch } } }),
         JSON.stringify({ jsonrpc: "2.0", id: 7, method: "tools/call", params: { name: "dsaf_figma_diff", arguments: { tokens: join(scratch, "src"), runtime: runtimeJson } } }),
-        JSON.stringify({ jsonrpc: "2.0", id: 8, method: "unknown/method" }),
+        JSON.stringify({ jsonrpc: "2.0", id: 8, method: "tools/call", params: { name: "dsaf_fix_preview", arguments: { target: join(scratch, "src") } } }),
+        JSON.stringify({ jsonrpc: "2.0", id: 9, method: "tools/call", params: { name: "dsaf_evolve_status", arguments: { target: scratch } } }),
+        JSON.stringify({ jsonrpc: "2.0", id: 10, method: "unknown/method" }),
       ].join("\n") + "\n"
     );
 
-    assert.equal(responses.length, 7);
+    assert.equal(responses.length, 9);
     const listRes = JSON.parse(responses[0]);
-    assert.equal(listRes.result.tools.length, 6);
+    assert.equal(listRes.result.tools.length, 8);
 
     const reconRes = JSON.parse(JSON.parse(responses[1]).result.content[0].text);
     assert.ok(["S", "C", "P"].includes(reconRes.recommendedMode));
@@ -362,10 +413,18 @@ function runSelfTest() {
     assert.equal(diffRes.triangulationStatus, "2-vertex (Defined <-> Shipped)");
     assert.equal(diffRes.summary.matchedCount, 2);
 
-    const unknownRes = JSON.parse(responses[6]);
+    const fixRes = JSON.parse(JSON.parse(responses[6]).result.content[0].text);
+    assert.equal(fixRes.dryRun, true);
+    assert.equal(fixRes.beforeFloor, 0);
+
+    const evoRes = JSON.parse(JSON.parse(responses[7]).result.content[0].text);
+    assert.equal(evoRes.initialized, false);
+    assert.equal(evoRes.status, "uninitialized");
+
+    const unknownRes = JSON.parse(responses[8]);
     assert.equal(unknownRes.error.code, -32601);
 
-    console.log("DSAF_MCP_SELF_TEST_PASSED (6 tools + Content-Length & NDJSON framing)");
+    console.log("DSAF_MCP_SELF_TEST_PASSED (8 tools + Content-Length & NDJSON framing)");
     return 0;
   } finally {
     rmSync(scratch, { recursive: true, force: true });
@@ -381,7 +440,7 @@ if (isEntrypoint) {
     },
   });
   if (values.help) {
-    console.log("Usage: dsaf mcp [--self-test]\nRuns the zero-dependency JSON-RPC 2.0 stdio MCP server exposing 6 read-only DSAF tools.");
+    console.log("Usage: dsaf mcp [--self-test]\nRuns the zero-dependency JSON-RPC 2.0 stdio MCP server exposing 8 read-only DSAF tools.");
     process.exit(0);
   }
   if (values["self-test"]) {

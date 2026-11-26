@@ -28,6 +28,8 @@ const SKIP_DIRS = new Set([
   ".vercel-static",
   ".storybook-public",
   "coverage",
+  "playwright-report",
+  "test-results",
   "audit-output",
   "draft",
   "__pycache__",
