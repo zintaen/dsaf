@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * DSAF v0.2.0 — Runtime Browser, APCA-W3, Keyboard, Screenshot & N-of-1 Verifier.
+ * DSAF v0.2.1 — Runtime Browser, APCA-W3, Keyboard, Screenshot & N-of-1 Verifier.
  * Pure-JS self-tests run with zero dependencies. Live browser/draft audits lazily
  * require Playwright (`playwright` or `@playwright/test`) and Chromium.
  */

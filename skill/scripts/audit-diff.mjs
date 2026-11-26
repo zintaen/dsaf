@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * DSAF v0.2.0 — No-Silent-Regression Gate (`audit-diff`).
+ * DSAF v0.2.1 — No-Silent-Regression Gate (`audit-diff`).
  * Compares two `dsaf-scores/2` JSON files across system, usability, or visual audits.
  * Exits 1 on any unapproved per-criterion score regression unless --allow-regressions is set.
  */
@@ -91,7 +91,7 @@ export function renderDiffMarkdown(diff) {
 function runSelfTest() {
   const makeDoc = (scores) => ({
     schema: "dsaf-scores/2",
-    engine_version: "0.2.0",
+    engine_version: "0.2.1",
     type: "system",
     phases: { before: { total: 80, grade: "L4" } },
     criteria: { before: scores },

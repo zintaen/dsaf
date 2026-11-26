@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * DSAF v0.2.0 — Deterministic W3C DTCG Token Validator & Codebase Drift Scanner.
+ * DSAF v0.2.1 — Deterministic W3C DTCG Token Validator & Codebase Drift Scanner.
  * Zero external dependencies. Validates $value/$type/{alias}/$ref tokens, Light/Dark
  * mode parity, token-level WCAG 2.2 + APCA-W3 contrast, and scans stylesheets/UI
  * components for hardcoded color drift, property-scoped spacing drift, !important

@@ -1,4 +1,4 @@
-<!-- Version 0.2.0 (2026-11-26). English canonical specification for DSAF Visual UI, Tokens & Design-System Upgrade Audits (Mode P & Mode C Round 2). Automatically mirror the user's conversation language across reports, UI copy, and previews unless explicitly overridden. -->
+<!-- Version 0.2.1 (2026-11-26). English canonical specification for DSAF Visual UI, Tokens & Design-System Upgrade Audits (Mode P & Mode C Round 2). Automatically mirror the user's conversation language across reports, UI copy, and previews unless explicitly overridden. -->
 
 # Visual Design, Layout, 3-Tier Design System & Craft Audit with a Weighted Rubric
 
@@ -71,12 +71,12 @@ Use exact `Pts/Step` values from `compute-scorecard.mjs` so Track A fixes reconc
 
 ### Step 8. Build Canonical Interactive `draft/` Previews, Self-Verify & Handoff
 - Clone [preview-shell.html](../resources/preview-shell.html) per [preview-shell-contract.md](./preview-shell-contract.md) inside `draft/` (`Before · Track A · Track B · Side-by-Side` in ONE HTML file per screen, plus a System Specimen preview when `> 5` screens or Starter DS). Populate authentic real Before data without abridging long/accented labels or errors.
-- Capture final screenshots under identical conditions, run the **Fresh-Context Visual Check** (Template Swap Test + Reverse Regression *"What did Before do better?"* + compact `375px` mobile rest state check), and run **`node ./scripts/audit-runtime.mjs <draft-dir>`** across 100% of `draft/*.html` files (`desktop-1440`, `zoom-720`, `mobile-375`, Light/Dark, `:hover`, `pixelBehind`, APCA `Lc`, borders `>= 3.00:1`, tap targets `>= 44.0 px`, `0px` overflow, `0` closed-drawer focus leaks, CSS anti-slop, `0` `axe-core` violations, working shell toggles).
+- Capture final screenshots under identical conditions, run the **Fresh-Context Visual Check** (Template Swap Test + Reverse Regression *"What did Before do better?"* + compact `375px` mobile rest state check), and run **`node ./scripts/audit-runtime.mjs <draft-dir>`** across 100% of `draft/*.html` files (`desktop-1440`, `zoom-720`, `mobile-375`, Light/Dark, `:hover`, `pixelBehind`, APCA `Lc`, borders `>= 3.00:1`, tap targets `>= 44.0 px`, `0px` overflow, `0` closed-drawer focus leaks, CSS anti-slop, `0` `axe-core` violations, working shell toggles). When invoking `dsaf runtime` from a global install against a project workspace, export `NODE_PATH=<repo>/node_modules` (and `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH` if needed) so Playwright resolves reliably.
 - Emit **3–6 Sign-Off Discussion Points**. After explicit owner sign-off, deliver:
   1. File-level CSS/token/component Implementation Handoff Spec.
   2. **Kept Wiring Inventory** (`a[href]`, `form`, `[name]`, `[id]`, `[data-testid]`).
   3. **Repo Lint & Test Contract Scan** (existing design linters, unit tests, E2E selectors).
-  4. **Executable Guardrails (`+SG` or `Mode C`):** Run `node ./scripts/generate-guardrails.mjs --out .dsaf-guardrails --stack <css|tailwind|react> --mode <P|C>` to emit `check-design-discipline.mjs`, `dsaf-regression-gate.yml`, and `AGENTS-dsaf-rules.md`.
+  4. **Executable Guardrails (`+SG` or `Mode C`):** Run `node ./scripts/generate-guardrails.mjs --out .dsaf-guardrails --stack <css|tailwind|react> --mode <P|C>` to emit `check-design-discipline.mjs` (enforcing CSS/inline-style `#hex`, `!important`, and Tailwind arbitrary brackets separately from informational SVG presentation hexes and quoted swatch constants; supports directory or single-file targets via `DSAF_MAX_HARDCODED_COLORS`, `DSAF_MAX_IMPORTANT`, `DSAF_MAX_TW_ARBITRARY`, and optional `DSAF_MAX_SVG_COLORS`/`DSAF_MAX_SWATCH_COLORS`), `dsaf-regression-gate.yml`, and `AGENTS-dsaf-rules.md`.
 
 ### Step 9. Pre-Delivery Self-Check & Programmatic Reconciliation
 Recompute the final contrast/APCA tables cleanly from final `draft/` computed output AFTER the last CSS edit, verify all cited `.png`/`.json`/`.html` paths exist on disk, ensure 100% Finding `<->` Scorecard `<->` Roadmap delta reconciliation, and verify 100% of `draft/*.html` passed `audit-runtime.mjs`.

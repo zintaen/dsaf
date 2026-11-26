@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * DSAF v0.2.0 — Tier 1 Skill Integrity & Self-Test Runner.
+ * DSAF v0.2.1 — Tier 1 Skill Integrity & Self-Test Runner.
  * Verifies required structure, YAML frontmatter, relative markdown links, Canonical
  * Preview Shell attributes, zero contamination in `skill/`, and all 7 CLI self-tests.
  */
@@ -139,7 +139,7 @@ function main() {
     }
   }
 
-  console.log("SKILL_INTEGRITY_ALL_PASSED (v0.2.0)");
+  console.log("SKILL_INTEGRITY_ALL_PASSED (v0.2.1)");
 }
 
 main();

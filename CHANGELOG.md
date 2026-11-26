@@ -4,6 +4,13 @@ All notable changes to **DSAF (Design System Audit Framework)** will be document
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.1] - 2026-11-26
+
+### Changed
+- **Guardrails Generator Style/SVG/Swatch Separation (`skill/scripts/generate-guardrails.mjs`, `FB-20261126-006`, `FB-20261126-009`):** Emitted `check-design-discipline.mjs` now extracts CSS, `<style>`, CSS-in-JS, and balanced inline `style` props (`styleColors`) + strict Tailwind arbitrary brackets (`twArbitrary`) separately from declarative `<svg>` / SVG presentation attributes (`svgColors`) and quoted swatch arrays (`swatchColors`), uses brace-depth token block stripping and valid 3/4/6/8-digit CSS hex matching, supports both directory and single-file scan targets (`statSync`), skips hidden/test/fixture paths, exposes optional `DSAF_MAX_TW_ARBITRARY`, `DSAF_MAX_SVG_COLORS`, and `DSAF_MAX_SWATCH_COLORS` caps, and aligns all `+SG` version banners to `v0.2.1`.
+- **Real-World 3-Vertex Figma Triangulation Upgrades (`skill/scripts/audit-figma-diff.mjs`):** Added CSS `var(--*)` alias resolution, `@media (prefers-color-scheme: dark)` / dark-block preservation, `@collection` / `*_primitives` normalization, optional `--prefix` + auto-detected CSS token prefix stripping, `px`↔`rem` & font-stack/weight equivalence (`valuesMatch`), self-file exclusion when scanning repository directories, and Code Connect v2 template (`export default { id }`, `// component=`) + `*.figma.batch.json` discovery. Verified on open-source Figma Simple Design System (`98.8%` coverage `333/337`, `0` false drift, `97` Code Connect files / `358` mapped components).
+- **Package & Documentation Sync (`v0.2.1`):** Synchronized `package.json` (`0.2.1`, deduplicated `keywords`), CLI/skill version parity, `README.md`, and Mode S/C/P playbooks.
+
 ## [0.2.0] - 2026-11-26
 
 ### Added
