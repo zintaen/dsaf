@@ -764,7 +764,16 @@ async function auditGeometryApcaInventoryAndSlop(page, isMobile) {
       }
 
       if (mobile) {
-        if (r.right > vw + 0.5 || r.left < -0.5) {
+        let inHorizontalScroller = false;
+        for (let p = el.parentElement; p && p !== document.body && p !== document.documentElement; p = p.parentElement) {
+          const pcs = getComputedStyle(p);
+          if ((pcs.overflowX === "auto" || pcs.overflowX === "scroll") && p.scrollWidth > p.clientWidth + 1) {
+            const pr = p.getBoundingClientRect();
+            inHorizontalScroller = pr.left >= -0.5 && pr.right <= vw + 0.5;
+            break;
+          }
+        }
+        if (!inHorizontalScroller && (r.right > vw + 0.5 || r.left < -0.5)) {
           clippedTargets.push({ tag: el.tagName.toLowerCase(), text: shape.label, left: Number(r.left.toFixed(1)), right: Number(r.right.toFixed(1)), vw });
         }
         if (el.tagName !== "LABEL" || cs.borderTopWidth !== "0px") {
@@ -1398,7 +1407,7 @@ async function main() {
       }
       for (const c of f.checks) {
         console.log(
-          `  [${c.state}] ${c.passed ? "PASS" : "FAIL"} | overflow=${c.docOverflow}/${c.bodyOverflow} child=${c.childOverflows.length} small44=${c.smallTargets.length} clip=${c.clippedTargets.length} borders=${c.borderFails.length} hover=${c.hoverFails.length} covered=${c.coveredText.length} leaks=${c.focusLeaks.length} tab=${c.keyboardMap.tabbableCount}(+${c.keyboardMap.positiveTabindexCount}/un=${c.keyboardMap.unnamedInteractiveCount}) slop=${c.badTransitions.length + c.hiddenAtRest.length + c.inlineHeightMismatches.length} axe=${c.axeViolations.length}${c.axeViolations.length ? `(${c.axeViolations.map((v) => v.id).join(",")})` : ""} | apcaBodyMin=${c.apca.minBodyLc ?? "n/a"} btnSigs=${c.componentInventory.buttons.distinctSignatures}`
+          `  [${c.state}] ${c.passed ? "PASS" : "FAIL"} | overflow=${c.docOverflow}/${c.bodyOverflow} child=${c.childOverflows.length} small44=${c.smallTargets.length} clip=${c.clippedTargets.length}${c.clippedTargets.length ? `(${c.clippedTargets.map((t) => t.text).join(",")})` : ""} borders=${c.borderFails.length} hover=${c.hoverFails.length} covered=${c.coveredText.length} leaks=${c.focusLeaks.length} tab=${c.keyboardMap.tabbableCount}(+${c.keyboardMap.positiveTabindexCount}/un=${c.keyboardMap.unnamedInteractiveCount}) slop=${c.badTransitions.length + c.hiddenAtRest.length + c.inlineHeightMismatches.length} axe=${c.axeViolations.length}${c.axeViolations.length ? `(${c.axeViolations.map((v) => v.id).join(",")})` : ""} | apcaBodyMin=${c.apca.minBodyLc ?? "n/a"} btnSigs=${c.componentInventory.buttons.distinctSignatures}`
         );
       }
     }
