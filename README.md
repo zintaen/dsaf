@@ -56,7 +56,7 @@ node bin/dsaf.mjs guardrails --out ./your-app/.dsaf-guardrails --stack tailwind
 > - **Live Playwright resolution (`dsaf runtime`):** If `dsaf` is invoked outside the audited repo, set `NODE_PATH=./node_modules` (and `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH` if using a pre-installed browser shell) so `playwright` resolves cleanly.
 > - **`+SG` gate targets & env caps (`check-design-discipline.mjs`):** Accepts either a directory (`app`, `src`) or a single file (`app/globals.css`). Configure budgets with `DSAF_MAX_HARDCODED_COLORS`, `DSAF_MAX_IMPORTANT`, `DSAF_MAX_TW_ARBITRARY`, plus optional `DSAF_MAX_SVG_COLORS` and `DSAF_MAX_SWATCH_COLORS`.
 
-Or install/link via `npm link` (or `npx dsaf` once published to npm — `package.json` configures a strict `"files"` whitelist excluding maintainer-only `evolve/`) to invoke `dsaf <command>` anywhere (`recon`, `tokens`, `figma-diff`, `runtime`, `scorecard`, `diff`, `guardrails`, `integrity`, `verify`, `mine`, `sync`, `version`).
+Or install/link via `npm link` / `npm install -g @zintaen/dsaf` (or `npx @zintaen/dsaf` — `package.json` configures a strict `"files"` whitelist excluding maintainer-only `evolve/`) to invoke `dsaf <command>` anywhere (`recon`, `tokens`, `figma-diff`, `runtime`, `scorecard`, `diff`, `guardrails`, `integrity`, `verify`, `mine`, `sync`, `version`).
 
 ### 3. Install `dsaf` (and Optional Maintainer `dsaf-evolve`) into AI Coding Agents
 
