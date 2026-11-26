@@ -1,9 +1,9 @@
 ---
 name: dsaf-evolve
-description: "Maintainer-only Tier 2 Closed-Loop Evolution Meta-Skill for DSAF v0.6.0. Mines domain-stripped real-world retro signals (~/.dsaf/feedback-log.jsonl) plus calibration scorecard corpora (dead/saturated criteria & probe gaps), formulates one atomic hypothesis per cycle, executes blind Evaluator/Grader A/B evaluations across Mode S/C/P fixtures against hard guardrails (G1-G8, T1-T10, VG1-VG9, V3-1..6, DS-1..5), enforces zero-contamination isolation, and syncs clean skill releases. NEVER use during normal product or design system audits; use ONLY when evolving DSAF itself."
+description: "Maintainer-only Tier 2 Closed-Loop Evolution Meta-Skill for DSAF v0.7.0. Mines domain-stripped real-world retro signals (~/.dsaf/feedback-log.jsonl) plus calibration scorecard corpora (dead/saturated criteria & probe gaps), formulates one atomic hypothesis per cycle, executes blind Evaluator/Grader A/B evaluations across Mode S/C/P fixtures against hard guardrails (G1-G8, T1-T10, VG1-VG9, V3-1..6, DS-1..5), enforces zero-contamination isolation, and syncs clean skill releases. NEVER use during normal product or design system audits; use ONLY when evolving DSAF itself."
 ---
 
-# DSAF — Tier 2 Maintainer Closed-Loop Evolution (`v0.6.0`)
+# DSAF — Tier 2 Maintainer Closed-Loop Evolution (`v0.7.0`)
 
 This meta-skill stays strictly isolated inside `evolve/` outside the production `skill/` directory so audit agents never see benchmark answers or mutate production rules mid-run.
 

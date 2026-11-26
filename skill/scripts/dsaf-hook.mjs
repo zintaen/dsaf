@@ -159,52 +159,51 @@ export function scanUiContent(raw, filePath, options = {}) {
     const cssBlocks = extractCssRuleBlocks(slice.text);
     const hasVisibleFocusIndicator = (body) =>
       /\b(?:box-shadow|border(?:-color|-width)?|outline-offset)\s*:|\boutline\s*:\s*(?!none\b|0\b)[^;}\n]+/i.test(body);
-    const hasSiblingFocusVisible = (selStr) => {
-      const parts = selStr.split(",").map((s) => s.trim()).filter(Boolean);
-      return parts.some((p) => {
-        const targetSel = `${p}:focus-visible`.toLowerCase();
-        return cssBlocks.some(
-          (other) =>
-            hasVisibleFocusIndicator(other.body) &&
-            other.selector.split(",").some((os) => os.trim().toLowerCase() === targetSel)
-        );
-      });
+    const SKIP_FOCUS_RE =
+      /(?:^|[\s,])(?:#(?:main|content|main-content|app)|main|\[tabindex\s*=\s*["']?-1["']?\])(?::focus(?:-visible)?|$)/i;
+    const hasBranchSiblingFocusVisible = (p) => {
+      const targetSel = `${p}:focus-visible`.toLowerCase();
+      return cssBlocks.some(
+        (other) =>
+          hasVisibleFocusIndicator(other.body) &&
+          other.selector.split(",").some((os) => os.trim().toLowerCase() === targetSel)
+      );
     };
-    const hasParentFocusWithin = (selStr) => {
-      const parts = selStr.split(",").map((s) => s.trim()).filter(Boolean);
-      for (const p of parts) {
-        const idx = p.search(/[\s>~+]+[^\s>~+]+$/);
-        if (idx <= 0) continue;
-        const ancestor = p.slice(0, idx).trim().toLowerCase();
-        const tokens = ancestor.match(/[#.][a-zA-Z0-9_-]+/g) || [];
-        for (const tok of [ancestor, ...tokens]) {
-          const targetWithin = `${tok.toLowerCase()}:focus-within`;
-          if (
-            cssBlocks.some(
-              (other) =>
-                hasVisibleFocusIndicator(other.body) &&
-                other.selector.split(",").some((os) => os.trim().toLowerCase().includes(targetWithin))
-            )
-          ) {
-            return true;
-          }
+    const hasBranchParentFocusWithin = (p) => {
+      const idx = p.search(/[\s>~+]+[^\s>~+]+$/);
+      if (idx <= 0) return false;
+      const ancestor = p.slice(0, idx).trim().toLowerCase();
+      const tokens = ancestor.match(/[#.][a-zA-Z0-9_-]+/g) || [];
+      for (const tok of [ancestor, ...tokens]) {
+        const targetWithin = `${tok.toLowerCase()}:focus-within`;
+        if (
+          cssBlocks.some(
+            (other) =>
+              hasVisibleFocusIndicator(other.body) &&
+              other.selector.split(",").some((os) => os.trim().toLowerCase().includes(targetWithin))
+          )
+        ) {
+          return true;
         }
       }
       return false;
     };
+    const isSelectorSafeForOutlineNone = (selStr) => {
+      const parts = selStr.split(",").map((s) => s.trim()).filter(Boolean);
+      if (parts.length === 0) return false;
+      return parts.every((p) => {
+        if (/:focus:not\(:focus-visible\)/i.test(p) || SKIP_FOCUS_RE.test(p)) return true;
+        if (!/:focus\b/i.test(p) && hasBranchSiblingFocusVisible(p)) return true;
+        if (/:focus(?:-visible)?\b/i.test(p) && hasBranchParentFocusWithin(p)) return true;
+        return false;
+      });
+    };
 
     for (const blk of cssBlocks) {
-      if (/:focus:not\(:focus-visible\)/i.test(blk.selector)) continue;
-      if (/(?:^|[\s,])(?:#(?:main|content|main-content|app)|main|\[tabindex\s*=\s*["']?-1["']?\])(?::focus(?:-visible)?|$)/i.test(blk.selector)) {
-        continue;
-      }
       const outMatch = /\boutline\s*:\s*(?:none|0)\b/i.exec(blk.body);
       if (outMatch) {
         const hasReplacement = /\b(?:box-shadow|border(?:-color|-width)?|outline-offset)\s*:/i.test(blk.body);
-        const siblingOrParentSafe =
-          (!/:focus\b/i.test(blk.selector) && hasSiblingFocusVisible(blk.selector)) ||
-          (/:focus(?:-visible)?\b/i.test(blk.selector) && hasParentFocusWithin(blk.selector));
-        if (!hasReplacement && !siblingOrParentSafe) {
+        if (!hasReplacement && !isSelectorSafeForOutlineNone(blk.selector)) {
           findings.push({
             file: filePath,
             line: offsetToLine(cleanComments, slice.baseOffset + blk.bodyStart + outMatch.index),
@@ -498,6 +497,22 @@ function runSelfTest() {
     );
     const cleanRes = checkFile(cleanCss, { tier: "all", displayPath: "clean.css" });
     assert.equal(cleanRes.active.length, 0, "Clean CSS + valid focus patterns must pass --tier all cleanly");
+
+    // 3a. Multi-branch comma selectors must satisfy EVERY branch individually
+    const mixedCss = join(scratch, "mixed-focus.css");
+    writeFileSync(
+      mixedCss,
+      [
+        ".picker:focus-within { outline: 2px solid #1d4ed8; }",
+        ".picker select:focus, .orphan-input:focus { outline: none; }",
+        ".editor:focus-visible { outline: 2px solid #1d4ed8; }",
+        ".editor, .naked-btn { outline: none; }",
+        ".box-a:focus-within, .box-b:focus-within { box-shadow: 0 0 0 2px #1d4ed8; }",
+        ".box-a input:focus, .box-b input:focus { outline: none; }",
+      ].join("\n")
+    );
+    const mixedRes = checkFile(mixedCss, { tier: "floor", displayPath: "mixed-focus.css" });
+    assert.equal(mixedRes.active.length, 2, "Must flag comma selectors where at least one branch lacks focus indicator");
 
     // 3b. checkTarget must exclude ios/App/App/public, _audit, storybook-static
     const subProj = join(scratch, "sub-proj");

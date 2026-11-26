@@ -11,7 +11,7 @@ import { tmpdir } from "node:os";
 import { join, relative, resolve } from "node:path";
 import { parseArgs } from "node:util";
 
-export const CI_REPORT_VERSION = "0.5.0";
+export const CI_REPORT_VERSION = "0.7.0";
 
 export const RULE_CATALOG = {
   // Floor tier — never waivable, severity: error

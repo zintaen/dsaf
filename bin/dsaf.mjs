@@ -13,6 +13,8 @@ const REPO_ROOT = resolve(BIN_DIR, "..");
 
 const COMMANDS = {
   audit: { script: "skill/scripts/audit-pipeline.mjs", desc: "One-click Tier 0 Read-Only audit pipeline (recon + tokens + runtime + figma + diff)" },
+  init: { script: "skill/scripts/init-evolve.mjs", desc: "Bootstrap .dsaf/ auto-evolution governance (C1-C10), hooks & CI guardrails" },
+  mcp: { script: "skill/scripts/mcp-server.mjs", desc: "Zero-dep JSON-RPC 2.0 stdio MCP server exposing 6 read-only audit tools" },
   recon: { script: "skill/scripts/recon.mjs", desc: "Read-only topology & T2-Mock recon (Mode S / C / P)" },
   tokens: { script: "skill/scripts/audit-tokens.mjs", desc: "W3C DTCG validator, Light/Dark parity & CSS/Tailwind drift" },
   "figma-diff": { script: "skill/scripts/audit-figma-diff.mjs", desc: "Compare Figma MCP variables & Code Connect against DTCG/CSS" },
@@ -45,6 +47,8 @@ function printHelp() {
   console.log("  help         Show this help message\n");
   console.log("Examples:");
   console.log("  dsaf audit ./my-app --out ./audit-output --sarif ./dsaf.sarif");
+  console.log("  dsaf init ./my-app --with-hook --with-guardrails");
+  console.log("  dsaf mcp");
   console.log("  dsaf recon ./my-app");
   console.log("  dsaf tokens ./my-app --json --report-unused-ignores");
   console.log("  dsaf hook check ./my-app/src --tier floor");

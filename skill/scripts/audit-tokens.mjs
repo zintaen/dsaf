@@ -441,6 +441,31 @@ function countOffGridSpacing(text, isStyleFile) {
   return hits;
 }
 
+function stripSvgColorBlocksPreservingLines(src) {
+  let hits = 0;
+  const blank = (seg) => {
+    hits += (seg.match(/#[0-9a-fA-F]{3,8}\b/g) || []).length;
+    hits += (seg.match(/\b(?:rgba?|hsla?|oklch|lab|oklab)\([^)]+\)/gi) || []).length;
+    return seg.replace(/[^\n]/g, " ");
+  };
+  let masked = src.replace(/<svg\b[\s\S]*?<\/svg>/gi, blank);
+  masked = masked.replace(/<(?:path|circle|rect|line|polygon|polyline|ellipse|defs|linearGradient|stop)\b[^>]*>/gi, blank);
+  return { masked, hits };
+}
+
+function stripSwatchTablesPreservingLines(src) {
+  let hits = 0;
+  const masked = src.replace(
+    /\b(?:const|let|var)\s+[A-Za-z0-9_]*(?:SWATCH|PALETTE|THEME_COLOR|PRESET_COLOR|COLOR_MAP|COLOR_PRESET|BRAND_PALETTE)[A-Za-z0-9_]*\s*(?::[^=;\n]+)?=\s*(?:\[[\s\S]*?\]|\{[\s\S]*?\})\s*;?/gi,
+    (seg) => {
+      hits += (seg.match(/#[0-9a-fA-F]{3,8}\b/g) || []).length;
+      hits += (seg.match(/\b(?:rgba?|hsla?|oklch|lab|oklab)\([^)]+\)/gi) || []).length;
+      return seg.replace(/[^\n]/g, " ");
+    }
+  );
+  return { masked, hits };
+}
+
 export function scanTarget(targetPath, options = {}) {
   const baseTarget = options.scope ? join(resolve(targetPath), options.scope) : resolve(targetPath);
   const resolved = resolve(baseTarget);
@@ -519,6 +544,8 @@ export function scanTarget(targetPath, options = {}) {
   const primitiveVarsUsed = new Set();
   let colorTokenRefs = 0;
   let hardcodedColorHits = 0;
+  let svgPaletteHits = 0;
+  let swatchPaletteHits = 0;
   let offGridSpacingHits = 0;
   let importantCount = 0;
   let twArbitraryColors = 0;
@@ -594,7 +621,14 @@ export function scanTarget(targetPath, options = {}) {
       seenUtilityClasses.add(m[1]);
     }
 
-    const driftSurface = isStyle ? extractNonTokenDeclarations(raw) : raw;
+    let driftSurface = isStyle ? extractNonTokenDeclarations(raw) : raw;
+    if (!isStyle) {
+      const svgRes = stripSvgColorBlocksPreservingLines(driftSurface);
+      svgPaletteHits += svgRes.hits;
+      const swatchRes = stripSwatchTablesPreservingLines(svgRes.masked);
+      swatchPaletteHits += swatchRes.hits;
+      driftSurface = swatchRes.masked;
+    }
     const nonVarDecls = driftSurface.replace(/--[a-zA-Z0-9_-]+\s*:[^;}\n]+;?/g, "");
 
     const varRefsInFile = (nonVarDecls.match(/var\(\s*--[a-zA-Z0-9_-]+/g) || []).length;
@@ -625,7 +659,12 @@ export function scanTarget(targetPath, options = {}) {
     twPrimitiveColors += fileTwPrimColors;
 
     // Line-accurate CI findings & inline waiver resolution
-    const linePreservingSurface = isStyle ? stripTokenBlocksPreservingLines(raw) : stripCommentsPreservingLines(raw);
+    let linePreservingSurface = isStyle ? stripTokenBlocksPreservingLines(raw) : stripCommentsPreservingLines(raw);
+    if (!isStyle) {
+      linePreservingSurface = stripSwatchTablesPreservingLines(
+        stripSvgColorBlocksPreservingLines(linePreservingSurface).masked
+      ).masked;
+    }
     const linePreservingNonVar = linePreservingSurface.replace(/--[a-zA-Z0-9_-]+\s*:[^;}\n]+;?/g, (seg) => seg.replace(/[^\n]/g, " "));
     const linePreservingNonTw = linePreservingNonVar.replace(/-\[#[^\]\s]+\]/g, (seg) => seg.replace(/[^\n]/g, " "));
     const fileCiFindings = [];
@@ -820,6 +859,8 @@ export function scanTarget(targetPath, options = {}) {
       recommendedScope,
       colorTokenRefs,
       hardcodedColorHits,
+      svgPaletteHits,
+      swatchPaletteHits,
       tokenCompliancePct,
       primitiveLeakVariables: [...primitiveVarsUsed].sort(),
       nearDuplicateHexClusters,
@@ -1004,7 +1045,30 @@ function runSelfTest() {
     assert.ok(!dsScan.drift.semanticOrphansSample.includes("--animate-fade-in"), "Must resolve @theme --animate-* utility classes");
     assert.ok(!dsScan.drift.semanticOrphansSample.includes("--ds-breakpoint-sm"), "Must treat prefixed breakpoint vars as scale tokens");
 
-    console.log("AUDIT_TOKENS_SELF_TEST_PASSED (DTCG + scoped CSS/@theme/Tailwind + fixture/OG + demo/scale + SARIF/waivers)");
+    // 8. Inline <svg> colors & theme swatch table separation vs inline style={}
+    const svgSwatchDir = join(scratch, "svg-swatch");
+    mkdirSync(svgSwatchDir, { recursive: true });
+    writeFileSync(
+      join(svgSwatchDir, "Swatches.tsx"),
+      [
+        `const THEME_SWATCHES = ["#FFFDF8", "#45210E", "#F4BA17"];`,
+        `export function Logo() {`,
+        `  return (`,
+        `    <div>`,
+        `      <svg viewBox="0 0 24 24"><path d="M0 0" fill="#F4BA17" stroke="#45210E" /></svg>`,
+        `      <span style={{ color: "#e11d48" }}>Alert</span>`,
+        `    </div>`,
+        `  );`,
+        `}`,
+      ].join("\n")
+    );
+    const svgScan = scanTarget(svgSwatchDir);
+    assert.equal(svgScan.drift.svgPaletteHits, 2, "Must count <svg> color literals separately");
+    assert.equal(svgScan.drift.swatchPaletteHits, 3, "Must count swatch table literals separately");
+    assert.equal(svgScan.drift.hardcodedColorHits, 1, "Must still enforce inline style={} hardcoded hexes");
+    assert.equal(svgScan.ciFindings.active.filter((f) => f.ruleId === "dsaf/hardcoded-color").length, 1);
+
+    console.log("AUDIT_TOKENS_SELF_TEST_PASSED (DTCG + scoped CSS/@theme/Tailwind + fixture/OG + SVG/swatch + SARIF/waivers)");
     return 0;
   } finally {
     rmSync(scratch, { recursive: true, force: true });
@@ -1090,7 +1154,7 @@ function main() {
     const demoNote = d.demoFilesSkipped.length > 0 ? ` | demoSkipped=${d.demoFilesSkipped.length}` : "";
     const scopeNote = d.recommendedScope ? ` | scopeHint=${d.recommendedScope}` : "";
     console.log(
-      `CSS Drift: compliance=${d.tokenCompliancePct ?? "N/A"}% (varRefs=${d.colorTokenRefs} vs hardcoded=${d.hardcodedColorHits}) | orphans=${d.orphanCssVariableCount} (semantic=${d.semanticOrphanCount}, scale=${d.paletteScaleUnusedCount}) | !important=${d.importantOverrides} | offGridPx=${d.offGridSpacingHits} | nearDupHexClusters=${d.nearDuplicateHexClusters.length} | twArbColor=${d.tailwind.arbitraryColors} twArbPx=${d.tailwind.arbitrarySpacing} twPrim=${d.tailwind.primitiveColors}${ogNote}${demoNote}${scopeNote}`
+      `CSS Drift: compliance=${d.tokenCompliancePct ?? "N/A"}% (varRefs=${d.colorTokenRefs} vs hardcoded=${d.hardcodedColorHits}; svgPalette=${d.svgPaletteHits}, swatchTables=${d.swatchPaletteHits}) | orphans=${d.orphanCssVariableCount} (semantic=${d.semanticOrphanCount}, scale=${d.paletteScaleUnusedCount}) | !important=${d.importantOverrides} | offGridPx=${d.offGridSpacingHits} | nearDupHexClusters=${d.nearDuplicateHexClusters.length} | twArbColor=${d.tailwind.arbitraryColors} twArbPx=${d.tailwind.arbitrarySpacing} twPrim=${d.tailwind.primitiveColors}${ogNote}${demoNote}${scopeNote}`
     );
     console.log(
       `CI Gate Tiers: floor=${cf.floor} reflex=${cf.reflex} finish=${cf.finish} waived=${cf.waived} unusedIgnores=${cf.unusedIgnores}`

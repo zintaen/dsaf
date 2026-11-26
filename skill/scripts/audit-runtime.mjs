@@ -11,8 +11,129 @@ import { createRequire } from "node:module";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { deflateSync, inflateSync } from "node:zlib";
 
 const require = createRequire(import.meta.url);
+
+/* ---------- Zero-Dep PNG RGBA Decoder & Pixel Diff ---------- */
+
+function paethPredictor(a, b, c) {
+  const p = a + b - c;
+  const pa = Math.abs(p - a);
+  const pb = Math.abs(p - b);
+  const pc = Math.abs(p - c);
+  if (pa <= pb && pa <= pc) return a;
+  if (pb <= pc) return b;
+  return c;
+}
+
+export function decodePngRgba(buf) {
+  if (!Buffer.isBuffer(buf) || buf.length < 24) {
+    throw new Error("Invalid PNG buffer");
+  }
+  const sig = buf.subarray(0, 8);
+  if (!sig.equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) {
+    throw new Error("Unsupported image format: expected PNG header");
+  }
+  let offset = 8;
+  let width = 0;
+  let height = 0;
+  let bitDepth = 8;
+  let colorType = 6;
+  const idat = [];
+  while (offset + 8 <= buf.length) {
+    const len = buf.readUInt32BE(offset);
+    const type = buf.subarray(offset + 4, offset + 8).toString("ascii");
+    const dataStart = offset + 8;
+    const dataEnd = dataStart + len;
+    if (dataEnd > buf.length) break;
+    if (type === "IHDR" && len >= 13) {
+      width = buf.readUInt32BE(dataStart);
+      height = buf.readUInt32BE(dataStart + 4);
+      bitDepth = buf[dataStart + 8];
+      colorType = buf[dataStart + 9];
+    } else if (type === "IDAT") {
+      idat.push(buf.subarray(dataStart, dataEnd));
+    } else if (type === "IEND") {
+      break;
+    }
+    offset = dataEnd + 4;
+  }
+  if (!width || !height || bitDepth !== 8) {
+    throw new Error(`Unsupported PNG geometry (${width}x${height}, bitDepth=${bitDepth})`);
+  }
+  const bppMap = { 0: 1, 2: 3, 4: 2, 6: 4 };
+  const bpp = bppMap[colorType];
+  if (!bpp) {
+    throw new Error(`Unsupported PNG colorType=${colorType}; expected 0/2/4/6`);
+  }
+
+  const raw = inflateSync(Buffer.concat(idat));
+  const rowBytes = width * bpp;
+  const stride = rowBytes + 1;
+  const recon = new Uint8Array(height * rowBytes);
+  for (let y = 0; y < height; y++) {
+    const filter = raw[y * stride];
+    const rowIn = y * stride + 1;
+    const rowOut = y * rowBytes;
+    const prevOut = (y - 1) * rowBytes;
+    for (let x = 0; x < rowBytes; x++) {
+      const val = raw[rowIn + x];
+      const a = x >= bpp ? recon[rowOut + x - bpp] : 0;
+      const b = y > 0 ? recon[prevOut + x] : 0;
+      const c = y > 0 && x >= bpp ? recon[prevOut + x - bpp] : 0;
+      let out = val;
+      if (filter === 1) out = (val + a) & 0xff;
+      else if (filter === 2) out = (val + b) & 0xff;
+      else if (filter === 3) out = (val + ((a + b) >> 1)) & 0xff;
+      else if (filter === 4) out = (val + paethPredictor(a, b, c)) & 0xff;
+      recon[rowOut + x] = out;
+    }
+  }
+
+  if (colorType === 6) return { width, height, rgba: recon };
+  const rgba = new Uint8Array(width * height * 4);
+  for (let i = 0; i < width * height; i++) {
+    const o = i * 4;
+    if (colorType === 2) {
+      rgba[o] = recon[i * 3];
+      rgba[o + 1] = recon[i * 3 + 1];
+      rgba[o + 2] = recon[i * 3 + 2];
+      rgba[o + 3] = 255;
+    } else if (colorType === 4) {
+      rgba[o] = recon[i * 2];
+      rgba[o + 1] = recon[i * 2];
+      rgba[o + 2] = recon[i * 2];
+      rgba[o + 3] = recon[i * 2 + 1];
+    } else {
+      rgba[o] = recon[i];
+      rgba[o + 1] = recon[i];
+      rgba[o + 2] = recon[i];
+      rgba[o + 3] = 255;
+    }
+  }
+  return { width, height, rgba };
+}
+
+export function computeImagePixelDiffRatio(imgA, imgB, channelThreshold = 16) {
+  if (!imgA || !imgB || imgA.width !== imgB.width || imgA.height !== imgB.height) {
+    const total = Math.max((imgA?.width || 0) * (imgA?.height || 0), (imgB?.width || 0) * (imgB?.height || 0));
+    return { totalPixels: total, mismatchedPixels: total, diffPct: 100, sizeMismatch: true };
+  }
+  const totalPixels = imgA.width * imgA.height;
+  let mismatchedPixels = 0;
+  for (let i = 0; i < totalPixels * 4; i += 4) {
+    const dr = Math.abs(imgA.rgba[i] - imgB.rgba[i]);
+    const dg = Math.abs(imgA.rgba[i + 1] - imgB.rgba[i + 1]);
+    const db = Math.abs(imgA.rgba[i + 2] - imgB.rgba[i + 2]);
+    const da = Math.abs(imgA.rgba[i + 3] - imgB.rgba[i + 3]);
+    if (Math.max(dr, dg, db, da) > channelThreshold) {
+      mismatchedPixels++;
+    }
+  }
+  const diffPct = totalPixels > 0 ? Number(((mismatchedPixels / totalPixels) * 100).toFixed(3)) : 0;
+  return { totalPixels, mismatchedPixels, diffPct, sizeMismatch: false };
+}
 
 /* ---------- Published APCA-W3 0.1.9 & WCAG 2.2 Pure Math ---------- */
 
@@ -215,6 +336,8 @@ function parseArgs(argv) {
     storybook: null,
     maxStories: 8,
     screenshot: null,
+    screenshotDiff: null,
+    diffThreshold: 1.0,
     pins: false,
     live: false,
     cdp: null,
@@ -238,6 +361,11 @@ function parseArgs(argv) {
     else if (a === "--storybook") out.storybook = argv[++i];
     else if (a === "--max-stories") out.maxStories = Number(argv[++i]) || 8;
     else if (a === "--screenshot") out.screenshot = argv[++i];
+    else if (a === "--screenshot-diff") out.screenshotDiff = argv[++i];
+    else if (a === "--diff-threshold") {
+      const parsed = Number.parseFloat(argv[++i]);
+      out.diffThreshold = Number.isFinite(parsed) ? parsed : 1.0;
+    }
     else if (a === "--pins") out.pins = true;
     else if (a === "--live") out.live = true;
     else if (a === "--cdp") out.cdp = argv[++i];
@@ -1161,6 +1289,54 @@ async function runSelfTest() {
     assert.ok(OVERLAY_SELECTORS.some((s) => s.includes('aria-label*="cookie"')), "Must match non-dialog cookie aria-label");
     assert.ok(OVERLAY_SELECTORS.some((s) => s.includes('data-testid*="cookie"')), "Must match cookie data-testid");
     assert.ok(OVERLAY_SELECTORS.some((s) => s.includes('class*="consent"')), "Must match consent class overlays");
+
+    const buildMiniPng = (w, h, rgbaBytes) => {
+      const crcTable = new Uint32Array(256);
+      for (let n = 0; n < 256; n++) {
+        let c = n;
+        for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+        crcTable[n] = c >>> 0;
+      }
+      const crc32 = (b) => {
+        let c = 0xffffffff;
+        for (let i = 0; i < b.length; i++) c = crcTable[(c ^ b[i]) & 0xff] ^ (c >>> 8);
+        return (c ^ 0xffffffff) >>> 0;
+      };
+      const mkChunk = (type, data) => {
+        const out = Buffer.alloc(12 + data.length);
+        out.writeUInt32BE(data.length, 0);
+        out.write(type, 4, "ascii");
+        data.copy(out, 8);
+        out.writeUInt32BE(crc32(out.subarray(4, 8 + data.length)), 8 + data.length);
+        return out;
+      };
+      const ihdr = Buffer.alloc(13);
+      ihdr.writeUInt32BE(w, 0);
+      ihdr.writeUInt32BE(h, 4);
+      ihdr[8] = 8;
+      ihdr[9] = 6;
+      const scan = Buffer.alloc(h * (1 + w * 4));
+      for (let y = 0; y < h; y++) {
+        scan[y * (1 + w * 4)] = 0;
+        Buffer.from(rgbaBytes.subarray(y * w * 4, (y + 1) * w * 4)).copy(scan, y * (1 + w * 4) + 1);
+      }
+      return Buffer.concat([
+        Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+        mkChunk("IHDR", ihdr),
+        mkChunk("IDAT", deflateSync(scan)),
+        mkChunk("IEND", Buffer.alloc(0)),
+      ]);
+    };
+
+    const pxBase = new Uint8Array([255, 255, 255, 255, 0, 0, 0, 255, 244, 186, 23, 255, 69, 33, 14, 255]);
+    const pxSame = new Uint8Array([255, 250, 255, 255, 0, 0, 0, 255, 244, 186, 23, 255, 69, 33, 14, 255]);
+    const pxChanged = new Uint8Array([255, 255, 255, 255, 200, 0, 0, 255, 244, 186, 23, 255, 69, 33, 14, 255]);
+    const decodedBase = decodePngRgba(buildMiniPng(2, 2, pxBase));
+    assert.equal(decodedBase.width, 2);
+    assert.equal(decodedBase.height, 2);
+    assert.equal(computeImagePixelDiffRatio(decodedBase, { width: 2, height: 2, rgba: pxSame }).diffPct, 0);
+    assert.equal(computeImagePixelDiffRatio(decodedBase, { width: 2, height: 2, rgba: pxChanged }).diffPct, 25);
+    assert.equal(computeImagePixelDiffRatio(decodedBase, { width: 1, height: 4, rgba: pxBase }).sizeMismatch, true);
   } finally {
     rmSync(scratch, { recursive: true, force: true });
   }
@@ -1210,7 +1386,7 @@ async function main() {
   const args = parseArgs(process.argv.slice(2));
   if (args.help) {
     console.log(
-      "Usage: node skill/scripts/audit-runtime.mjs <draft.html|draft-dir|url> [--routes /,/about] [--out <file>] [--theme-toggle <sel>] [--live] [--cdp <port|url> --target <match>] [--extended-viewports] [--no-hide-overlays] [--storybook <url|index.json>] [--screenshot <out.png> [--pins]] [--wiring-before a --wiring-after b] [--axe path] [--skip-shell-check] [--json] [--self-test]"
+      "Usage: node skill/scripts/audit-runtime.mjs <draft.html|draft-dir|url> [--routes /,/about] [--out <file>] [--theme-toggle <sel>] [--live] [--cdp <port|url> --target <match>] [--extended-viewports] [--no-hide-overlays] [--storybook <url|index.json>] [--screenshot <out.png> [--pins]] [--screenshot-diff <baseline.png> [--diff-threshold 1.0]] [--wiring-before a --wiring-after b] [--axe path] [--skip-shell-check] [--json] [--self-test]"
     );
     process.exit(0);
   }
@@ -1233,8 +1409,9 @@ async function main() {
   const browser = isCdpAttached
     ? await chromium.connectOverCDP(normalizeCdpEndpoint(args.cdp))
     : await launchChromium(chromium, args.executablePath);
-  const report = { schema: "dsaf-runtime/2", axeLoaded: Boolean(axePath), cdpAttached: isCdpAttached, files: [], wiringDiff: null, allPassed: true };
+  const report = { schema: "dsaf-runtime/2", axeLoaded: Boolean(axePath), cdpAttached: isCdpAttached, files: [], wiringDiff: null, screenshotDiff: null, allPassed: true };
   let screenshotSaved = false;
+  let screenshotDiffDone = false;
 
   try {
     const urlsOrFiles = isCdpAttached ? ["cdp://attached-target"] : collectHtmlFiles(targets);
@@ -1294,6 +1471,32 @@ async function main() {
         fileRes.screenshot = outShot;
         screenshotSaved = true;
         if (pinsBtn) await pinsBtn.click();
+      }
+
+      if (args.screenshotDiff && !screenshotDiffDone) {
+        if (!isCdpAttached) await page.setViewportSize({ width: 1440, height: 900 });
+        const pinsBtn = args.pins ? await page.$("#uxs-pins-btn") : null;
+        if (pinsBtn) {
+          await pinsBtn.click();
+          await page.waitForTimeout(150);
+        }
+        const curBuf = await page.screenshot({ fullPage: false });
+        if (pinsBtn) await pinsBtn.click();
+        const absBase = resolve(args.screenshotDiff);
+        const baseImg = decodePngRgba(readFileSync(absBase));
+        const curImg = decodePngRgba(curBuf);
+        const diff = computeImagePixelDiffRatio(baseImg, curImg);
+        report.screenshotDiff = {
+          baseline: absBase,
+          thresholdPct: args.diffThreshold,
+          ...diff,
+          passed: !diff.sizeMismatch && diff.diffPct <= args.diffThreshold,
+        };
+        if (!report.screenshotDiff.passed) {
+          fileRes.passed = false;
+          report.allPassed = false;
+        }
+        screenshotDiffDone = true;
       }
 
       fileRes.pixelBehind = await probePixelBehindElements(page);
@@ -1464,6 +1667,11 @@ async function main() {
     }
     if (report.wiringDiff) {
       console.log(`WIRING DIFF: ${report.wiringDiff.passed ? "PASS" : "FAIL"} | dropped=${JSON.stringify(report.wiringDiff.dropped)}`);
+    }
+    if (report.screenshotDiff) {
+      console.log(
+        `SCREENSHOT DIFF: ${report.screenshotDiff.passed ? "PASS" : "FAIL"} | diffPct=${report.screenshotDiff.diffPct}% (threshold=${report.screenshotDiff.thresholdPct}%, sizeMismatch=${report.screenshotDiff.sizeMismatch})`
+      );
     }
     console.log(report.allPassed ? "AUDIT_RUNTIME_ALL_PASSED" : "AUDIT_RUNTIME_FAILED");
   }

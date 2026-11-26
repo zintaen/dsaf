@@ -555,17 +555,161 @@ export function compareVertices({ figmaPath, tokensArg, codeConnectDir = null, r
   };
 }
 
+function buildShippedLookup(rt) {
+  const shippedVarsRaw = new Map();
+  const firstCheck = rt.files?.[0]?.checks?.[0];
+  for (const f of rt.files || []) {
+    if (f.computedVars && typeof f.computedVars === "object") {
+      for (const [k, v] of Object.entries(f.computedVars)) {
+        if (!shippedVarsRaw.has(k)) shippedVarsRaw.set(k, v);
+      }
+    }
+  }
+  return { shippedVarsRaw, firstCheck };
+}
+
+export function compareDefinedToShipped({ tokensArg, runtimePath, codeConnectDir = null, prefix = null }) {
+  if (!runtimePath) {
+    throw new Error("runtimePath is required for 2-vertex Defined <-> Shipped comparison.");
+  }
+  const defined = loadDefinedTokens(tokensArg);
+  const codeConnect = scanCodeConnect(codeConnectDir);
+  const rt = JSON.parse(readFileSync(resolve(runtimePath), "utf8"));
+  const { shippedVarsRaw, firstCheck } = buildShippedLookup(rt);
+
+  const activePrefix = prefix ? normalizeKey(prefix) : detectDominantPrefix(defined, new Map());
+  const uniqueDefined = new Map();
+  for (const [dKey, dVal] of [...defined.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
+    const fullCk = canonKey(dKey);
+    const bareKey = activePrefix && fullCk.startsWith(`${activePrefix}.`) ? fullCk.slice(activePrefix.length + 1) : fullCk;
+    if (!uniqueDefined.has(bareKey) || (dKey.includes(".") && !uniqueDefined.get(bareKey).key.includes("."))) {
+      uniqueDefined.set(bareKey, { key: dKey, bareKey, canon: fullCk, value: dVal });
+    }
+  }
+  const shippedNorm = new Map();
+  const shippedUnique = new Map();
+  for (const [cssVar, val] of shippedVarsRaw.entries()) {
+    const nk = normalizeKey(cssVar);
+    const ck = canonKey(nk);
+    const normVal = normalizeValue(val);
+    if (nk && !shippedNorm.has(nk)) shippedNorm.set(nk, { cssVar, canon: ck, value: normVal });
+    if (ck && !shippedNorm.has(ck)) shippedNorm.set(ck, { cssVar, canon: ck, value: normVal });
+    if (ck && !shippedUnique.has(ck)) shippedUnique.set(ck, { cssVar, value: normVal });
+    if (activePrefix && nk.startsWith(`${activePrefix}.`)) {
+      const bare = nk.slice(activePrefix.length + 1);
+      const bareCanon = canonKey(bare);
+      if (!shippedNorm.has(bare)) shippedNorm.set(bare, { cssVar, canon: ck, value: normVal });
+      if (!shippedNorm.has(bareCanon)) shippedNorm.set(bareCanon, { cssVar, canon: ck, value: normVal });
+    }
+  }
+
+  const matchedTokens = [];
+  const valueDrift = [];
+  const definedNotShipped = [];
+  const matchedShippedCanons = new Set();
+
+  for (const entry of uniqueDefined.values()) {
+    const barePrefix = activePrefix && entry.key.startsWith(`${activePrefix}.`) ? entry.key.slice(activePrefix.length + 1) : null;
+    const cands = [
+      entry.key,
+      entry.canon,
+      stripPrimitivesSegment(entry.key),
+      canonKey(stripPrimitivesSegment(entry.key)),
+      ...(barePrefix ? [barePrefix, canonKey(barePrefix)] : []),
+    ];
+    let hit = null;
+    for (const c of cands) {
+      if (shippedNorm.has(c)) {
+        hit = shippedNorm.get(c);
+        break;
+      }
+    }
+    if (!hit) {
+      definedNotShipped.push({ key: entry.canon, definedValue: entry.value });
+    } else {
+      matchedShippedCanons.add(hit.canon);
+      if (valuesMatch(entry.value, hit.value)) {
+        matchedTokens.push({ key: entry.canon, cssVar: hit.cssVar, value: entry.value });
+      } else {
+        valueDrift.push({
+          key: entry.canon,
+          cssVar: hit.cssVar,
+          definedValue: entry.value,
+          shippedValue: hit.value,
+        });
+      }
+    }
+  }
+
+  const shippedOnlyTokens = [];
+  for (const [sCk, info] of shippedUnique.entries()) {
+    if (!matchedShippedCanons.has(sCk)) {
+      shippedOnlyTokens.push({ key: sCk, cssVar: info.cssVar, shippedValue: info.value });
+    }
+  }
+
+  const totalDefined = uniqueDefined.size;
+  const shippedCoveragePct = totalDefined > 0 ? Number(((matchedTokens.length / totalDefined) * 100).toFixed(1)) : null;
+
+  return {
+    schema: "dsaf-figma-diff/1",
+    generated: new Date().toISOString(),
+    triangulationStatus: "2-vertex (Defined <-> Shipped)",
+    summary: {
+      figmaVariables: 0,
+      definedVariablesSampled: totalDefined,
+      detectedPrefix: activePrefix,
+      matchedCount: matchedTokens.length,
+      valueDriftCount: valueDrift.length,
+      designOnlyCount: 0,
+      codeOnlyCount: shippedOnlyTokens.length,
+      definedNotShippedCount: definedNotShipped.length,
+      shippedVarsSampled: shippedVarsRaw.size,
+      triangulationCoveragePct: shippedCoveragePct,
+    },
+    matchedTokens,
+    valueDrift,
+    designOnlyTokens: [],
+    codeOnlyTokens: [],
+    shippedOnlyTokens: shippedOnlyTokens.slice(0, 40),
+    codeConnect,
+    shippedSummary: {
+      schema: rt.schema || null,
+      allPassed: Boolean(rt.allPassed),
+      filesAudited: rt.files?.length ?? 0,
+      apcaBodyMin: firstCheck?.apca?.minBodyLc ?? null,
+      buttonSignatures: firstCheck?.componentInventory?.buttons?.distinctSignatures ?? null,
+      shippedVarsSampled: shippedVarsRaw.size,
+      shippedMatchedCount: matchedTokens.length,
+      shippedDriftCount: valueDrift.length,
+      shippedDrift: valueDrift.map((d) => ({
+        key: d.key,
+        cssVar: d.cssVar,
+        definedValue: d.definedValue,
+        shippedValue: d.shippedValue,
+      })),
+      definedNotShippedCount: definedNotShipped.length,
+      definedNotShipped: definedNotShipped.slice(0, 25),
+    },
+  };
+}
+
 export function renderMarkdown(res) {
   const s = res.summary;
+  const isTwoVertex = String(res.triangulationStatus || "").startsWith("2-vertex");
   const lines = [
-    "# DSAF 3-Vertex Figma Triangulation Report",
+    isTwoVertex ? "# DSAF 2-Vertex Token Triangulation Report (`Defined` <-> `Shipped`)" : "# DSAF 3-Vertex Figma Triangulation Report",
     "",
     `- **Status:** ${res.triangulationStatus}`,
-    `- **Triangulation Coverage:** ${s.triangulationCoveragePct ?? "N/A"}% (${s.matchedCount}/${s.figmaVariables} exact/equivalent matches)${s.detectedPrefix ? ` | Prefix: \`--${s.detectedPrefix}-*\`` : ""}`,
-    `- **Value Drift:** ${s.valueDriftCount} | **Design-Only:** ${s.designOnlyCount} | **Code-Only:** ${s.codeOnlyCount}`,
+    isTwoVertex
+      ? `- **Shipped Coverage:** ${s.triangulationCoveragePct ?? "N/A"}% (${s.matchedCount}/${s.definedVariablesSampled} defined tokens matched in shipped DOM)${s.detectedPrefix ? ` | Prefix: \`--${s.detectedPrefix}-*\`` : ""}`
+      : `- **Triangulation Coverage:** ${s.triangulationCoveragePct ?? "N/A"}% (${s.matchedCount}/${s.figmaVariables} exact/equivalent matches)${s.detectedPrefix ? ` | Prefix: \`--${s.detectedPrefix}-*\`` : ""}`,
+    isTwoVertex
+      ? `- **Value Drift:** ${s.valueDriftCount} | **Defined-Not-Shipped:** ${s.definedNotShippedCount ?? 0} | **Shipped-Only:** ${s.codeOnlyCount}`
+      : `- **Value Drift:** ${s.valueDriftCount} | **Design-Only:** ${s.designOnlyCount} | **Code-Only:** ${s.codeOnlyCount}`,
     "",
   ];
-  if (res.valueDrift.length > 0) {
+  if (res.valueDrift.length > 0 && !isTwoVertex) {
     lines.push("## Value Drift (`Designed` vs `Defined`)", "", "| Token | Figma (`Designed`) | Code (`Defined`) |", "|---|---|---|");
     for (const d of res.valueDrift.slice(0, 40)) lines.push(`| \`${d.key}\` | \`${d.figmaValue}\` | \`${d.definedValue}\` |`);
     lines.push("");
@@ -755,7 +899,20 @@ function runSelfTest() {
     assert.equal(v3Diff.shippedSummary.shippedDrift[0].shippedValue, "#ff0000");
     assert.match(renderMarkdown(v3Diff), /Shipped Runtime Verification \(Vertex 3\)/);
 
-    console.log("AUDIT_FIGMA_DIFF_SELF_TEST_PASSED (alias resolve + value drift + Vertex 3 shipped + Code Connect v2)");
+    // 4. 2-Vertex Defined <-> Shipped without Figma
+    const twoVertex = compareDefinedToShipped({
+      tokensArg: repoCssPath,
+      runtimePath: runtimeJsonPath,
+      codeConnectDir: join(repoDir, "src/figma"),
+    });
+    assert.equal(twoVertex.triangulationStatus, "2-vertex (Defined <-> Shipped)");
+    assert.equal(twoVertex.summary.definedVariablesSampled, 7);
+    assert.equal(twoVertex.summary.matchedCount, 1);
+    assert.equal(twoVertex.summary.valueDriftCount, 1);
+    assert.equal(twoVertex.summary.definedNotShippedCount, 5);
+    assert.match(renderMarkdown(twoVertex), /2-Vertex Token Triangulation Report/);
+
+    console.log("AUDIT_FIGMA_DIFF_SELF_TEST_PASSED (alias resolve + value drift + 2/3-vertex shipped + Code Connect v2)");
     return 0;
   } finally {
     rmSync(scratch, { recursive: true, force: true });
@@ -780,23 +937,30 @@ function main() {
 
   if (values.help) {
     console.log(
-      "Usage: node skill/scripts/audit-figma-diff.mjs --figma <figma-vars.json> --tokens <tokens.json|dir|tokens-report.json> [--prefix <str>] [--code-connect <dir>] [--runtime <runtime.json>] [--json] [--format json|markdown] [--out <file>] [--self-test]"
+      "Usage: node skill/scripts/audit-figma-diff.mjs --tokens <tokens.json|dir|tokens-report.json> [--figma <figma-vars.json>] [--runtime <runtime.json>] [--prefix <str>] [--code-connect <dir>] [--json] [--format json|markdown] [--out <file>] [--self-test]"
     );
     process.exit(0);
   }
   if (values["self-test"]) process.exit(runSelfTest());
-  if (!values.figma || !values.tokens) {
-    console.error("Error: --figma and --tokens are required unless --self-test is passed.");
+  if (!values.tokens || (!values.figma && !values.runtime)) {
+    console.error("Error: --tokens together with --figma or --runtime is required unless --self-test is passed.");
     process.exit(2);
   }
 
-  const res = compareVertices({
-    figmaPath: values.figma,
-    tokensArg: values.tokens,
-    codeConnectDir: values["code-connect"] || null,
-    runtimePath: values.runtime || null,
-    prefix: values.prefix || null,
-  });
+  const res = values.figma
+    ? compareVertices({
+        figmaPath: values.figma,
+        tokensArg: values.tokens,
+        codeConnectDir: values["code-connect"] || null,
+        runtimePath: values.runtime || null,
+        prefix: values.prefix || null,
+      })
+    : compareDefinedToShipped({
+        tokensArg: values.tokens,
+        runtimePath: values.runtime,
+        codeConnectDir: values["code-connect"] || null,
+        prefix: values.prefix || null,
+      });
   const fmt = values.json ? "json" : values.format;
   const output = fmt === "markdown" ? renderMarkdown(res) + "\n" : JSON.stringify(res, null, 2) + "\n";
   if (values.out) {

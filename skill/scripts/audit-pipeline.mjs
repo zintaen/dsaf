@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * DSAF v0.6.0 — Unified Tier 0 Read-Only One-Click Audit Pipeline (Node ESM).
+ * DSAF v0.7.0 — Unified Tier 0 Read-Only One-Click Audit Pipeline (Node ESM).
  * Chains `recon` (incl. Surface Mode), `tokens`, optional live/Storybook/CDP `runtime`,
  * optional 3-vertex `figma-diff`, and optional `audit-diff` into `audit-summary.json` + Markdown + SARIF 2.1.0.
  * Strictly Tier 0 Read-Only on target repos; writes only inside explicit `--out`.
@@ -151,7 +151,7 @@ export function runAuditPipeline(opts = {}) {
 
   const summary = {
     schema: "dsaf-audit/1",
-    engine_version: "0.6.0",
+    engine_version: "0.7.0",
     generated: new Date().toISOString(),
     dataTier: "tier_0_readonly",
     target,
@@ -209,7 +209,7 @@ export function renderAuditMarkdown(summary) {
   const r = summary.recon;
   const cg = summary.ciGate || { floor: 0, reflex: 0, finish: 0, waived: 0, unusedIgnores: 0 };
   const lines = [
-    "# DSAF Unified Audit Summary (`v0.6.0` · Tier 0 Read-Only)",
+    "# DSAF Unified Audit Summary (`v0.7.0` · Tier 0 Read-Only)",
     "",
     `- **Target:** \`${summary.target}\``,
     `- **Topology / Surface / Maturity:** \`Mode ${r.recommendedMode}\` (${r.topologyLabel}) | Surface: \`${r.surfaceMode || "persuade"}\` | \`${r.estimatedMaturity}\` | \`T2-Mock required: ${r.t2MockRequired}\``,
@@ -287,7 +287,7 @@ function runSelfTest() {
       sarifPath: sarifOut,
     });
     assert.equal(summary.schema, "dsaf-audit/1");
-    assert.equal(summary.engine_version, "0.6.0");
+    assert.equal(summary.engine_version, "0.7.0");
     assert.equal(summary.passed, true);
     assert.equal(summary.tokens.drift.hardcodedColorHits, 0);
     assert.deepEqual(summary.tokens.drift.demoFilesSkipped, ["demo/old-prototype.html"]);

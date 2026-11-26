@@ -20,6 +20,8 @@ jobs:
       - run: npm test
       - run: node bin/dsaf.mjs version
       - run: node bin/dsaf.mjs audit --self-test
+      - run: node bin/dsaf.mjs init --self-test
+      - run: node bin/dsaf.mjs mcp --self-test
       - run: node skill/scripts/ci-report.mjs --self-test
       - run: node bin/dsaf.mjs hook --self-test
       - run: node bin/dsaf.mjs install-skill --self-test
@@ -76,3 +78,29 @@ jobs:
             exit 1
           fi
           echo "DEFECT_FIXTURE_FAILED_AS_EXPECTED"
+
+  action-smoke:
+    runs-on: ubuntu-latest
+    needs: verify
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - name: Run local composite GitHub Action against docs/
+        uses: ./
+        env:
+          DSAF_CLI_BIN: bin/dsaf.mjs
+        with:
+          target: docs
+          out-dir: .tmp-action-smoke
+          sarif-file: .tmp-action-smoke/dsaf.sarif
+          fail-on-floor: "true"
+          run-doctor: "false"
+          upload-sarif: "false"
+          comment-pr: "false"
+      - name: Verify action-smoke outputs
+        run: |
+          test -f .tmp-action-smoke/audit-summary.json
+          test -f .tmp-action-smoke/dsaf.sarif
+          node -e 'const fs=require("node:fs"); const s=JSON.parse(fs.readFileSync(".tmp-action-smoke/audit-summary.json","utf8")); if((s.ci?.counts?.floor||0)!==0) process.exit(1); console.log("ACTION_SMOKE_PASSED");'

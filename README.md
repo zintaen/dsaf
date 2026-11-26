@@ -1,4 +1,4 @@
-# DSAF — Design System & UX/UI Audit Framework (`v0.6.0`)
+# DSAF — Design System & UX/UI Audit Framework (`v0.7.0`)
 
 [![Website](https://img.shields.io/badge/site-zintaen.github.io%2Fdsaf-1d4ed8)](https://zintaen.github.io/dsaf/)
 [![CI](https://github.com/zintaen/dsaf/actions/workflows/ci.yml/badge.svg)](https://github.com/zintaen/dsaf/actions/workflows/ci.yml)
@@ -85,7 +85,7 @@ Or copy [skill/](skill/) manually into your agent's skill directory (`~/.gemini/
 
 ```yaml
 - uses: actions/checkout@v7
-- uses: zintaen/dsaf@v0.6.0
+- uses: zintaen/dsaf@v0.7.0
   with:
     target: apps/web
     sarif-file: dsaf.sarif
@@ -113,6 +113,8 @@ Always start at **Step 0**: the agent runs a fast ~30-second Tier 0 read-only `r
 | Command / Script | Purpose | Zero-Dep Core |
 |---|---|---|
 | `dsaf audit <target>` (`skill/scripts/audit-pipeline.mjs`) | One-click Tier 0 Read-Only orchestrator chaining `recon` (incl. Surface Mode), scoped `tokens`, optional `--cdp`/multi-route `runtime`, optional 3-vertex `figma-diff --runtime`, `audit-diff`, and `--sarif` / `--github` CI outputs into `audit-summary.json` + Markdown | Yes (`runtime` needs Playwright) |
+| `dsaf init [target]` (`skill/scripts/init-evolve.mjs`) | Universal repository auto-evolution bootstrap scaffolding `.dsaf/` C1–C10 governance (`STRATEGY.md`, `rules.json`, `decision-queue.md`, `strategy-feedback.md`, `handoff.md`), optional `--with-hook`, `--with-guardrails`, `--with-workflow` | Yes |
+| `dsaf mcp` (`skill/scripts/mcp-server.mjs`) | Zero-dep JSON-RPC 2.0 stdio MCP server exposing 6 read-only tools (`dsaf_recon`, `dsaf_tokens`, `dsaf_doctor`, `dsaf_hook_check`, `dsaf_figma_diff`, `dsaf_audit`) | Yes (`Node >= 20`) |
 | `dsaf recon <target>` (`skill/scripts/recon.mjs`) | 30s read-only scan detecting stack, routes, Storybook, DTCG tokens, Figma Code Connect, cloud DB risk (`T2-Mock`), Surface Mode (`Persuade/Operate/Read/Experience`), and recommended Mode `S/C/P` | Yes |
 | `dsaf tokens <dir-or-json>` (`skill/scripts/audit-tokens.mjs`) | Validates W3C DTCG tokens (`$value`, `$type`, `{alias}`, `$ref`, cycles), Light/Dark parity & contrast, separates semantic orphans vs palette scale vars, skips `fixtures/`/`demo/`/`ImageResponse`, tracks Tailwind `@theme`/arbitrary/primitive drift, and enforces `dsaf-ignore` waivers + `--sarif` / `--github` / `--report-unused-ignores` | Yes |
 | `dsaf hook <check\|stdin\|install>` (`skill/scripts/dsaf-hook.mjs`) | Edit-time Floor/Reflex checker for Claude Code, Cursor & Codex `PostToolUse` hooks plus CI `--sarif` / `--github` file gate | Yes |

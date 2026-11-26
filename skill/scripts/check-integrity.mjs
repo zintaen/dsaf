@@ -26,8 +26,11 @@ const REQUIRED_FILES = [
   "references/mode-product-ui.md",
   "references/preview-shell-contract.md",
   "references/retro-capture.md",
+  "resources/evolve-strategy.md",
   "resources/preview-shell.html",
   "scripts/audit-pipeline.mjs",
+  "scripts/init-evolve.mjs",
+  "scripts/mcp-server.mjs",
   "scripts/recon.mjs",
   "scripts/audit-tokens.mjs",
   "scripts/audit-figma-diff.mjs",
@@ -128,6 +131,7 @@ function main() {
   console.log("==> [4/4] Running deterministic CLI --self-test suites...");
   for (const script of [
     "recon.mjs",
+    "init-evolve.mjs",
     "ci-report.mjs",
     "dsaf-hook.mjs",
     "install-skill.mjs",
@@ -139,6 +143,7 @@ function main() {
     "audit-diff.mjs",
     "generate-guardrails.mjs",
     "audit-pipeline.mjs",
+    "mcp-server.mjs",
   ]) {
     const res = spawnSync(process.execPath, [join(SCRIPT_DIR, script), "--self-test"], { encoding: "utf8" });
     process.stdout.write(res.stdout || "");
@@ -149,7 +154,7 @@ function main() {
     }
   }
 
-  console.log("SKILL_INTEGRITY_ALL_PASSED (v0.6.0)");
+  console.log("SKILL_INTEGRITY_ALL_PASSED (v0.7.0)");
 }
 
 main();

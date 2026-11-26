@@ -1,6 +1,6 @@
 {
   "name": "@zintaen/dsaf",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "DSAF — Agent-native Design System & Product UX/UI Audit Framework with deterministic runtime verification, token drift analysis, 3-vertex Figma triangulation, SARIF/GitHub CI gates, edit-time hooks, Dual-Track drafts, and closed-loop evolution.",
   "type": "module",
   "publishConfig": {
@@ -45,7 +45,11 @@
   "scripts": {
     "verify": "node evolve/scripts/validate-isolation.mjs",
     "test": "node skill/scripts/check-integrity.mjs && node evolve/scripts/validate-isolation.mjs",
+    "test:init": "node skill/scripts/init-evolve.mjs --self-test",
+    "test:mcp": "node skill/scripts/mcp-server.mjs --self-test",
     "audit": "node skill/scripts/audit-pipeline.mjs",
+    "init": "node skill/scripts/init-evolve.mjs",
+    "mcp": "node skill/scripts/mcp-server.mjs",
     "recon": "node skill/scripts/recon.mjs",
     "audit:tokens": "node skill/scripts/audit-tokens.mjs",
     "audit:figma": "node skill/scripts/audit-figma-diff.mjs",

@@ -4,6 +4,14 @@ Concise version highlights for **DSAF (`@zintaen/dsaf`)**. Follows [Semantic Ver
 
 ---
 
+## v0.7.0 (2026-11-26) — Preview Studio & Docs Redesign, Repo Auto-Evolve (`dsaf init`), Stdio MCP & 2-Vertex Diff
+
+- **Studio & Docs Visual Redesign (`preview-shell.html`, `docs/`):** Rebuilt canonical `preview-shell.html` (100% offline, generic `--uxs-*` vars, zero external assets) and the GitHub Pages showcase (`docs/`) with Warm Alabaster, Deep Umber, and Ochre palettes, composite focus halos, realistic Before/Pragmatic/North-Star specimens, `1200x630` OG card, and passing 5–7 viewport Playwright + APCA checks (`axe=0`, `hardcodedColorHits=0`).
+- **Universal Repo Auto-Evolution (`dsaf init`):** Bootstraps `.dsaf/` governance (`STRATEGY.md`, `rules.json`, `decision-queue.md`, `strategy-feedback.md`, `handoff.md`) with C1–C10 adversarial verifier rules, `.dsaf/STOP` kill-switch, circuit breakers, plus `--with-hook`, `--with-guardrails`, and `--with-workflow`.
+- **Zero-Dep Stdio MCP Server (`dsaf mcp`):** Exposes 6 read-only audit tools (`dsaf_recon`, `dsaf_tokens`, `dsaf_doctor`, `dsaf_hook_check`, `dsaf_figma_diff`, `dsaf_audit`) over Content-Length and NDJSON JSON-RPC 2.0 framing.
+- **2-Vertex `Defined <-> Shipped` & Pixel Diff Gate:** Extends `dsaf figma-diff --tokens ... --runtime ...` to verify CSS/DTCG definitions directly against live computed browser variables without requiring Figma, and adds zero-dep PNG pixel-diff gating (`--screenshot-diff` / `--diff-threshold`) to `dsaf runtime`.
+- **Precision Refinements & CI Action Smoke:** Separates TSX `<svg>` icons and swatch tables (`svgPaletteHits` / `swatchPaletteHits`) in `dsaf tokens`, enforces per-branch focus fallback across comma-separated selectors in `dsaf hook`, and adds an `action-smoke` job to `.github/workflows/ci.yml`.
+
 ## v0.6.0 (2026-11-26) — Zero-Clone Skill Install, GitHub Action & Field-Hardened Probes
 
 - **Zero-Clone Agent Skill Installer (`dsaf install-skill`):** Installs ONLY Tier 1 production skill files directly from npm/npx into Claude Code, Cursor, Codex, Antigravity, or `.agents` (`--agent`, `--scope user|project`, `--dir`, `--dry-run`).
