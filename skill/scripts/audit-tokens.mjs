@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * DSAF v0.2.2 — Deterministic W3C DTCG Token Validator & Codebase Drift Scanner.
+ * DSAF v0.3.0 — Deterministic W3C DTCG Token Validator & Codebase Drift Scanner.
  * Zero external dependencies. Validates $value/$type/{alias}/$ref tokens, Light/Dark
  * mode parity, token-level WCAG 2.2 + APCA-W3 contrast, and scans stylesheets/UI
  * components for hardcoded color drift, property-scoped spacing drift, !important
@@ -427,13 +427,15 @@ function countOffGridSpacing(text, isStyleFile) {
   return hits;
 }
 
-export function scanTarget(targetPath) {
-  const resolved = resolve(targetPath);
+export function scanTarget(targetPath, options = {}) {
+  const baseTarget = options.scope ? join(resolve(targetPath), options.scope) : resolve(targetPath);
+  const resolved = resolve(baseTarget);
   if (!existsSync(resolved)) throw new Error(`Path not found: ${resolved}`);
   const st = statSync(resolved);
 
   const tokenJsonFiles = [];
   const codeFiles = [];
+  const demoFilesSkipped = [];
 
   if (st.isFile()) {
     if (resolved.endsWith(".json")) tokenJsonFiles.push(resolved);
@@ -454,6 +456,10 @@ export function scanTarget(targetPath) {
             rel
           )
         ) {
+          continue;
+        }
+        if (!options.includeDemos && /(^|\/)(?:demos?|examples?|samples?|docs\/status)\//i.test(rel)) {
+          demoFilesSkipped.push(rel);
           continue;
         }
         const lower = entry.name.toLowerCase();
@@ -602,7 +608,25 @@ export function scanTarget(targetPath) {
     }
   }
 
+  const isPaletteScaleVar = (name) =>
+    /^--(color-|palette-|primitive-|raw-)?(gray|grey|slate|zinc|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose|gold|jade|bronze|ivory|ink|surface|space|spacing|size|radius|font-size|text|shadow|z|duration|ease|bp|breakpoint)[_-]?(?:50|[1-9]00|[0-9]{1,3}|2xs|xs|sm|md|lg|xl|2xl|3xl|4xl)$/i.test(
+      name
+    );
+
   const orphanCssVars = [...definedVars].filter((v) => !usedVars.has(v)).sort();
+  const semanticOrphans = orphanCssVars.filter((v) => !isPaletteScaleVar(v));
+  const paletteScaleUnused = orphanCssVars.filter((v) => isPaletteScaleVar(v));
+  let recommendedScope = null;
+  if (st.isDirectory()) {
+    for (const cand of ["apps/web", "web/src", "app", "src"]) {
+      if (existsSync(join(resolved, cand)) && statSync(join(resolved, cand)).isDirectory()) {
+        if (demoFilesSkipped.length > 0 || cand === "apps/web" || cand === "web/src" || cand === "src") {
+          recommendedScope = cand;
+          break;
+        }
+      }
+    }
+  }
   const nearDuplicateHexClusters = findNearDuplicateHexClusters(hardcodedHexSet);
   const totalColorDecls = colorTokenRefs + hardcodedColorHits + twArbitraryColors;
   const tokenCompliancePct = totalColorDecls > 0 ? Number(((colorTokenRefs / totalColorDecls) * 100).toFixed(1)) : null;
@@ -620,6 +644,12 @@ export function scanTarget(targetPath) {
       usedCssVariables: usedVars.size,
       orphanCssVariableCount: orphanCssVars.length,
       orphanCssVariablesSample: orphanCssVars.slice(0, 20),
+      semanticOrphanCount: semanticOrphans.length,
+      semanticOrphansSample: semanticOrphans.slice(0, 20),
+      paletteScaleUnusedCount: paletteScaleUnused.length,
+      paletteScaleUnusedSample: paletteScaleUnused.slice(0, 20),
+      demoFilesSkipped: demoFilesSkipped.sort(),
+      recommendedScope,
       colorTokenRefs,
       hardcodedColorHits,
       tokenCompliancePct,
@@ -744,7 +774,23 @@ function runSelfTest() {
     assert.equal(ogScan.drift.offGridSpacingHits, 0, "Must exclude server ImageResponse OG padding");
     assert.deepEqual(ogScan.drift.serverImageFiles, ["app/opengraph-image.tsx"]);
 
-    console.log("AUDIT_TOKENS_SELF_TEST_PASSED (DTCG refs/modes/contrast + scoped CSS/@theme/Tailwind + fixture/OG exclusion)");
+    // 7. Monorepo demo skipping + semantic vs palette/scale orphans (FB-20261126-010)
+    const monoRoot = join(scratch, "mono-root");
+    mkdirSync(join(monoRoot, "demo"), { recursive: true });
+    mkdirSync(join(monoRoot, "src"), { recursive: true });
+    writeFileSync(join(monoRoot, "demo/prototype.html"), `<div style="color:#ff0000;padding:13px !important;">demo</div>`);
+    writeFileSync(join(monoRoot, "src/tokens.css"), `:root { --gray-100: #f3f4f6; --space-400: 16px; --brand-banner-bg: #1d4ed8; }`);
+    const monoDefault = scanTarget(monoRoot);
+    assert.deepEqual(monoDefault.drift.demoFilesSkipped, ["demo/prototype.html"]);
+    assert.equal(monoDefault.drift.hardcodedColorHits, 0, "Default scan must skip demo/ prototypes");
+    assert.equal(monoDefault.drift.paletteScaleUnusedCount, 2);
+    assert.equal(monoDefault.drift.semanticOrphanCount, 1);
+    assert.deepEqual(monoDefault.drift.semanticOrphansSample, ["--brand-banner-bg"]);
+    assert.equal(monoDefault.drift.recommendedScope, "src");
+    const monoWithDemos = scanTarget(monoRoot, { includeDemos: true });
+    assert.ok(monoWithDemos.drift.hardcodedColorHits >= 1, "--include-demos must scan demo/ files");
+
+    console.log("AUDIT_TOKENS_SELF_TEST_PASSED (DTCG + scoped CSS/@theme/Tailwind + fixture/OG + demo/scale)");
     return 0;
   } finally {
     rmSync(scratch, { recursive: true, force: true });
@@ -757,13 +803,15 @@ function main() {
     options: {
       json: { type: "boolean", default: false },
       out: { type: "string" },
+      "include-demos": { type: "boolean", default: false },
+      scope: { type: "string" },
       "self-test": { type: "boolean", default: false },
       help: { type: "boolean", short: "h", default: false },
     },
   });
 
   if (values.help) {
-    console.log("Usage: node skill/scripts/audit-tokens.mjs <dir-or-tokens-json> [--json] [--out <file>] [--self-test]");
+    console.log("Usage: node skill/scripts/audit-tokens.mjs <dir-or-tokens-json> [--scope <subdir>] [--include-demos] [--json] [--out <file>] [--self-test]");
     process.exit(0);
   }
   if (values["self-test"]) {
@@ -775,7 +823,7 @@ function main() {
     process.exit(2);
   }
 
-  const result = scanTarget(target);
+  const result = scanTarget(target, { includeDemos: values["include-demos"], scope: values.scope });
   const outJson = JSON.stringify(result, null, 2) + "\n";
   if (values.out) {
     mkdirSync(dirname(resolve(values.out)), { recursive: true });
@@ -801,8 +849,10 @@ function main() {
       console.log("DTCG Tokens: none detected");
     }
     const ogNote = d.serverImageFiles.length > 0 ? ` | serverImageSkipped=${d.serverImageFiles.length}` : "";
+    const demoNote = d.demoFilesSkipped.length > 0 ? ` | demoSkipped=${d.demoFilesSkipped.length}` : "";
+    const scopeNote = d.recommendedScope ? ` | scopeHint=${d.recommendedScope}` : "";
     console.log(
-      `CSS Drift: compliance=${d.tokenCompliancePct ?? "N/A"}% (varRefs=${d.colorTokenRefs} vs hardcoded=${d.hardcodedColorHits}) | orphans=${d.orphanCssVariableCount} | !important=${d.importantOverrides} | offGridPx=${d.offGridSpacingHits} | nearDupHexClusters=${d.nearDuplicateHexClusters.length} | twArbColor=${d.tailwind.arbitraryColors} twArbPx=${d.tailwind.arbitrarySpacing} twPrim=${d.tailwind.primitiveColors}${ogNote}`
+      `CSS Drift: compliance=${d.tokenCompliancePct ?? "N/A"}% (varRefs=${d.colorTokenRefs} vs hardcoded=${d.hardcodedColorHits}) | orphans=${d.orphanCssVariableCount} (semantic=${d.semanticOrphanCount}, scale=${d.paletteScaleUnusedCount}) | !important=${d.importantOverrides} | offGridPx=${d.offGridSpacingHits} | nearDupHexClusters=${d.nearDuplicateHexClusters.length} | twArbColor=${d.tailwind.arbitraryColors} twArbPx=${d.tailwind.arbitrarySpacing} twPrim=${d.tailwind.primitiveColors}${ogNote}${demoNote}${scopeNote}`
     );
   }
 }

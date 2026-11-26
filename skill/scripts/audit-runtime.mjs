@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * DSAF v0.2.2 — Runtime Browser, APCA-W3, Keyboard, Screenshot & N-of-1 Verifier.
+ * DSAF v0.3.0 — Runtime Browser, APCA-W3, Keyboard, Screenshot & N-of-1 Verifier.
  * Pure-JS self-tests run with zero dependencies. Live browser/draft audits lazily
  * require Playwright (`playwright` or `@playwright/test`) and Chromium.
  */
@@ -103,9 +103,30 @@ export function summarizeKeyboardAccessibility(controls) {
   };
 }
 
+export function expandRouteTargets(targets, routesCsv) {
+  if (!routesCsv) return targets;
+  const routes = String(routesCsv)
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (routes.length === 0) return targets;
+  const out = [];
+  for (const t of targets) {
+    if (/^https?:\/\//i.test(t)) {
+      for (const r of routes) out.push(new URL(r, t).href);
+    } else {
+      out.push(t);
+    }
+  }
+  return out;
+}
+
 function parseArgs(argv) {
   const out = {
     targets: [],
+    routes: null,
+    outFile: null,
+    themeToggle: null,
     axePath: null,
     executablePath: process.env.CHROME_PATH || null,
     wiringBefore: null,
@@ -122,7 +143,10 @@ function parseArgs(argv) {
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
-    if (a === "--axe") out.axePath = argv[++i];
+    if (a === "--routes") out.routes = argv[++i];
+    else if (a === "--out") out.outFile = argv[++i];
+    else if (a === "--theme-toggle") out.themeToggle = argv[++i];
+    else if (a === "--axe") out.axePath = argv[++i];
     else if (a === "--executable-path") out.executablePath = argv[++i];
     else if (a === "--wiring-before") out.wiringBefore = argv[++i];
     else if (a === "--wiring-after") out.wiringAfter = argv[++i];
@@ -801,11 +825,16 @@ async function auditGeometryApcaInventoryAndSlop(page, isMobile) {
     }
   }
 
+  const overflowKeys = new Set(raw.childOverflows.map((c) => `${c.tag}|${c.text}`));
+  const smallTargetsAnnotated = raw.smallTargets.map((s) =>
+    overflowKeys.has(`${s.tag}|${s.text}`) ? { ...s, overlapsChildOverflow: true } : s
+  );
+
   return {
     docOverflow: raw.docOverflow,
     bodyOverflow: raw.bodyOverflow,
     childOverflows: raw.childOverflows,
-    smallTargets: raw.smallTargets,
+    smallTargets: smallTargetsAnnotated,
     clippedTargets: raw.clippedTargets,
     borderFails: raw.borderFails,
     focusLeaks: raw.focusLeaks,
@@ -819,6 +848,37 @@ async function auditGeometryApcaInventoryAndSlop(page, isMobile) {
       inputs: clusterSignatures(raw.inputShapes),
     },
   };
+}
+
+async function captureComputedRootVars(page) {
+  return page.evaluate(() => {
+    const names = new Set();
+    for (const sheet of Array.from(document.styleSheets || [])) {
+      let rules;
+      try {
+        rules = sheet.cssRules;
+      } catch {
+        continue;
+      }
+      if (!rules) continue;
+      for (const rule of Array.from(rules)) {
+        if (!rule.style || !rule.selectorText) continue;
+        if (!/(:root|\bhtml\b|\[data-theme|\[data-mode|\.(?:dark|light)\b)/i.test(rule.selectorText)) continue;
+        for (const prop of Array.from(rule.style)) {
+          if (prop.startsWith("--") && !/^--(tw|radix|next|vite|sb|storybook|_+)-?/i.test(prop)) {
+            names.add(prop);
+          }
+        }
+      }
+    }
+    const cs = getComputedStyle(document.documentElement);
+    const out = {};
+    for (const n of Array.from(names).sort().slice(0, 500)) {
+      const val = cs.getPropertyValue(n).trim();
+      if (val) out[n] = val;
+    }
+    return out;
+  });
 }
 
 async function captureWebVitals(page) {
@@ -911,11 +971,16 @@ async function runSelfTest() {
       realpathSync(join(axeDir, "axe.min.js")),
       "findAxe must walk target ancestors without NODE_PATH"
     );
+    assert.deepEqual(expandRouteTargets(["http://localhost:3100"], "/,/ket-qua,/so-ve"), [
+      "http://localhost:3100/",
+      "http://localhost:3100/ket-qua",
+      "http://localhost:3100/so-ve",
+    ]);
   } finally {
     rmSync(scratch, { recursive: true, force: true });
   }
 
-  console.log("AUDIT_RUNTIME_SELF_TEST_PASSED (APCA-W3 0.1.9 + WCAG 2.2 + keyboard map + Storybook + N-of-1 clustering)");
+  console.log("AUDIT_RUNTIME_SELF_TEST_PASSED (APCA-W3 0.1.9 + WCAG 2.2 + keyboard map + Storybook + routes + N-of-1)");
   return 0;
 }
 
@@ -923,13 +988,13 @@ async function main() {
   const args = parseArgs(process.argv.slice(2));
   if (args.help) {
     console.log(
-      "Usage: node skill/scripts/audit-runtime.mjs <draft.html|draft-dir|url> [--live] [--storybook <url|index.json>] [--screenshot <out.png> [--pins]] [--wiring-before a --wiring-after b] [--axe path] [--skip-shell-check] [--json] [--self-test]"
+      "Usage: node skill/scripts/audit-runtime.mjs <draft.html|draft-dir|url> [--routes /,/about] [--out <file>] [--theme-toggle <sel>] [--live] [--storybook <url|index.json>] [--screenshot <out.png> [--pins]] [--wiring-before a --wiring-after b] [--axe path] [--skip-shell-check] [--json] [--self-test]"
     );
     process.exit(0);
   }
   if (args.selfTest) process.exit(await runSelfTest());
 
-  const targets = [...args.targets];
+  const targets = expandRouteTargets([...args.targets], args.routes);
   if (args.storybook) {
     const sbUrls = await resolveStorybookUrls(args.storybook, args.maxStories);
     targets.push(...sbUrls);
@@ -962,6 +1027,7 @@ async function main() {
         file: /^(?:https?|file):\/\//i.test(target) ? target.replace(/^file:\/\/\/.*\//, "") : basename(target.split("?")[0]),
         pageErrors,
         webVitals: null,
+        computedVars: null,
         shell: null,
         screenshot: null,
         reducedMotion: null,
@@ -973,6 +1039,7 @@ async function main() {
       page.on("pageerror", (err) => pageErrors.push(err.message || String(err)));
       await page.goto(toUrl(target), { waitUntil: "networkidle" });
       fileRes.webVitals = await captureWebVitals(page);
+      fileRes.computedVars = await captureComputedRootVars(page);
 
       if (!args.skipShellCheck && basename(target) !== "index.html") {
         fileRes.shell = await auditShellContract(page);
@@ -1005,8 +1072,35 @@ async function main() {
 
       for (const m of matrix) {
         await page.setViewportSize({ width: m.width, height: m.height });
+        await page.emulateMedia({ colorScheme: m.theme });
         const themeBtn = await page.$(`[data-theme="${m.theme}"]`);
-        if (themeBtn) await themeBtn.click();
+        if (themeBtn) {
+          await themeBtn.click();
+        } else if (args.themeToggle) {
+          const curTheme = await page.evaluate(() =>
+            document.documentElement.classList.contains("dark") ||
+            document.documentElement.getAttribute("data-theme") === "dark" ||
+            document.documentElement.getAttribute("data-mode") === "dark"
+              ? "dark"
+              : "light"
+          );
+          if (curTheme !== m.theme) {
+            const tog = await page.$(args.themeToggle);
+            if (tog) await tog.click();
+          }
+        } else if (args.live) {
+          await page.evaluate((theme) => {
+            const root = document.documentElement;
+            if (root.classList.contains("dark") || root.classList.contains("light")) {
+              root.classList.toggle("dark", theme === "dark");
+              root.classList.toggle("light", theme === "light");
+            } else if (root.hasAttribute("data-theme")) {
+              root.setAttribute("data-theme", theme);
+            } else if (root.hasAttribute("data-mode")) {
+              root.setAttribute("data-mode", theme);
+            }
+          }, m.theme);
+        }
         await page.waitForTimeout(150);
 
         const geom = await auditGeometryApcaInventoryAndSlop(page, m.isMobile);
@@ -1082,8 +1176,13 @@ async function main() {
     await browser.close();
   }
 
+  const outJson = JSON.stringify(report, null, 2) + "\n";
+  if (args.outFile) {
+    mkdirSync(dirname(resolve(args.outFile)), { recursive: true });
+    writeFileSync(resolve(args.outFile), outJson, "utf8");
+  }
   if (args.json) {
-    console.log(JSON.stringify(report, null, 2));
+    process.stdout.write(outJson);
   } else {
     for (const f of report.files) {
       console.log(`FILE ${f.file}: ${f.passed ? "PASS" : "FAIL"} (pageErrors=${f.pageErrors.length}, LCP=${f.webVitals?.lcpMs ?? "n/a"}ms, CLS=${f.webVitals?.cls ?? 0})`);

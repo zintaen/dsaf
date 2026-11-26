@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * DSAF v0.2.2 — Two-Channel Closed-Loop Evolution Miner (Node ESM, zero external deps).
+ * DSAF v0.3.0 — Two-Channel Closed-Loop Evolution Miner (Node ESM, zero external deps).
  * Channel 1: Reads domain-stripped retro records (~/.dsaf/feedback-log.jsonl), validates schema,
  *            rejects URL/PII/filesystem leaks, and clusters hypotheses by severity weight.
  * Channel 2: Scans calibration scorecard outputs (`dsaf-scores/2` JSONs) to surface

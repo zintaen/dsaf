@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * DSAF v0.2.2 — Clean Validation & Multi-Agent Skill Sync Script (Node ESM).
+ * DSAF v0.3.0 — Clean Validation & Multi-Agent Skill Sync Script (Node ESM).
  * Validates isolation & parity, removes OS metadata clutter, and syncs `skill/` (`dsaf`)
  * + `evolve/` (`dsaf-evolve`) into Antigravity / generic agent skill directories.
  */

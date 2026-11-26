@@ -4,6 +4,17 @@ All notable changes to **DSAF (Design System Audit Framework)** will be document
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-11-26
+
+### Added
+- **One-Click Audit Pipeline (`skill/scripts/audit-pipeline.mjs`, `dsaf audit`):** Runs Tier 0 Read-Only `recon` + `tokens` + optional `runtime` (`--url`, `--routes`, `--storybook`) + optional 3-vertex `figma-diff` (`computedVars` live check) + optional `audit-diff` in one command, emitting `audit-summary.json` (`dsaf-audit/1`) and GitHub-ready Markdown (`audit-summary.md`).
+- **Live Vertex 3 (`Shipped`) CSS Var Verification (`skill/scripts/audit-runtime.mjs` + `audit-figma-diff.mjs`):** `audit-runtime.mjs` captures computed `:root` CSS variables (`computedVars`) and `--routes` / `--out` / multi-stack Light↔Dark switching (`prefers-color-scheme`, `[data-theme]`, `[data-mode]`, `.dark`, `--theme-toggle`), and `audit-figma-diff.mjs --runtime` verifies `Defined` tokens match live `Shipped` values.
+- **CI Integration (`ci.yml`):** Added `node bin/dsaf.mjs audit --self-test` alongside tarball CLI smoke verification.
+
+### Changed
+- **Monorepo & `Mode C` Drift Precision (`skill/scripts/audit-tokens.mjs`, `FB-20261126-010`):** Skips prototype/demo folders (`demos?`, `examples?`, `samples?`, `docs/status`) by default (`demoFilesSkipped`, overridable via `--include-demos`), supports `--scope <subdir>` (`recommendedScope` hint), and separates `semanticOrphans` from `paletteScaleUnused` tonal scale custom properties.
+- **Touch/Overflow Attribution:** `audit-runtime.mjs` annotates `smallTargets` items that also trigger `childOverflows` (`overlapsChildOverflow: true`, `FB-20261126-008`).
+
 ## [0.2.2] - 2026-11-26
 
 ### Added

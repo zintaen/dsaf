@@ -1,4 +1,4 @@
-# Step 0 — Fast Read-Only Recon & Clarification Gate (`v0.2.2`)
+# Step 0 — Fast Read-Only Recon & Clarification Gate (`v0.3.0`)
 
 Always execute this gate at the start of every DSAF run BEFORE creating `audit-output/`, scoring criteria, writing `draft/` previews, or running state-mutating interactions.
 

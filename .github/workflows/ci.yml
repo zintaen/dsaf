@@ -19,6 +19,7 @@ jobs:
           node-version: ${{ matrix.node-version }}
       - run: npm test
       - run: node bin/dsaf.mjs version
+      - run: node bin/dsaf.mjs audit --self-test
       - run: node bin/dsaf.mjs figma-diff --self-test
       - run: node bin/dsaf.mjs guardrails --self-test
       - run: npm pack --dry-run

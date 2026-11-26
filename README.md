@@ -1,4 +1,4 @@
-# DSAF — Design System & UX/UI Audit Framework (`v0.2.2`)
+# DSAF — Design System & UX/UI Audit Framework (`v0.3.0`)
 
 [![CI](https://github.com/zintaen/dsaf/actions/workflows/ci.yml/badge.svg)](https://github.com/zintaen/dsaf/actions/workflows/ci.yml)
 [![npm version](https://img.shields.io/npm/v/@zintaen/dsaf)](https://www.npmjs.com/package/@zintaen/dsaf)
@@ -46,10 +46,11 @@ npm test
 
 ```bash
 node bin/dsaf.mjs help
+node bin/dsaf.mjs audit ./your-app --out ./audit-output
 node bin/dsaf.mjs recon ./your-app
-node bin/dsaf.mjs tokens ./your-app
-node bin/dsaf.mjs figma-diff --figma ./figma-vars.json --tokens ./your-app [--prefix --sds-]
-node bin/dsaf.mjs runtime --storybook ./storybook-static/index.json
+node bin/dsaf.mjs tokens ./your-app [--scope apps/web] [--include-demos]
+node bin/dsaf.mjs figma-diff --figma ./figma-vars.json --tokens ./your-app [--prefix --sds-] [--runtime ./runtime.json]
+node bin/dsaf.mjs runtime --storybook ./storybook-static/index.json [--routes /,/about --out ./runtime.json]
 node bin/dsaf.mjs guardrails --out ./your-app/.dsaf-guardrails --stack tailwind
 ```
 
@@ -57,7 +58,7 @@ node bin/dsaf.mjs guardrails --out ./your-app/.dsaf-guardrails --stack tailwind
 > - **Automatic `playwright` & `axe-core` discovery (`dsaf runtime`):** Automatically searches `process.cwd()` and the target file/directory's ancestor `node_modules/` folders cleanly with no `NODE_PATH` needed (override with `NODE_PATH` or `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH` if using an isolated browser dir).
 > - **`+SG` gate targets & env caps (`check-design-discipline.mjs`):** Accepts either a directory (`app`, `src`) or a single file (`app/globals.css`). Configure budgets with `DSAF_MAX_HARDCODED_COLORS`, `DSAF_MAX_IMPORTANT`, `DSAF_MAX_TW_ARBITRARY`, plus optional `DSAF_MAX_SVG_COLORS` and `DSAF_MAX_SWATCH_COLORS`.
 
-Or install/link via `npm link` / `npm install -g @zintaen/dsaf` (or `npx @zintaen/dsaf` — `package.json` configures a strict `"files"` whitelist excluding maintainer-only `evolve/`; releases publish automatically via GitHub Actions OIDC `.github/workflows/publish.yml` on `v*` tags) to invoke `dsaf <command>` anywhere (`recon`, `tokens`, `figma-diff`, `runtime`, `scorecard`, `diff`, `guardrails`, `integrity`, `verify`, `mine`, `sync`, `version`).
+Or install/link via `npm link` / `npm install -g @zintaen/dsaf` (or `npx @zintaen/dsaf` — `package.json` configures a strict `"files"` whitelist excluding maintainer-only `evolve/`; releases publish automatically via GitHub Actions OIDC `.github/workflows/publish.yml` on `v*` tags) to invoke `dsaf <command>` anywhere (`audit`, `recon`, `tokens`, `figma-diff`, `runtime`, `scorecard`, `diff`, `guardrails`, `integrity`, `verify`, `mine`, `sync`, `version`).
 
 ### 3. Install `dsaf` (and Optional Maintainer `dsaf-evolve`) into AI Coding Agents
 
@@ -86,10 +87,11 @@ Always start at **Step 0**: the agent runs a fast ~30-second Tier 0 read-only `r
 
 | Command / Script | Purpose | Zero-Dep Core |
 |---|---|---|
+| `dsaf audit <target>` (`skill/scripts/audit-pipeline.mjs`) | One-click Tier 0 Read-Only orchestrator chaining `recon`, scoped `tokens`, optional multi-route `runtime`, optional 3-vertex `figma-diff --runtime`, and `audit-diff` into `audit-summary.json` + Markdown | Yes (`runtime` needs Playwright) |
 | `dsaf recon <target>` (`skill/scripts/recon.mjs`) | 30s read-only scan detecting stack, routes, Storybook, DTCG tokens, Figma Code Connect, cloud DB risk (`T2-Mock`), and recommended Mode `S/C/P` | Yes |
-| `dsaf tokens <dir-or-json>` (`skill/scripts/audit-tokens.mjs`) | Validates W3C DTCG tokens (`$value`, `$type`, `{alias}`, `$ref`, cycles), Light/Dark mode parity & token contrast, CSS/Tailwind `@theme` + arbitrary/primitive drift, near-duplicate hex clusters, `!important`, and authored orphan variables | Yes |
-| `dsaf figma-diff --figma <f> --tokens <t>` (`skill/scripts/audit-figma-diff.mjs`) | Automates 3-vertex `Designed <-> Defined <-> Shipped` comparison across Figma variables (`@collection` / `*_primitives`), CSS custom properties (`var()` aliases, dark `@media` preservation, `--prefix` auto-strip, `px`/`rem` & font stacks), Code Connect (`*.figma.*` & `*.figma.batch.*`), DTCG tokens, and runtime summaries | Yes |
-| `dsaf runtime <draft-or-url>` (`skill/scripts/audit-runtime.mjs`) | Verifies Canonical Preview Shell (`preview-shell.html`), `keyboardMap` (tabbable count, `tabindex > 0`, unnamed controls), local/live `--storybook` reduced-motion, `--screenshot [--pins]`, canvas-rasterized `oklch`/`lab`/`light-dark`, `pixelBehind` contrast, APCA-W3 `Lc`, WCAG `3.00:1` UI borders, `>= 44.0px` mobile tap targets, `N-of-1` clusters, `LCP`/`CLS`, `axe-core`, and Kept Wiring diff | Pure-JS self-tests yes; live checks require Playwright |
+| `dsaf tokens <dir-or-json>` (`skill/scripts/audit-tokens.mjs`) | Validates W3C DTCG tokens (`$value`, `$type`, `{alias}`, `$ref`, cycles), Light/Dark parity & contrast, separates semantic orphans vs palette scale vars, skips `fixtures/`/`demo/`/`ImageResponse`, and tracks Tailwind `@theme`/arbitrary/primitive drift | Yes |
+| `dsaf figma-diff --figma <f> --tokens <t>` (`skill/scripts/audit-figma-diff.mjs`) | Automates full 3-vertex `Designed <-> Defined <-> Shipped` triangulation across Figma variables (`@collection` / `*_primitives`), CSS custom properties (`var()`, dark `@media`, `--prefix` auto-strip, `px`/`rem`), Code Connect (`*.figma.*` & batch JSON), and live `computedVars` (`--runtime`) | Yes |
+| `dsaf runtime <draft-or-url>` (`skill/scripts/audit-runtime.mjs`) | Verifies Canonical Preview Shell (`preview-shell.html`), `--routes` + `--out`, multi-stack Light/Dark switching, live `computedVars`, `keyboardMap`, `--storybook` reduced-motion, `--screenshot [--pins]`, `pixelBehind`, APCA-W3 `Lc`, WCAG `3.00:1` UI borders, `>= 44.0px` targets + `overlapsChildOverflow`, `N-of-1` clusters, `LCP`/`CLS`, `axe-core`, and Kept Wiring diff | Pure-JS self-tests yes; live checks require Playwright |
 | `dsaf scorecard --input <file>` (`skill/scripts/compute-scorecard.mjs`) | Deterministic validator & calculator (`dsaf-scores/2`) supporting `usability`, `visual`, and `system` rubrics, domain weight presets, Hard Floor caps, 3-band prose cap (`<= 40%`), and exact Before vs Track A vs Track B point deltas | Yes |
 | `dsaf diff --baseline <a> --current <b>` (`skill/scripts/audit-diff.mjs`) | Enforces **No-Silent-Regression** (`D-RT`, `OVRD-*`, `UNRESOLVED`); exits `1` on unapproved score drops | Yes |
 | `dsaf guardrails --out <dir>` (`skill/scripts/generate-guardrails.mjs`) | Emits runnable `check-design-discipline.mjs` (separating CSS/inline-style `#hex` & Tailwind arbitrary brackets from informational SVG/swatch colors), GitHub Actions `dsaf-regression-gate.yml`, and `AGENTS-dsaf-rules.md` (`+SG`) | Yes |

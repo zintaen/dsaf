@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * DSAF v0.2.2 — Deterministic Weighted Scorecard Calculator & Validator (Node ESM).
+ * DSAF v0.3.0 — Deterministic Weighted Scorecard Calculator & Validator (Node ESM).
  * Zero external dependencies. Supports three audit types under schema `dsaf-scores/2`:
  * - `usability` (U01..U18, 6 pillars, Hard Floor)
  * - `visual`    (V01..V11, 6 pillars, Hard Floor)
@@ -12,7 +12,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { parseArgs } from "node:util";
 
-export const ENGINE_VERSION = "0.2.2";
+export const ENGINE_VERSION = "0.3.0";
 
 const USABILITY_PILLARS = [
   ["P1", "Onboarding & Value Clarity", ["U01", "U02", "U03"]],

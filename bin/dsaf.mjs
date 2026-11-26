@@ -12,6 +12,7 @@ const BIN_DIR = dirname(decodeURIComponent(new URL(import.meta.url).pathname));
 const REPO_ROOT = resolve(BIN_DIR, "..");
 
 const COMMANDS = {
+  audit: { script: "skill/scripts/audit-pipeline.mjs", desc: "One-click Tier 0 Read-Only audit pipeline (recon + tokens + runtime + figma + diff)" },
   recon: { script: "skill/scripts/recon.mjs", desc: "Read-only topology & T2-Mock recon (Mode S / C / P)" },
   tokens: { script: "skill/scripts/audit-tokens.mjs", desc: "W3C DTCG validator, Light/Dark parity & CSS/Tailwind drift" },
   "figma-diff": { script: "skill/scripts/audit-figma-diff.mjs", desc: "Compare Figma MCP variables & Code Connect against DTCG/CSS" },
@@ -40,6 +41,7 @@ function printHelp() {
   console.log("  version      Print installed DSAF CLI version");
   console.log("  help         Show this help message\n");
   console.log("Examples:");
+  console.log("  dsaf audit ./my-app --out ./audit-output");
   console.log("  dsaf recon ./my-app");
   console.log("  dsaf tokens ./my-app --json");
   console.log("  dsaf guardrails --out ./my-app/.dsaf-guardrails --stack tailwind");

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * DSAF v0.2.2 — Automated 3-Vertex Figma MCP / Code Connect Triangulation CLI.
+ * DSAF v0.3.0 — Automated 3-Vertex Figma MCP / Code Connect Triangulation CLI.
  * Compares Designed (Figma variable JSON + optional Code Connect *.figma.* files)
  * against Defined (W3C DTCG tokens / CSS variables / audit-tokens JSON) and optional
  * Shipped runtime summary (`audit-runtime --json`). Zero external dependencies.
@@ -395,15 +395,29 @@ export function compareVertices({ figmaPath, tokensArg, codeConnectDir = null, r
   const codeConnect = scanCodeConnect(codeConnectDir);
 
   let shippedSummary = null;
+  const shippedVarsRaw = new Map();
   if (runtimePath) {
     const rt = JSON.parse(readFileSync(resolve(runtimePath), "utf8"));
     const firstCheck = rt.files?.[0]?.checks?.[0];
+    for (const f of rt.files || []) {
+      if (f.computedVars && typeof f.computedVars === "object") {
+        for (const [k, v] of Object.entries(f.computedVars)) {
+          if (!shippedVarsRaw.has(k)) shippedVarsRaw.set(k, v);
+        }
+      }
+    }
     shippedSummary = {
       schema: rt.schema || null,
       allPassed: Boolean(rt.allPassed),
       filesAudited: rt.files?.length ?? 0,
       apcaBodyMin: firstCheck?.apca?.minBodyLc ?? null,
       buttonSignatures: firstCheck?.componentInventory?.buttons?.distinctSignatures ?? null,
+      shippedVarsSampled: shippedVarsRaw.size,
+      shippedMatchedCount: 0,
+      shippedDriftCount: 0,
+      shippedDrift: [],
+      definedNotShippedCount: 0,
+      definedNotShipped: [],
     };
   }
 
@@ -423,6 +437,7 @@ export function compareVertices({ figmaPath, tokensArg, codeConnectDir = null, r
   }
 
   const matchedTokens = [];
+  const matchedPairs = [];
   const valueDrift = [];
   const designOnlyTokens = [];
   const matchedDefinedCanons = new Set();
@@ -451,10 +466,57 @@ export function compareVertices({ figmaPath, tokensArg, codeConnectDir = null, r
       matchedDefinedCanons.add(canonKey(found.key));
       if (valuesMatch(fVal, found.value)) {
         matchedTokens.push({ key: fKey, value: found.value });
+        matchedPairs.push({ figmaKey: fKey, definedKey: found.key, value: found.value });
       } else {
         valueDrift.push({ key: fKey, figmaValue: fVal, definedValue: found.value });
       }
     }
+  }
+
+  if (shippedSummary && shippedVarsRaw.size > 0) {
+    const shippedNorm = new Map();
+    for (const [cssVar, val] of shippedVarsRaw.entries()) {
+      const nk = normalizeKey(cssVar);
+      const ck = canonKey(nk);
+      const normVal = normalizeValue(val);
+      if (nk && !shippedNorm.has(nk)) shippedNorm.set(nk, { cssVar, value: normVal });
+      if (ck && !shippedNorm.has(ck)) shippedNorm.set(ck, { cssVar, value: normVal });
+      if (activePrefix && nk.startsWith(`${activePrefix}.`)) {
+        const bare = nk.slice(activePrefix.length + 1);
+        const bareCanon = canonKey(bare);
+        if (!shippedNorm.has(bare)) shippedNorm.set(bare, { cssVar, value: normVal });
+        if (!shippedNorm.has(bareCanon)) shippedNorm.set(bareCanon, { cssVar, value: normVal });
+      }
+    }
+    const seenDefined = new Set();
+    for (const pair of matchedPairs) {
+      const ck = canonKey(pair.definedKey);
+      if (seenDefined.has(ck)) continue;
+      seenDefined.add(ck);
+      const cands = [pair.definedKey, ck, stripPrimitivesSegment(pair.definedKey), canonKey(stripPrimitivesSegment(pair.definedKey))];
+      let hit = null;
+      for (const c of cands) {
+        if (shippedNorm.has(c)) {
+          hit = shippedNorm.get(c);
+          break;
+        }
+      }
+      if (!hit) {
+        shippedSummary.definedNotShipped.push({ key: pair.figmaKey, definedValue: pair.value });
+      } else if (valuesMatch(pair.value, hit.value)) {
+        shippedSummary.shippedMatchedCount++;
+      } else {
+        shippedSummary.shippedDrift.push({
+          key: pair.figmaKey,
+          cssVar: hit.cssVar,
+          definedValue: pair.value,
+          shippedValue: hit.value,
+        });
+      }
+    }
+    shippedSummary.shippedDriftCount = shippedSummary.shippedDrift.length;
+    shippedSummary.definedNotShippedCount = shippedSummary.definedNotShipped.length;
+    shippedSummary.definedNotShipped = shippedSummary.definedNotShipped.slice(0, 25);
   }
 
   const codeOnlyTokens = [];
@@ -512,6 +574,20 @@ export function renderMarkdown(res) {
     lines.push("## Design-Only Tokens (Missing in Code)", "");
     for (const t of res.designOnlyTokens.slice(0, 20)) lines.push(`- \`${t.key}\`: \`${t.figmaValue}\``);
     lines.push("");
+  }
+  if (res.shippedSummary?.shippedVarsSampled > 0) {
+    const sh = res.shippedSummary;
+    lines.push(
+      "## Shipped Runtime Verification (Vertex 3)",
+      "",
+      `- Computed CSS Vars Sampled: ${sh.shippedVarsSampled} | Matched: ${sh.shippedMatchedCount} | Runtime Drift: ${sh.shippedDriftCount} | Defined-Not-Shipped: ${sh.definedNotShippedCount}`,
+      ""
+    );
+    if (sh.shippedDrift.length > 0) {
+      lines.push("| Token | CSS Var | Defined | Shipped |", "|---|---|---|---|");
+      for (const d of sh.shippedDrift.slice(0, 30)) lines.push(`| \`${d.key}\` | \`${d.cssVar}\` | \`${d.definedValue}\` | \`${d.shippedValue}\` |`);
+      lines.push("");
+    }
   }
   if (res.codeConnect) {
     const previewList = res.codeConnect.mappedComponents.slice(0, 25).join(", ");
@@ -648,7 +724,38 @@ function runSelfTest() {
     assert.equal(realDiff.codeConnect.batchEntriesCount, 2);
     assert.deepEqual(realDiff.codeConnect.mappedComponents, ["Card", "IconAlert", "IconCheck"]);
 
-    console.log("AUDIT_FIGMA_DIFF_SELF_TEST_PASSED (alias resolve + value drift + CSS var/prefix/rem/dark + Code Connect v2)");
+    // 3. Vertex 3 Shipped computedVars comparison (--runtime runtime.json)
+    const runtimeJsonPath = join(scratch, "runtime.json");
+    writeFileSync(
+      runtimeJsonPath,
+      JSON.stringify({
+        schema: "dsaf-runtime/2",
+        allPassed: true,
+        files: [
+          {
+            file: "index.html",
+            computedVars: {
+              "--ds-color-brand-800": "#2c2c2c",
+              "--ds-color-background-brand-default": "#ff0000",
+            },
+            checks: [{ apca: { minBodyLc: 85 }, componentInventory: { buttons: { distinctSignatures: 2 } } }],
+          },
+        ],
+      })
+    );
+    const v3Diff = compareVertices({
+      figmaPath: repoFigmaPath,
+      tokensArg: repoDir,
+      codeConnectDir: join(repoDir, "src/figma"),
+      runtimePath: runtimeJsonPath,
+    });
+    assert.equal(v3Diff.shippedSummary.shippedVarsSampled, 2);
+    assert.equal(v3Diff.shippedSummary.shippedMatchedCount, 1);
+    assert.equal(v3Diff.shippedSummary.shippedDriftCount, 1);
+    assert.equal(v3Diff.shippedSummary.shippedDrift[0].shippedValue, "#ff0000");
+    assert.match(renderMarkdown(v3Diff), /Shipped Runtime Verification \(Vertex 3\)/);
+
+    console.log("AUDIT_FIGMA_DIFF_SELF_TEST_PASSED (alias resolve + value drift + Vertex 3 shipped + Code Connect v2)");
     return 0;
   } finally {
     rmSync(scratch, { recursive: true, force: true });

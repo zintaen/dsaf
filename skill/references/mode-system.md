@@ -1,4 +1,4 @@
-# Mode S — Design System Core Audit (`v0.2.2`)
+# Mode S — Design System Core Audit (`v0.3.0`)
 
 Load this playbook when Step 0 confirms **`Mode S` (Design System Core)** — auditing an existing design system library, token package, or component system repository. Pair with [scoring-model.md](./scoring-model.md) and always follow the user's conversation language.
 

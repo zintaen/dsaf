@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * DSAF v0.2.2 — Step 0 Read-Only Reconnaissance Scanner (zero external deps).
+ * DSAF v0.3.0 — Step 0 Read-Only Reconnaissance Scanner (zero external deps).
  * Scans a local repository or records a URL stub strictly read-only to classify
  * target topology (Mode S / C / P), tech stack, cloud-isolation risks (T2-Mock),
  * and recommended Step 0 clarification defaults.

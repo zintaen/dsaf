@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 /**
- * DSAF v0.2.2 — Tier 1 Skill Integrity & Self-Test Runner.
+ * DSAF v0.3.0 — Tier 1 Skill Integrity & Self-Test Runner.
  * Verifies required structure, YAML frontmatter, relative markdown links, Canonical
- * Preview Shell attributes, zero contamination in `skill/`, and all 7 CLI self-tests.
+ * Preview Shell attributes, zero contamination in `skill/`, and all 8 CLI self-tests.
  */
 
 import { spawnSync } from "node:child_process";
@@ -27,6 +27,7 @@ const REQUIRED_FILES = [
   "references/preview-shell-contract.md",
   "references/retro-capture.md",
   "resources/preview-shell.html",
+  "scripts/audit-pipeline.mjs",
   "scripts/recon.mjs",
   "scripts/audit-tokens.mjs",
   "scripts/audit-figma-diff.mjs",
@@ -129,6 +130,7 @@ function main() {
     "compute-scorecard.mjs",
     "audit-diff.mjs",
     "generate-guardrails.mjs",
+    "audit-pipeline.mjs",
   ]) {
     const res = spawnSync(process.execPath, [join(SCRIPT_DIR, script), "--self-test"], { encoding: "utf8" });
     process.stdout.write(res.stdout || "");
@@ -139,7 +141,7 @@ function main() {
     }
   }
 
-  console.log("SKILL_INTEGRITY_ALL_PASSED (v0.2.2)");
+  console.log("SKILL_INTEGRITY_ALL_PASSED (v0.3.0)");
 }
 
 main();
