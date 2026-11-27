@@ -1,4 +1,4 @@
-# Mode C — Product Conformance & Drift Audit (`v0.3.0`)
+# Mode C — Product Conformance & Drift Audit (`v0.9.3`)
 
 Load this playbook when Step 0 confirms **`Mode C` (Product-on-DS Conformance & Drift)** — auditing a live product or application codebase that already consumes a design system, token library, or structured styling architecture. Pair with [scoring-model.md](./scoring-model.md), [mode-product-ux.md](./mode-product-ux.md), and [mode-product-ui.md](./mode-product-ui.md).
 
@@ -16,14 +16,14 @@ A design system only creates value if shipped UI stays faithful to it. `Mode C` 
 ## 2. Conformance & Drift Procedure
 
 ### Step 1. Codebase Drift Scan (`audit-tokens.mjs`)
-Run on the application styling/UI directories (or pass `--scope <subdir>` from monorepo roots; prototype `demo/`/`examples/`/`docs/status/` and server `ImageResponse` files are skipped automatically unless `--include-demos` is passed):
+Run on the application styling/UI directories (or pass `--scope <subdir>` from monorepo roots; prototype `demo/`/`examples/`/`docs/status/` files are skipped automatically unless `--include-demos` is passed, while server `ImageResponse` files are always skipped unconditionally):
 ```bash
 node ./scripts/audit-tokens.mjs <app-src-dir> [--scope apps/web] [--include-demos] --json --out <audit-output/conformance/tokens-drift.json>
 ```
 Capture exact objective drift metrics (never estimate counts):
-- **Token Compliance Ratio (%):** Percentage of color references using semantic `var(--*)` tokens vs raw hardcoded `#hex`, `rgb()`, `hsl()`, un-tokenized `oklch()` literals, or Tailwind arbitrary color classes (`bg-[#...]`) outside token definition blocks.
+- **Token Compliance Ratio (%):** Percentage of color references using semantic `var(--*)` tokens vs raw hardcoded `#hex`, `rgb()`, `hsl()`, `hwb()`, `lch()`, `lab()`, `oklab()`, `oklch()`, `color()` literals, or Tailwind arbitrary color classes (`bg-[#...]`) outside token definition blocks.
 - **Primitive Token Leakage:** Direct usage of raw palette steps (e.g., `--gray-700`, Tailwind raw `bg-slate-600`) where semantic tokens (e.g., `--surface-elevated`, `--text-muted`) are defined and expected.
-- **Semantic vs Palette Scale Orphans & Near-Duplicate Clusters:** Separate `semanticOrphans` (genuine unused semantic vars) from `paletteScaleUnused` tonal scale vars (framework internals like `--tw-*` / `--radix-*` and consumed Tailwind `@theme` utilities excluded), plus near-duplicate hardcoded colors (`deltaRGB < 18`) creeping into feature styles.
+- **Semantic vs Palette Scale Orphans & Near-Duplicate Clusters:** Separate `semanticOrphanCount` / `semanticOrphansSample` (genuine unused semantic vars) from `paletteScaleUnusedCount` / `paletteScaleUnusedSample` tonal scale vars (framework internals like `--tw-*` / `--radix-*` and consumed Tailwind `@theme` utilities excluded), plus near-duplicate hardcoded colors (`deltaRGB < 18`) creeping into feature styles.
 - **Scoped Off-Grid Spacing & `!important` Overrides:** Property-scoped `padding`/`margin`/`gap`/`border-radius` literals outside the 4px/8px scale, Tailwind arbitrary `p-[Npx]` utilities, and density of `!important` override hacks fighting system styles.
 - **Light/Dark DTCG Mode Parity & Contrast:** Missing Light vs Dark semantic keys plus resolved token-pair WCAG/APCA compliance when DTCG files are present.
 
@@ -34,7 +34,7 @@ node ./scripts/audit-runtime.mjs <app-url> --routes /,/dashboard --live [--axe <
 ```
 Evaluate:
 - **N-of-1 Component Signatures:** Inspect `componentInventory` reported by `audit-runtime.mjs` for `buttons` and `inputs` — surface every rogue local clone whose rendered `(height, borderRadius, fontSize, borderWidth)` diverges from canonical DS components (for example `"6 distinct button height×radius signatures across 19 rendered buttons"`).
-- **Computed Fidelity, `computedVars` & Keyboard Map:** Verify whether live `:root` `computedVars` and rendered UI resolve cleanly across Light/Dark themes without broken contrast (`< 4.5:1` / `< 3.00:1` UI borders / low APCA `Lc`), `< 44.0 px` mobile tap targets (including `overlapsChildOverflow` from pseudo-element expanders), `tabindex > 0` traps, or unnamed interactive controls (`keyboardMap`).
+- **Computed Fidelity, `computedVars` & Keyboard Map:** Verify whether live `:root` `computedVars` and rendered UI resolve cleanly across Light/Dark themes without broken contrast (`< 4.5:1` / `< 3.00:1` UI borders / low APCA `Lc`), `< 44.0 px` mobile tap targets (crediting `::before`/`::after` expanders into effective size and flagging `overlapsChildOverflow` when a sub-44px control also overflows), `tabindex > 0` traps, or unnamed interactive controls (`keyboardMap`).
 - **Figma MCP & Code Connect 3-Vertex Triangulation SOP (`audit-figma-diff.mjs`):**
   1. When Figma MCP context (`get_variable_defs`, `get_design_context`) or exported Figma variable JSON plus Code Connect mappings (`*.figma.ts` / `*.figma.tsx` / `*.figma.batch.*`) exist alongside codebase/runtime artifacts, run:
      ```bash
@@ -50,7 +50,7 @@ Evaluate:
 ### Step 4. Conformance Scorecard, Dual-Track Previews & Executable CI Guardrails
 - Compute the `product_conformance` Scorecard (`type: "system"`, `profile: "product_conformance"`) alongside Usability / Visual scorecards via `compute-scorecard.mjs` (`DS01–DS12` weighted toward `P3 Conformance & Drift = 35%`). Link every Finding ID (`DRIFT-*`, `F-*`, `VIS-*`) cleanly without mega-merging unrelated components.
 - For UI fixes, clone [preview-shell.html](../resources/preview-shell.html) into `draft/` showing current drifted baseline (`Before`) vs consolidated DS-compliant UI (`Track A` / `Track B`), verified via `audit-runtime.mjs`.
-- **Post-Signoff Deliverable — Executable Guardrails Pack (`generate-guardrails.mjs`):** After owner sign-off, run `node ./scripts/generate-guardrails.mjs --out <repo>/.dsaf-guardrails --stack <css|tailwind|react> --mode C` to emit:
+- **Post-Signoff Deliverable — Executable Guardrails Pack (`generate-guardrails.mjs` & `update`):** After owner sign-off, run `node ./scripts/generate-guardrails.mjs --out <repo>/.dsaf-guardrails --stack <css|tailwind|react> --mode C` (or `npx @zintaen/dsaf setup . --with-ci --with-auto-update`) to emit:
   1. `check-design-discipline.mjs` — zero-dependency script enforcing CSS/inline-style `#hex` (`DSAF_MAX_HARDCODED_COLORS`), Tailwind arbitrary bracket classes (`DSAF_MAX_TW_ARBITRARY`), and `!important` overrides (`DSAF_MAX_IMPORTANT`) outside token blocks, while reporting declarative SVG `fill`/`stroke` marks (`DSAF_MAX_SVG_COLORS`) and quoted swatch constants (`DSAF_MAX_SWATCH_COLORS`) cleanly in `info:`.
-  2. `dsaf-regression-gate.yml` — GitHub Actions CI gate running discipline checks + `audit-diff.mjs`.
+  2. `dsaf-regression-gate.yml` — starter GitHub Actions CI gate running `check-design-discipline.mjs` (plus optional commented-out `dsaf tokens --sarif` upload; `dsaf setup --with-ci --with-auto-update` adds full `.github/workflows/dsaf-gate.yml` via `zintaen/dsaf@v0` + `.github/workflows/dsaf-auto-update.yml`, while `audit-diff.mjs` is wired separately when comparing baseline scorecards).
   3. `AGENTS-dsaf-rules.md` — concrete token & component usage rules ready to embed in the repo's `AGENTS.md`.

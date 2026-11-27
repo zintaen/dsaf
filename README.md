@@ -1,4 +1,4 @@
-# DSAF — UI, Accessibility & Design Token Audit Toolkit (`v0.9.2`)
+# DSAF — UI, Accessibility & Design Token Audit Toolkit (`v0.9.3`)
 
 [![Website](https://img.shields.io/badge/site-zintaen.github.io%2Fdsaf-14243D)](https://zintaen.github.io/dsaf/)
 [![CI](https://github.com/zintaen/dsaf/actions/workflows/ci.yml/badge.svg)](https://github.com/zintaen/dsaf/actions/workflows/ci.yml)
@@ -31,7 +31,7 @@ npx @zintaen/dsaf audit . --html audit-report.html --out ./audit-output
 
 ### 2. Install AI Agent Skill & MCP Server (Zero Config Edits)
 
-Installs the portable `dsaf` skill and wires the 9-tool read-only MCP server (`dsaf mcp`) cleanly into Claude, Cursor, Codex, or Antigravity:
+Installs the portable `dsaf` skill and wires the 8-tool read-only MCP server (`dsaf mcp`) cleanly into Claude, Cursor, Codex, Antigravity, or generic `.agents` clients:
 
 ```bash
 npx @zintaen/dsaf setup --agent claude
@@ -48,15 +48,33 @@ npx @zintaen/dsaf fix src --apply --backup
 ```
 
 ```yaml
-# .github/workflows/dsaf-gate.yml
-- uses: actions/checkout@v7
-- uses: zintaen/dsaf@v0.9.2
-  with:
-    target: .
-    fail-on-floor: "true"
-    upload-sarif: "true"
-    comment-pr: "true"
+# .github/workflows/dsaf-gate.yml (floating @v0 channel picks up non-breaking releases automatically)
+name: DSAF Gate
+on: [pull_request]
+permissions:
+  contents: read
+  security-events: write
+  pull-requests: write
+jobs:
+  dsaf:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: zintaen/dsaf@v0
+        with:
+          target: .
+          fail-on-floor: "true"
+          upload-sarif: "true"
+          comment-pr: "true"
 ```
+
+### 4. Auto-Update & Distribution for Any External Repo
+
+Any external project (including independent OSS/company repos) stays current automatically without manual tracking:
+
+- **Non-blocking CLI update check:** Interactive CLI commands run a 24h-cached npm check (`~/.dsaf/update-check.json`, offline fail-open, silenced with `DSAF_NO_UPDATE_CHECK=1`, omitted in `CI`/`--json`/`--sarif`/`mcp`/`hook`) and `dsaf doctor` Check #7 flags older CLIs.
+- **One-command repo updater (`dsaf update`):** Refreshes installed skills, `.dsaf/personas.json`, `.dsaf-guardrails/`, semver workflow pins, and MCP configs — while preserving `.dsaf/personas.custom.json` and floating `@v0` pins (`dsaf update --check --fail-if-outdated` in CI).
+- **Scheduled Weekly PR Sync:** Pass `--with-ci --with-auto-update` to `dsaf setup` to generate `.github/workflows/dsaf-gate.yml` and `.github/workflows/dsaf-auto-update.yml` (runs `npx -y @zintaen/dsaf@latest update . --all-agents` weekly and opens/updates a PR via `gh`), or let Dependabot/Renovate track `zintaen/dsaf@v0.9.3` & `action.yml`'s `::notice::` / sticky PR reminder.
 
 ---
 
@@ -82,22 +100,21 @@ npx @zintaen/dsaf fix src --apply --backup
 | Command | Role |
 |---|---|
 | `dsaf check [path]` | Fast summary check (Floor/Reflex counts, compliance %, impacted personas) |
-| `dsaf setup [target]` | One-command Skill + MCP installer (`--with-init` / `--with-ci` optional) |
+| `dsaf setup [target]` | One-command Skill + MCP installer (`--with-hook` / `--with-ci` / `--with-auto-update`) |
+| `dsaf update [target]` | Check (`--check` / `--fail-if-outdated`) or safely refresh skills, personas, guardrails, workflows & MCP |
 | `dsaf audit <target>` | Full Tier 0 pipeline (`--html`, `--sarif`, `--out`, `--url`, `--figma`) |
 | `dsaf fix <target>` | Preview (`--dry-run`) or apply (`--apply --backup`) safe Floor patches |
-| `dsaf mcp` / `dsaf mcp install` | Run 9-tool stdio MCP server or write client MCP JSON config |
+| `dsaf mcp` / `dsaf mcp install` | Run 8-tool stdio MCP server or write client MCP JSON config |
 | `dsaf personas [target]` | Uncapped signal-driven Persona Matrix + `.dsaf/personas.custom.json` merge |
-| `dsaf init [target]` | Bootstrap `.dsaf/` governance aligned with `zintaen/auto-evolve-strategy v1.2.0` |
-| `dsaf evolve [target]` | Supervised loop runner enforcing `.dsaf/STOP`, `A9.4` `lease.<n>`, & circuit breaker |
 | `dsaf runtime <target-or-url>` | Playwright + `axe-core` verifier (APCA, keyboard map, `44px`, tabs/toggles, `--cdp`) |
 | `dsaf figma-diff` | 2-vertex `Defined <-> Shipped` or 3-vertex `Designed <-> Defined <-> Shipped` diff |
 | `dsaf recon` / `tokens` / `hook` / `doctor` / `guardrails` / `scorecard` / `diff` | Granular Tier 0 scanners, edit-time hooks, CI generators & regression gates |
 
 ---
 
-## Repository Self-Evolution (`.evolve/` & `evolve/`)
+## Development & Verification
 
-DSAF pins [`zintaen/auto-evolve-strategy` `v1.2.0`](https://github.com/zintaen/auto-evolve-strategy) at `.evolve/STRATEGY.md` with repo operational rules in `.evolve/rules.md` and maintains Tier 2 calibration/isolation harnesses in `evolve/`. Published npm tarballs (`package.json#files`) include **only** `bin/`, `skill/`, `README.md`, `RELEASE_NOTES.md`, and `LICENSE` — keeping `.evolve/` and `evolve/` cleanly excluded.
+Published npm tarballs (`package.json#files`) include **only** `bin/`, `skill/`, `README.md`, `RELEASE_NOTES.md`, and `LICENSE`. Run the full integrity, parity, and isolation suite locally:
 
 ```bash
 git clone https://github.com/zintaen/dsaf.git

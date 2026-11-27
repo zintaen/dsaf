@@ -42,9 +42,9 @@ inputs:
     required: false
     default: "22"
   dsaf-version:
-    description: "Version or npm tag of @zintaen/dsaf to execute"
+    description: "Version or npm tag of @zintaen/dsaf to execute ('bundled' uses this action's built-in CLI)"
     required: false
-    default: "latest"
+    default: "bundled"
 
 outputs:
   summary-json:
@@ -80,32 +80,78 @@ runs:
         DSAF_OUT_DIR: ${{ inputs.out-dir }}
         DSAF_SARIF_FILE: ${{ inputs.sarif-file }}
         DSAF_VERSION: ${{ inputs.dsaf-version }}
+        DSAF_ACTION_PATH: ${{ github.action_path }}
       run: |
         set +e
         mkdir -p "$DSAF_OUT_DIR"
-        ARGS=(audit "$DSAF_TARGET" --out "$DSAF_OUT_DIR" --sarif "$DSAF_SARIF_FILE" --github --report-unused-ignores)
+        SUMMARY_JSON="${DSAF_OUT_DIR}/audit-summary.json"
+        SUMMARY_MD="${DSAF_OUT_DIR}/audit-summary.md"
+        rm -f "$SUMMARY_JSON" "$SUMMARY_MD"
+        ARGS=(audit "$DSAF_TARGET" --out "$DSAF_OUT_DIR" --github --report-unused-ignores)
+        if [ -n "$DSAF_SARIF_FILE" ]; then
+          rm -f "$DSAF_SARIF_FILE"
+          if [[ "$DSAF_SARIF_FILE" != /* ]]; then
+            rm -f "${DSAF_OUT_DIR}/${DSAF_SARIF_FILE}"
+          fi
+          ARGS+=(--sarif "$DSAF_SARIF_FILE")
+        fi
         if [ -n "$DSAF_SCOPE" ]; then
           ARGS+=(--scope "$DSAF_SCOPE")
         fi
+        CLI_CMD=()
         if [ -n "${DSAF_CLI_BIN:-}" ] && [ -f "${DSAF_CLI_BIN}" ]; then
-          node "$DSAF_CLI_BIN" "${ARGS[@]}"
+          CLI_CMD=(node "$DSAF_CLI_BIN")
+        elif [ "$DSAF_VERSION" = "bundled" ] || [ -z "$DSAF_VERSION" ]; then
+          CLI_CMD=(node "${DSAF_ACTION_PATH}/bin/dsaf.mjs")
         else
-          npx --yes "@zintaen/dsaf@${DSAF_VERSION}" "${ARGS[@]}"
+          CLI_CMD=(npx --yes "@zintaen/dsaf@${DSAF_VERSION}")
         fi
+        "${CLI_CMD[@]}" "${ARGS[@]}"
         AUDIT_EXIT=$?
         set -e
 
-        SUMMARY_JSON="${DSAF_OUT_DIR}/audit-summary.json"
-        SUMMARY_MD="${DSAF_OUT_DIR}/audit-summary.md"
-        SARIF_PATH="${DSAF_SARIF_FILE}"
-        if [ ! -f "$SARIF_PATH" ] && [ -f "${DSAF_OUT_DIR}/${DSAF_SARIF_FILE}" ]; then
-          SARIF_PATH="${DSAF_OUT_DIR}/${DSAF_SARIF_FILE}"
+        SARIF_PATH=""
+        SARIF_EXISTS="false"
+        if [ -n "$DSAF_SARIF_FILE" ]; then
+          if [ -f "$DSAF_SARIF_FILE" ]; then
+            SARIF_PATH="$DSAF_SARIF_FILE"
+            SARIF_EXISTS="true"
+          elif [[ "$DSAF_SARIF_FILE" != /* ]] && [ -f "${DSAF_OUT_DIR}/${DSAF_SARIF_FILE}" ]; then
+            SARIF_PATH="${DSAF_OUT_DIR}/${DSAF_SARIF_FILE}"
+            SARIF_EXISTS="true"
+          fi
+        fi
+
+        UPDATE_NOTICE=""
+        if [ "${DSAF_NO_UPDATE_CHECK:-}" != "1" ] && [ "${DSAF_NO_UPDATE_CHECK:-}" != "true" ] && [ -f "${DSAF_ACTION_PATH}/skill/scripts/update-check.mjs" ]; then
+          RUNNING_VER=$(node -e 'try{const fs=require("node:fs");const s=process.argv[1];const p=process.argv[2];let v="";if(s&&fs.existsSync(s)){try{v=String(JSON.parse(fs.readFileSync(s,"utf8")).engine_version||"")}catch{}}if(!v&&p&&fs.existsSync(p)){try{v=String(JSON.parse(fs.readFileSync(p,"utf8")).version||"")}catch{}}console.log(v)}catch{}' "$SUMMARY_JSON" "${DSAF_ACTION_PATH}/package.json")
+          UPD_JSON=$(node "${DSAF_ACTION_PATH}/skill/scripts/update-check.mjs" --json 2>/dev/null || true)
+          UPDATE_NOTICE=$(DSAF_UPD_JSON="$UPD_JSON" DSAF_RUNNING_VER="$RUNNING_VER" DSAF_UPD_MOD="${DSAF_ACTION_PATH}/skill/scripts/update-check.mjs" node --input-type=module -e '
+            import { pathToFileURL } from "node:url";
+            try {
+              const { parseSemver, compareSemver } = await import(pathToFileURL(process.env.DSAF_UPD_MOD).href);
+              const d = JSON.parse(process.env.DSAF_UPD_JSON || "{}");
+              const running = (process.env.DSAF_RUNNING_VER || d.currentVersion || "").trim();
+              const latest = String(d.latestVersion || "").trim();
+              const newer = latest && parseSemver(latest)
+                ? (running && parseSemver(running) ? compareSemver(latest, running) === 1 : Boolean(d.outdated))
+                : false;
+              if (newer) {
+                console.log(`DSAF v${latest} is available (running v${running || "unknown"}). Use zintaen/dsaf@v0 or run npx @zintaen/dsaf@latest update.`);
+              }
+            } catch {}
+          ')
+          if [ -n "$UPDATE_NOTICE" ]; then
+            echo "::notice title=DSAF Update Available::${UPDATE_NOTICE}"
+          fi
         fi
 
         echo "audit-exit=${AUDIT_EXIT}" >> "$GITHUB_OUTPUT"
         echo "summary-json=${SUMMARY_JSON}" >> "$GITHUB_OUTPUT"
         echo "summary-md=${SUMMARY_MD}" >> "$GITHUB_OUTPUT"
         echo "sarif-path=${SARIF_PATH}" >> "$GITHUB_OUTPUT"
+        echo "sarif-exists=${SARIF_EXISTS}" >> "$GITHUB_OUTPUT"
+        echo "update-notice=${UPDATE_NOTICE}" >> "$GITHUB_OUTPUT"
 
         node - "$SUMMARY_JSON" "$GITHUB_OUTPUT" <<'EOF'
         const fs = require("node:fs");
@@ -120,30 +166,50 @@ runs:
         }
         fs.appendFileSync(outPath, `floor-count=${floor}\nreflex-count=${reflex}\n`);
         EOF
+        if [ "$AUDIT_EXIT" -ge 2 ] || { [ "$AUDIT_EXIT" -ne 0 ] && [ ! -f "$SUMMARY_JSON" ]; }; then
+          echo "::error::DSAF audit failed with fatal error (audit-exit=${AUDIT_EXIT}, summary missing or config error)."
+          exit "$AUDIT_EXIT"
+        fi
 
     - name: Run DSAF Doctor (optional)
+      id: doctor
       if: inputs.run-doctor == 'true'
       shell: bash
       env:
         DSAF_TARGET: ${{ inputs.target }}
+        DSAF_SCOPE: ${{ inputs.scope }}
         DSAF_OUT_DIR: ${{ inputs.out-dir }}
         DSAF_VERSION: ${{ inputs.dsaf-version }}
+        DSAF_ACTION_PATH: ${{ github.action_path }}
       run: |
         set +e
+        mkdir -p "$DSAF_OUT_DIR"
+        DOCTOR_JSON="${DSAF_OUT_DIR}/doctor.json"
+        rm -f "$DOCTOR_JSON"
+        DOCTOR_ARGS=(doctor "$DSAF_TARGET" --out "$DOCTOR_JSON")
+        if [ -n "$DSAF_SCOPE" ]; then
+          DOCTOR_ARGS+=(--scope "$DSAF_SCOPE")
+        fi
         if [ -n "${DSAF_CLI_BIN:-}" ] && [ -f "${DSAF_CLI_BIN}" ]; then
-          node "$DSAF_CLI_BIN" doctor "$DSAF_TARGET" --out "${DSAF_OUT_DIR}/doctor.json"
+          node "$DSAF_CLI_BIN" "${DOCTOR_ARGS[@]}"
+        elif [ "$DSAF_VERSION" = "bundled" ] || [ -z "$DSAF_VERSION" ]; then
+          node "${DSAF_ACTION_PATH}/bin/dsaf.mjs" "${DOCTOR_ARGS[@]}"
         else
-          npx --yes "@zintaen/dsaf@${DSAF_VERSION}" doctor "$DSAF_TARGET" --out "${DSAF_OUT_DIR}/doctor.json"
+          npx --yes "@zintaen/dsaf@${DSAF_VERSION}" "${DOCTOR_ARGS[@]}"
         fi
         DOCTOR_EXIT=$?
         set -e
-        if [ "$DOCTOR_EXIT" -ne 0 ] && [ "${{ inputs.fail-on-floor }}" = "true" ]; then
-          echo "DSAF Doctor reported active Floor defects."
-          exit 1
+        echo "doctor-exit=${DOCTOR_EXIT}" >> "$GITHUB_OUTPUT"
+        if [ "$DOCTOR_EXIT" -ge 2 ] || { [ "$DOCTOR_EXIT" -ne 0 ] && [ ! -f "$DOCTOR_JSON" ]; }; then
+          echo "::error::DSAF doctor failed with fatal error (doctor-exit=${DOCTOR_EXIT}, doctor.json missing or config error)."
+          exit "$DOCTOR_EXIT"
+        fi
+        if [ "$DOCTOR_EXIT" -ne 0 ]; then
+          echo "::warning::DSAF Doctor reported active Floor defects (exit=${DOCTOR_EXIT})."
         fi
 
     - name: Upload SARIF 2.1.0 to GitHub Code Scanning
-      if: inputs.upload-sarif == 'true' && hashFiles(steps.audit.outputs.sarif-path) != ''
+      if: inputs.upload-sarif == 'true' && steps.audit.outputs.sarif-exists == 'true'
       continue-on-error: true
       uses: github/codeql-action/upload-sarif@v4
       with:
@@ -158,6 +224,7 @@ runs:
         SUMMARY_MD: ${{ steps.audit.outputs.summary-md }}
         FLOOR_COUNT: ${{ steps.audit.outputs.floor-count }}
         REFLEX_COUNT: ${{ steps.audit.outputs.reflex-count }}
+        UPDATE_NOTICE: ${{ steps.audit.outputs.update-notice }}
       with:
         script: |
           const fs = require("node:fs");
@@ -166,7 +233,8 @@ runs:
           if (!mdPath || !fs.existsSync(mdPath)) return;
           const raw = fs.readFileSync(mdPath, "utf8");
           const clipped = raw.length > 60000 ? raw.slice(0, 60000) + "\n\n*(Truncated by DSAF Action)*" : raw;
-          const body = `${marker}\n### DSAF Audit Summary (Floor: ${process.env.FLOOR_COUNT}, Reflex: ${process.env.REFLEX_COUNT})\n\n${clipped}`;
+          const updTip = process.env.UPDATE_NOTICE ? `\n\n> **Update notice:** ${process.env.UPDATE_NOTICE}` : "";
+          const body = `${marker}\n### DSAF Audit Summary (Floor: ${process.env.FLOOR_COUNT}, Reflex: ${process.env.REFLEX_COUNT})\n\n${clipped}${updTip}`;
           const { owner, repo } = context.repo;
           const issue_number = context.issue.number;
           const comments = await github.paginate(github.rest.issues.listComments, { owner, repo, issue_number });
@@ -183,8 +251,9 @@ runs:
       env:
         AUDIT_EXIT: ${{ steps.audit.outputs.audit-exit }}
         FLOOR_COUNT: ${{ steps.audit.outputs.floor-count }}
+        DOCTOR_EXIT: ${{ steps.doctor.outputs.doctor-exit }}
       run: |
-        if [ "${FLOOR_COUNT:-0}" -gt 0 ] || [ "${AUDIT_EXIT:-0}" -ne 0 ]; then
-          echo "::error::DSAF Floor gate failed (audit-exit=${AUDIT_EXIT}, floor=${FLOOR_COUNT})."
+        if [ "${FLOOR_COUNT:-0}" -gt 0 ] || [ "${AUDIT_EXIT:-0}" -ne 0 ] || [ "${DOCTOR_EXIT:-0}" -ne 0 ]; then
+          echo "::error::DSAF Floor gate failed (audit-exit=${AUDIT_EXIT}, floor=${FLOOR_COUNT}, doctor-exit=${DOCTOR_EXIT:-0})."
           exit 1
         fi

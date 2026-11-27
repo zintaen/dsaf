@@ -1,15 +1,20 @@
 #!/usr/bin/env node
 /**
- * DSAF v0.9.2 — Standalone Editorial HTML Audit Report Generator.
+ * DSAF v0.9.3 — Standalone Editorial HTML Audit Report Generator.
  * Produces a zero-dependency, offline-safe interactive HTML report containing
  * Scorecard Summary, Persona Impact Matrix, and Tokens/Drift inspection tabs.
  */
 
 import assert from "node:assert/strict";
-import { resolve } from "node:path";
+import { spawnSync } from "node:child_process";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { basename, dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
+import { assertWritableOutputFile, isDirectCliEntry } from "./ci-report.mjs";
 
-export const HTML_REPORT_VERSION = "0.9.2";
+export const HTML_REPORT_VERSION = "0.9.3";
 
 function esc(val) {
   return String(val ?? "")
@@ -20,30 +25,57 @@ function esc(val) {
     .replace(/'/g, "&#39;");
 }
 
+function formatMessage(val) {
+  return esc(val).replace(/`([^`\n]+)`/g, "<code>$1</code>");
+}
+
+function sanitizePreviewHref(raw) {
+  const rawStr = String(raw || "");
+  if (/[\u0000-\u001f\u007f]/.test(rawStr)) return null;
+  const s = rawStr.trim();
+  if (!s || /^[/\\]{2}|\\/.test(s)) return null;
+  const colonIdx = s.indexOf(":");
+  const slashIdx = s.search(/[/?#]/);
+  const hasScheme = colonIdx !== -1 && (slashIdx === -1 || colonIdx < slashIdx);
+  if (hasScheme) {
+    return /^https?:\/\//i.test(s) ? s : null;
+  }
+  return s;
+}
+
 function shortRepoName(targetPath) {
-  const clean = String(targetPath || ".").replace(/\/+$/, "");
-  const parts = clean.split("/");
+  const clean = String(targetPath || ".").replace(/[/\\]+$/, "");
+  const parts = clean.split(/[/\\]+/).filter(Boolean);
   return parts[parts.length - 1] || clean || "workspace";
 }
 
 export function renderHtmlReport(summary, opts = {}) {
-  const repoLabel = opts.title || shortRepoName(summary.target);
-  const r = summary.recon || {};
-  const t = summary.tokens || {};
-  const d = t.drift || {};
-  const cg = summary.ciGate || { floor: 0, reflex: 0, finish: 0, waived: 0, unusedIgnores: 0 };
-  const findings = Array.isArray(summary.ciFindings) ? summary.ciFindings : [];
-  const personas = Array.isArray(summary.personas?.items) ? summary.personas.items : [];
-  const compliance = d.tokenCompliancePct ?? "N/A";
-  const statusLabel = summary.passed ? "PASS" : "FAIL";
-  const statusClass = summary.passed ? "pill--pass" : "pill--fail";
-  const previewLink = opts.previewHref ? `<a class="btn btn-secondary" href="${esc(opts.previewHref)}">Open Preview Shell</a>` : "";
+  const s = summary && typeof summary === "object" && !Array.isArray(summary) ? summary : {};
+  const o = opts && typeof opts === "object" && !Array.isArray(opts) ? opts : {};
+  const repoLabel = o.title || shortRepoName(s.target);
+  const r = s.recon && typeof s.recon === "object" ? s.recon : {};
+  const t = s.tokens && typeof s.tokens === "object" ? s.tokens : {};
+  const d = t.drift && typeof t.drift === "object" ? t.drift : {};
+  const cg = s.ciGate && typeof s.ciGate === "object" ? s.ciGate : { floor: 0, reflex: 0, finish: 0, waived: 0, unusedIgnores: 0 };
+  const findings = (Array.isArray(s.ciFindings) ? s.ciFindings : []).filter((f) => f && typeof f === "object" && !Array.isArray(f));
+  const personas = (Array.isArray(s.personas?.items) ? s.personas.items : []).filter((p) => p && typeof p === "object" && !Array.isArray(p));
+  const rawComp = d.tokenCompliancePct;
+  const compliance = typeof rawComp === "number" && Number.isFinite(rawComp) ? rawComp : "N/A";
+  const statusLabel = s.passed ? "PASS" : "FAIL";
+  const statusClass = s.passed ? "pill--pass" : "pill--fail";
+  const safePreviewHref = sanitizePreviewHref(o.previewHref);
+  const previewLink = safePreviewHref ? `<a class="btn" href="${esc(safePreviewHref)}">Open Preview Shell</a>` : "";
+
+  const visibleFindings = findings.slice(0, 60);
+  const truncationNote =
+    findings.length > 60
+      ? `\n<tr role="row"><td role="cell" colspan="4" class="muted-cell">Showing 60 of ${esc(findings.length)} active findings. See JSON output for complete list.</td></tr>`
+      : "";
 
   const findingsRows =
     findings.length === 0
-      ? `<tr><td colspan="4" class="muted-cell">No active Floor or Reflex defects detected.</td></tr>`
-      : findings
-          .slice(0, 60)
+      ? `<tr role="row"><td role="cell" colspan="4" class="muted-cell">No active Floor or Reflex defects detected.</td></tr>`
+      : visibleFindings
           .map((f) => {
             const pList = Array.isArray(f.personaIds) && f.personaIds.length > 0 ? f.personaIds.join(", ") : "All";
             const tierBadge =
@@ -53,31 +85,32 @@ export function renderHtmlReport(summary, opts = {}) {
                 ? `<span class="pill">Finish</span>`
                 : `<span class="pill pill--warn">Reflex</span>`;
             const loc = `${esc(f.file || "")}${f.line ? `:${esc(f.line)}` : ""}`;
-            return `<tr>
-              <th scope="row" data-label="Rule"><code>${esc(f.ruleId || "dsaf/rule")}</code><div class="sub-line">${esc(f.message || "")}</div></th>
-              <td data-label="Tier">${tierBadge}</td>
-              <td data-label="Location"><code>${loc}</code></td>
-              <td data-label="Personas"><span class="mono-text">${esc(pList)}</span></td>
+            return `<tr role="row">
+              <th role="rowheader" scope="row" data-label="Rule"><code>${esc(f.ruleId || "dsaf/rule")}</code><div class="sub-line">${formatMessage(f.message || "")}</div></th>
+              <td role="cell" data-label="Tier">${tierBadge}</td>
+              <td role="cell" data-label="Location"><code>${loc}</code></td>
+              <td role="cell" data-label="Personas"><span class="mono-text">${esc(pList)}</span></td>
             </tr>`;
           })
-          .join("\n");
+          .join("\n") + truncationNote;
 
   const personaRows =
     personas.length === 0
-      ? `<tr><td colspan="4" class="muted-cell">No persona matrix attached to this audit run.</td></tr>`
+      ? `<tr role="row"><td role="cell" colspan="4" class="muted-cell">No persona matrix attached to this audit run.</td></tr>`
       : personas
           .map((p) => {
             const impactCount = Number(p.impactedCount || 0);
-            const rulesList = (p.findingRules || []).slice(0, 3).map((x) => `<code>${esc(x)}</code>`).join(", ");
+            const rawRules = Array.isArray(p.findingRules) ? p.findingRules : [];
+            const rulesList = rawRules.slice(0, 3).map((x) => `<code>${esc(x)}</code>`).join(", ");
             const impactCell =
               impactCount > 0
                 ? `<span class="pill pill--warn">${esc(impactCount)} ${impactCount === 1 ? "issue" : "issues"}</span>${rulesList ? `<div class="sub-line">${rulesList}</div>` : ""}`
                 : `<span class="pill pill--pass">Clean</span>`;
-            return `<tr>
-              <th scope="row" data-label="Persona"><strong>${esc(p.id)}</strong> · ${esc(p.name)}<div class="sub-line">${esc(p.axis)}</div></th>
-              <td data-label="Viewport">${esc(p.viewport || "Responsive")}</td>
-              <td data-label="Source"><code>${esc(p.source || "signal")}</code></td>
-              <td data-label="Impact">${impactCell}</td>
+            return `<tr role="row">
+              <th role="rowheader" scope="row" data-label="Persona"><strong>${esc(p.id)}</strong> · ${esc(p.name)}<div class="sub-line">${esc(p.axis)}</div></th>
+              <td role="cell" data-label="Viewport">${esc(p.viewport || "Responsive")}</td>
+              <td role="cell" data-label="Signal"><code>${esc(p.source || "signal")}</code></td>
+              <td role="cell" data-label="Impact">${impactCell}</td>
             </tr>`;
           })
           .join("\n");
@@ -108,7 +141,6 @@ export function renderHtmlReport(summary, opts = {}) {
       --fg: #101926;
       --muted: #455264;
       --accent: #132540;
-      --accent-fg: #FFFFFF;
       --pass-bg: #E7F3EC;
       --pass-border: #A9D4BC;
       --pass-fg: #0D5935;
@@ -132,7 +164,6 @@ export function renderHtmlReport(summary, opts = {}) {
         --fg: #EBF0F7;
         --muted: #B6C2D4;
         --accent: #F4BA17;
-        --accent-fg: #0B111B;
         --pass-bg: #123326;
         --pass-border: #2A6E53;
         --pass-fg: #7DE0B1;
@@ -160,7 +191,6 @@ export function renderHtmlReport(summary, opts = {}) {
         --fg: #EBF0F7;
         --muted: #B6C2D4;
         --accent: #F4BA17;
-        --accent-fg: #0B111B;
         --pass-bg: #123326;
         --pass-border: #2A6E53;
         --pass-fg: #7DE0B1;
@@ -194,6 +224,37 @@ export function renderHtmlReport(summary, opts = {}) {
       outline-offset: 2px;
     }
 
+    .skip-link {
+      position: fixed;
+      left: 16px;
+      top: 12px;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      border: 0;
+      overflow: hidden;
+      clip-path: inset(50%);
+      z-index: 100;
+      background: var(--surface);
+      color: var(--fg);
+      border-radius: 8px;
+      font-weight: 600;
+      text-decoration: none;
+    }
+    .skip-link:focus,
+    .skip-link:focus-visible {
+      width: auto;
+      height: auto;
+      min-height: 44px;
+      display: inline-flex;
+      align-items: center;
+      padding: 8px 16px;
+      clip-path: none;
+      border: 2px solid var(--ring);
+      outline: 2px solid var(--ring);
+      outline-offset: 2px;
+    }
+
     .topbar {
       background: var(--surface);
       border-bottom: 1px solid var(--border);
@@ -208,7 +269,7 @@ export function renderHtmlReport(summary, opts = {}) {
       align-items: center;
       justify-content: space-between;
       gap: 12px;
-      padding: 12px 0;
+      padding-block: 12px;
       flex-wrap: wrap;
     }
     .brand {
@@ -251,16 +312,22 @@ export function renderHtmlReport(summary, opts = {}) {
       gap: 16px;
       flex-wrap: wrap;
     }
+    .report-head > div {
+      min-width: 0;
+      max-width: 100%;
+    }
     h1 {
       margin: 0 0 6px;
       font-size: clamp(1.375rem, 1rem + 1.5vw, 2rem);
       line-height: 1.2;
       letter-spacing: -0.02em;
+      overflow-wrap: anywhere;
     }
     .meta-line {
       margin: 0;
       color: var(--muted);
       font-size: 14px;
+      overflow-wrap: anywhere;
     }
 
     .summary-strip {
@@ -317,6 +384,7 @@ export function renderHtmlReport(summary, opts = {}) {
       border-bottom: 1px solid var(--border);
       margin-bottom: 16px;
       scrollbar-width: thin;
+      scroll-padding-inline: 12px;
     }
     [role="tab"] {
       position: relative;
@@ -334,6 +402,10 @@ export function renderHtmlReport(summary, opts = {}) {
       white-space: nowrap;
     }
     [role="tab"]:hover { color: var(--fg); }
+    [role="tab"]:focus-visible,
+    .table-wrap:focus-visible {
+      outline-offset: -2px;
+    }
     [role="tab"][aria-selected="true"] {
       color: var(--fg);
     }
@@ -360,6 +432,7 @@ export function renderHtmlReport(summary, opts = {}) {
       overflow: auto;
       max-inline-size: 100%;
       container-type: inline-size;
+      border-radius: inherit;
     }
     table {
       width: 100%;
@@ -446,6 +519,7 @@ export function renderHtmlReport(summary, opts = {}) {
   </style>
 </head>
 <body>
+  <a class="skip-link" href="#main-content">Skip to main content</a>
   <header class="topbar">
     <div class="wrap topbar-inner">
       <div class="brand">
@@ -459,23 +533,26 @@ export function renderHtmlReport(summary, opts = {}) {
     </div>
   </header>
 
-  <main class="wrap">
+  <main class="wrap" id="main-content">
     <section class="report-head">
       <div>
         <h1>${esc(repoLabel)}</h1>
-        <p class="meta-line">Topology: <strong>Mode ${esc(r.recommendedMode || "P")}</strong> (${esc(r.topologyLabel || "Product")}) · Surface: <strong>${esc(r.surfaceMode || "operate")}</strong> · DSAF v${esc(summary.engine_version || HTML_REPORT_VERSION)}</p>
+        <p class="meta-line">Topology: <strong>Mode ${esc(r.recommendedMode || "P")}</strong> (${esc(r.topologyLabel || "Product")}) · Surface: <strong>${esc(r.surfaceMode || "persuade")}</strong> · DSAF v${esc(s.engine_version || HTML_REPORT_VERSION)}</p>
       </div>
-      <span class="pill">${esc(String(summary.generated || "").slice(0, 10))}</span>
+      ${(() => {
+        const genDate = String(s.generated || "").slice(0, 10).trim();
+        return genDate ? `<span class="pill">${esc(genDate)}</span>` : "";
+      })()}
     </section>
 
     <section class="summary-strip" aria-label="Audit key counts">
       <div class="stat">
         <p class="stat-label">Floor Defects</p>
-        <p class="stat-val">${esc(cg.floor)}</p>
+        <p class="stat-val">${esc(cg.floor ?? 0)}</p>
       </div>
       <div class="stat">
         <p class="stat-label">Reflex Warnings</p>
-        <p class="stat-val">${esc(cg.reflex)}</p>
+        <p class="stat-val">${esc(cg.reflex ?? 0)}</p>
       </div>
       <div class="stat">
         <p class="stat-label">Token Compliance</p>
@@ -497,16 +574,16 @@ export function renderHtmlReport(summary, opts = {}) {
       <div role="tabpanel" aria-labelledby="tab-findings">
         <div class="panel-box">
           <div class="table-wrap" tabindex="0" role="region" aria-label="Active findings mapped to personas">
-            <table>
-              <thead>
-                <tr>
-                  <th>Rule &amp; Detail</th>
-                  <th>Tier</th>
-                  <th>Location</th>
-                  <th>Personas Impacted</th>
+            <table role="table">
+              <thead role="rowgroup">
+                <tr role="row">
+                  <th role="columnheader" scope="col">Rule &amp; Detail</th>
+                  <th role="columnheader" scope="col">Tier</th>
+                  <th role="columnheader" scope="col">Location</th>
+                  <th role="columnheader" scope="col">Personas Impacted</th>
                 </tr>
               </thead>
-              <tbody>
+              <tbody role="rowgroup">
                 ${findingsRows}
               </tbody>
             </table>
@@ -517,16 +594,16 @@ export function renderHtmlReport(summary, opts = {}) {
       <div role="tabpanel" aria-labelledby="tab-personas" hidden="until-found">
         <div class="panel-box">
           <div class="table-wrap" tabindex="0" role="region" aria-label="Persona impact matrix">
-            <table>
-              <thead>
-                <tr>
-                  <th>Persona &amp; Axis</th>
-                  <th>Viewport</th>
-                  <th>Signal</th>
-                  <th>Impact</th>
+            <table role="table">
+              <thead role="rowgroup">
+                <tr role="row">
+                  <th role="columnheader" scope="col">Persona &amp; Axis</th>
+                  <th role="columnheader" scope="col">Viewport</th>
+                  <th role="columnheader" scope="col">Signal</th>
+                  <th role="columnheader" scope="col">Impact</th>
                 </tr>
               </thead>
-              <tbody>
+              <tbody role="rowgroup">
                 ${personaRows}
               </tbody>
             </table>
@@ -542,7 +619,7 @@ export function renderHtmlReport(summary, opts = {}) {
             <div class="metric-cell"><p class="metric-k">Hardcoded Colors / var() Refs</p><p class="metric-v">${esc(d.hardcodedColorHits ?? 0)} / ${esc(d.colorTokenRefs ?? 0)}</p></div>
             <div class="metric-cell"><p class="metric-k">CSS Orphans (Semantic / Scale)</p><p class="metric-v">${esc(d.semanticOrphanCount ?? 0)} / ${esc(d.paletteScaleUnusedCount ?? 0)}</p></div>
             <div class="metric-cell"><p class="metric-k">!important / Off-Grid Spacing</p><p class="metric-v">${esc(d.importantOverrides ?? 0)} / ${esc(d.offGridSpacingHits ?? 0)}</p></div>
-            <div class="metric-cell"><p class="metric-k">Waived / Unused Ignores</p><p class="metric-v">${esc(cg.waived)} / ${esc(cg.unusedIgnores)}</p></div>
+            <div class="metric-cell"><p class="metric-k">Waived / Unused Ignores</p><p class="metric-v">${esc(cg.waived ?? 0)} / ${esc(cg.unusedIgnores ?? 0)}</p></div>
           </div>
         </div>
       </div>
@@ -559,6 +636,7 @@ export function renderHtmlReport(summary, opts = {}) {
       var meta = document.querySelector('meta[name="color-scheme"]');
       var themeBtn = document.getElementById("theme-toggle-btn");
       var mq = window.matchMedia("(prefers-color-scheme: dark)");
+      var manualTheme = meta && (meta.content === "light" || meta.content === "dark") ? meta.content : null;
       function currentScheme() {
         if (meta && (meta.content === "light" || meta.content === "dark")) return meta.content;
         return mq.matches ? "dark" : "light";
@@ -574,19 +652,36 @@ export function renderHtmlReport(summary, opts = {}) {
         themeBtn.addEventListener("click", function() {
           var target = currentScheme() === "dark" ? "light" : "dark";
           var sys = mq.matches ? "dark" : "light";
+          manualTheme = target === sys ? null : target;
+          meta.content = manualTheme || "light dark";
           try {
             if (target === sys) {
               localStorage.removeItem("dsaf-report-theme");
-              meta.content = "light dark";
             } else {
               localStorage.setItem("dsaf-report-theme", target);
-              meta.content = target;
             }
-          } catch (e) {
-            meta.content = target;
-          }
+          } catch (e) {}
           syncThemeBtn();
         });
+        window.addEventListener("storage", function(e) {
+          if (e.key !== null && e.key !== "dsaf-report-theme") return;
+          var nextVal = e.key === null ? null : e.newValue;
+          manualTheme = nextVal === "light" || nextVal === "dark" ? nextVal : null;
+          meta.content = manualTheme || "light dark";
+          syncThemeBtn();
+        });
+        if (typeof mq.addEventListener === "function") {
+          mq.addEventListener("change", function() {
+            var stored = null;
+            var storageOk = false;
+            try { stored = localStorage.getItem("dsaf-report-theme"); storageOk = true; } catch (e) {}
+            if (storageOk) {
+              manualTheme = stored === "light" || stored === "dark" ? stored : null;
+            }
+            meta.content = manualTheme === "light" || manualTheme === "dark" ? manualTheme : "light dark";
+            syncThemeBtn();
+          });
+        }
       }
 
       var tablist = document.querySelector('[focusgroup^="tablist"]');
@@ -609,8 +704,29 @@ export function renderHtmlReport(summary, opts = {}) {
               panels[j].setAttribute("hidden", "until-found");
             }
           }
-          if (shouldFocus) nextTab.focus();
+          if (shouldFocus) {
+            nextTab.focus();
+            var tablistEl = nextTab.parentElement;
+            if (tablistEl && tablistEl.scrollWidth > tablistEl.clientWidth) {
+              var tr = nextTab.getBoundingClientRect();
+              var lr = tablistEl.getBoundingClientRect();
+              var tPad = 8;
+              if (tr.right > lr.right - tPad) tablistEl.scrollLeft += tr.right - (lr.right - tPad);
+              else if (tr.left < lr.left + tPad) tablistEl.scrollLeft -= (lr.left + tPad) - tr.left;
+            }
+          }
         }
+        tablist.addEventListener("focusin", function(ev) {
+          var t = ev.target;
+          if (!t || !t.closest) return;
+          var tab = t.closest('[role="tab"]');
+          if (!tab || tablist.scrollWidth <= tablist.clientWidth) return;
+          var tr = tab.getBoundingClientRect();
+          var lr = tablist.getBoundingClientRect();
+          var tPad = 8;
+          if (tr.right > lr.right - tPad) tablist.scrollLeft += tr.right - (lr.right - tPad);
+          else if (tr.left < lr.left + tPad) tablist.scrollLeft -= (lr.left + tPad) - tr.left;
+        });
         selectTab(tabs[0], false);
         for (var i = 0; i < tabs.length; i++) {
           (function(tab, idx) {
@@ -644,43 +760,200 @@ export function renderHtmlReport(summary, opts = {}) {
 }
 
 function runSelfTest() {
-  const html = renderHtmlReport({
+  const manyFindings = Array.from({ length: 65 }, (_, i) => ({
+    ruleId: i === 0 ? "dsaf/no-outline-none-naked" : `dsaf/rule-${i}`,
+    tier: i === 0 ? "floor" : "reflex",
+    file: "src/btn.css",
+    line: i + 1,
+    message: i === 0 ? "Removed `outline: none` focus ring" : `Issue #${i}`,
+    personaIds: ["P01"],
+  }));
+  const baseSummary = {
     schema: "dsaf-audit/1",
     engine_version: HTML_REPORT_VERSION,
     generated: "2026-11-27T00:00:00Z",
-    target: "/tmp/demo-shop",
+    target: "C:\\repos\\demo-shop",
     passed: false,
-    ciGate: { floor: 1, reflex: 1, finish: 0, waived: 0, unusedIgnores: 0 },
+    ciGate: { floor: 1, reflex: 64, finish: 0, waived: 0, unusedIgnores: 0 },
     recon: { recommendedMode: "C", topologyLabel: "Product on DS", surfaceMode: "operate" },
     tokens: { filesScanned: { uiAndStyle: 12 }, dtcgTokenCount: 24, drift: { tokenCompliancePct: 92, hardcodedColorHits: 1 } },
     personas: {
       count: 1,
       items: [{ id: "P01", name: "Keyboard User <script>", axis: "Keyboard", viewport: "1280x800", source: "signal:baseline", impactedCount: 1, findingRules: ["dsaf/no-outline-none-naked"] }],
     },
-    ciFindings: [{ ruleId: "dsaf/no-outline-none-naked", tier: "floor", file: "src/btn.css", line: 3, message: "Removed focus", personaIds: ["P01"] }],
-  });
+    ciFindings: manyFindings,
+  };
+  const html = renderHtmlReport(baseSummary, { previewHref: "javascript:alert(1)" });
+  assert.match(html, /<h1>demo-shop<\/h1>/, "Must extract Windows repo basename");
+  assert.doesNotMatch(html, /javascript:alert/, "Must reject unsafe javascript: previewHref");
+  assert.doesNotMatch(
+    renderHtmlReport(baseSummary, { previewHref: "java\tscript:alert(1)" }),
+    /Open Preview Shell/,
+    "Must reject control-char javascript URL bypass"
+  );
+  assert.doesNotMatch(
+    renderHtmlReport(baseSummary, { previewHref: "\\\\evil.com/phish" }),
+    /Open Preview Shell/,
+    "Must reject backslash protocol-relative URL bypass"
+  );
+  assert.doesNotMatch(
+    renderHtmlReport(baseSummary, { previewHref: "\x01javascript:alert(1)" }),
+    /Open Preview Shell/,
+    "Must reject C0 prefix javascript URL bypass"
+  );
+  assert.doesNotMatch(html, /--accent-fg|btn-secondary/, "Must omit unused CSS vars/classes");
+  assert.match(html, /<code>outline: none<\/code>/, "Must format backtick code spans");
+  assert.match(html, /Showing 60 of 65 active findings/, "Must indicate >60 findings truncation");
+  assert.match(html, /role="table"/, "Must preserve ARIA table roles for responsive cards");
+  assert.match(html, /data-label="Signal"/, "Mobile cell label must match Signal header");
   assert.match(html, /DSAF Audit Report/);
   assert.match(html, /&lt;script&gt;/, "Must HTML-escape untrusted labels");
   assert.match(html, /dsaf\/no-outline-none-naked/);
   assert.match(html, /hidden="until-found"/);
   assert.doesNotMatch(html, /aria-controls=/, "Tabs must omit aria-controls per modern tabs guidance");
+  assert.match(html, /clip-path:\s*inset\(50%\)/, "Skip link must hide via clip-path instead of off-screen left coordinate");
+  assert.doesNotMatch(html, /left:\s*-9999px/, "Skip link must not trigger mobile clippedTargets via -9999px");
+
+  const safeHtml = renderHtmlReport(baseSummary, { previewHref: "./preview-shell.html" });
+  assert.match(safeHtml, /href="\.\/preview-shell\.html"/, "Relative previewHref must render");
+  assert.match(safeHtml, /addEventListener\("storage"/, "Report must sync manual theme across tabs via storage listener");
+  assert.match(safeHtml, /meta\.content = manualTheme === "light" \|\| manualTheme === "dark" \? manualTheme : "light dark"/, "Report matchMedia handler must apply stored manualTheme to meta.content");
+
+  const scratch = mkdtempSync(join(tmpdir(), "dsaf-html-report-test-"));
+  try {
+    const inJson = join(scratch, "summary.json");
+    const outHtml = join(scratch, "report.html");
+    writeFileSync(inJson, JSON.stringify(baseSummary), "utf8");
+    const rendered = renderHtmlReport(JSON.parse(readFileSync(inJson, "utf8")), { previewHref: "./preview-shell.html" });
+    writeFileSync(outHtml, rendered, "utf8");
+    assert.match(readFileSync(outHtml, "utf8"), /DSAF Audit Report/);
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+
+  // Round 10 regressions (R10-A3-11): resilient null/malformed summary handling, NaN% guard, and ciGate ?? 0 defaults
+  const nullHtml = renderHtmlReport(null);
+  assert.match(nullHtml, /DSAF Audit Report/);
+  const partialHtml = renderHtmlReport({
+    target: "x",
+    ciFindings: [null],
+    ciGate: { floor: 1 },
+    tokens: { drift: { tokenCompliancePct: Number.NaN } },
+    personas: { items: [null, { id: "P01", name: "A", axis: "B", impactedCount: 1, findingRules: "dsaf/rule" }] },
+  });
+  assert.doesNotMatch(partialHtml, /NaN%/, "NaN tokenCompliancePct must fall back to N/A");
+  assert.match(partialHtml, /<p class="stat-label">Reflex Warnings<\/p>\s*<p class="stat-val">0<\/p>/, "Missing ciGate.reflex must default to 0");
+  assert.match(partialHtml, /\[role="tab"\]:focus-visible,\s*\.table-wrap:focus-visible\s*\{\s*outline-offset:\s*-2px;\s*\}/, "Tabs and scrollable table-wrap must inset focus ring so overflow containers never clip outline");
+  assert.match(partialHtml, /\.table-wrap\s*\{[^}]*border-radius:\s*inherit;/, "table-wrap must inherit container radius");
+
+  const htmlSelfPath = fileURLToPath(import.meta.url);
+  assert.equal(spawnSync(process.execPath, [htmlSelfPath, "--unknown-flag"], { encoding: "utf8" }).status, 2);
+  assert.equal(spawnSync(process.execPath, [htmlSelfPath, "--input", "   ", "--out", "report.html"], { encoding: "utf8" }).status, 2);
+  assert.equal(spawnSync(process.execPath, [htmlSelfPath, "--input", "summary.json", "--out", "   "], { encoding: "utf8" }).status, 2);
+  assert.equal(spawnSync(process.execPath, [htmlSelfPath, "--input", "nonexistent-r23.json", "--out", "report.html"], { encoding: "utf8" }).status, 2);
+
+  // Round 25 & Round 28 regressions (A4-H1 live leaf symlink on --out, A4-L1 symlinked CLI entry, CWD-independent checks)
+  const r25Scratch = mkdtempSync(join(tmpdir(), "dsaf-html-r25-"));
+  try {
+    const r25In = join(r25Scratch, "summary.json");
+    const r25Secret = join(r25Scratch, "secret.html");
+    const r25SymOut = join(r25Scratch, "out-sym.html");
+    const r25CliSym = join(r25Scratch, "html-cli-sym.mjs");
+    writeFileSync(r25In, JSON.stringify(baseSummary), "utf8");
+    writeFileSync(r25Secret, "<!-- untouched -->");
+    symlinkSync(r25Secret, r25SymOut);
+    symlinkSync(htmlSelfPath, r25CliSym);
+    assert.equal(spawnSync(process.execPath, [htmlSelfPath, "--input", r25In, "--out", "report.html", "--preview-href", "   "], { encoding: "utf8" }).status, 2);
+    assert.equal(spawnSync(process.execPath, [htmlSelfPath, "--input", r25In, "--out", "report.html", "--title", "   "], { encoding: "utf8" }).status, 2);
+    assert.equal(spawnSync(process.execPath, [htmlSelfPath, "--input", r25In, "--out", r25Scratch], { encoding: "utf8" }).status, 2);
+    assert.equal(spawnSync(process.execPath, [htmlSelfPath, "--input", r25In, "--out", r25SymOut], { encoding: "utf8" }).status, 2);
+    assert.equal(readFileSync(r25Secret, "utf8"), "<!-- untouched -->");
+    assert.equal(spawnSync(process.execPath, [r25CliSym, "--help"], { encoding: "utf8" }).status, 0);
+  } finally {
+    rmSync(r25Scratch, { recursive: true, force: true });
+  }
+
+  // Round 27 (A4-L1): empty/missing summary.generated must not render an empty .pill capsule
+  const r27EmptyDateHtml = renderHtmlReport({});
+  assert.ok(!r27EmptyDateHtml.includes('<span class="pill"></span>'), "Missing generated date must omit empty .pill capsule");
+
   console.log("HTML_REPORT_SELF_TEST_PASSED (offline editorial report + XSS escaping + accessible tabs/table)");
   return 0;
 }
 
-const isEntry = process.argv[1] && resolve(process.argv[1]) === decodeURIComponent(new URL(import.meta.url).pathname);
-if (isEntry) {
-  const { values } = parseArgs({
-    options: {
-      "self-test": { type: "boolean", default: false },
-      help: { type: "boolean", short: "h", default: false },
-    },
-  });
-  if (values.help) {
-    console.log("Usage: node skill/scripts/generate-html-report.mjs [--self-test]");
-    process.exit(0);
+if (isDirectCliEntry(import.meta.url)) {
+  let values;
+  try {
+    ({ values } = parseArgs({
+      options: {
+        input: { type: "string" },
+        out: { type: "string" },
+        "preview-href": { type: "string" },
+        title: { type: "string" },
+        "self-test": { type: "boolean", default: false },
+        help: { type: "boolean", short: "h", default: false },
+      },
+    }));
+  } catch (err) {
+    console.error(`ERROR: ${err instanceof Error ? err.message : String(err)}`);
+    process.exit(2);
   }
-  if (values["self-test"]) {
-    process.exit(runSelfTest());
+  try {
+    if (values.help) {
+      console.log("Usage: node skill/scripts/generate-html-report.mjs [--input summary.json --out report.html] [--preview-href ./preview-shell.html] [--title name] [--self-test] [--help]");
+      process.exit(0);
+    }
+    if (values["self-test"]) {
+      process.exit(runSelfTest());
+    }
+    if (!values.input || !values.input.trim() || !values.out || !values.out.trim()) {
+      console.error("Error: non-empty --input <summary.json> and --out <report.html> are required unless --self-test is passed.");
+      process.exit(2);
+    }
+    if (values["preview-href"] !== undefined && !values["preview-href"].trim()) {
+      console.error("Error: --preview-href must be a non-empty URL or relative path.");
+      process.exit(2);
+    }
+    if (values.title !== undefined && !values.title.trim()) {
+      console.error("Error: --title must be a non-empty string.");
+      process.exit(2);
+    }
+    const inPath = resolve(values.input);
+    let inLst = null;
+    try {
+      inLst = lstatSync(inPath);
+    } catch (err) {
+      if (err?.code === "ENOENT" || err?.code === "ENOTDIR") {
+        console.error(`Error: Input file not found: ${inPath}`);
+        process.exit(2);
+      }
+      throw err;
+    }
+    if (inLst.isSymbolicLink() && !existsSync(inPath)) {
+      console.error(`Error: Input file is a broken symlink: ${inPath}`);
+      process.exit(2);
+    }
+    if (!statSync(inPath).isFile()) {
+      console.error(`Error: Input path is not a regular file: ${inPath}`);
+      process.exit(2);
+    }
+    let outHtml;
+    try {
+      outHtml = assertWritableOutputFile(values.out, "--out");
+    } catch (err) {
+      console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
+      process.exit(2);
+    }
+    const summaryData = JSON.parse(readFileSync(inPath, "utf8"));
+    mkdirSync(dirname(outHtml), { recursive: true });
+    writeFileSync(
+      outHtml,
+      renderHtmlReport(summaryData, { previewHref: values["preview-href"], title: values.title }),
+      "utf8"
+    );
+    console.log(`DSAF_HTML_REPORT_WRITTEN: ${outHtml}`);
+  } catch (err) {
+    console.error(`ERROR: ${err instanceof Error ? err.message : String(err)}`);
+    process.exit(1);
   }
 }

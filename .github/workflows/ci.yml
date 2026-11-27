@@ -6,6 +6,9 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
 jobs:
   verify:
     runs-on: ubuntu-latest
@@ -23,14 +26,14 @@ jobs:
       - run: node bin/dsaf.mjs setup --self-test
       - run: node skill/scripts/generate-html-report.mjs --self-test
       - run: node bin/dsaf.mjs personas --self-test
-      - run: node bin/dsaf.mjs init --self-test
       - run: node bin/dsaf.mjs mcp --self-test
       - run: node skill/scripts/ci-report.mjs --self-test
       - run: node bin/dsaf.mjs hook --self-test
       - run: node bin/dsaf.mjs fix --self-test
-      - run: node bin/dsaf.mjs evolve --self-test
       - run: node bin/dsaf.mjs install-skill --self-test
       - run: node bin/dsaf.mjs doctor --self-test
+      - run: node skill/scripts/update-check.mjs --self-test
+      - run: node bin/dsaf.mjs update --self-test
       - run: node bin/dsaf.mjs figma-diff --self-test
       - run: node bin/dsaf.mjs guardrails --self-test
       - name: Verify live Preview Shell demo matches canonical skill shell
@@ -42,11 +45,12 @@ jobs:
           node -e '
             const { execFileSync } = require("node:child_process");
             const out = JSON.parse(execFileSync(process.execPath, ["bin/dsaf.mjs", "tokens", "docs", "--json"], { encoding: "utf8" }));
-            if (out.drift.hardcodedColorHits !== 0) {
-              console.error("ERROR: hardcoded colors leaked outside :root in docs/:", out.drift.hardcodedColorHits);
+            const { hardcodedColorHits, offGridSpacingHits, orphanCssVariableCount, importantOverrides } = out.drift;
+            if (hardcodedColorHits !== 0 || offGridSpacingHits !== 0 || orphanCssVariableCount !== 0 || importantOverrides !== 0) {
+              console.error("ERROR: token drift in docs/:", JSON.stringify({ hardcodedColorHits, offGridSpacingHits, orphanCssVariableCount, importantOverrides }));
               process.exit(1);
             }
-            console.log("DOCS_TOKENS_CLEAN (hardcodedColorHits=0)");
+            console.log("DOCS_TOKENS_CLEAN (hardcodedColorHits=0 offGrid=0 orphan=0 important=0)");
           '
       - run: npm pack --dry-run
       - name: Smoke-test packed CLI tarball
@@ -55,7 +59,6 @@ jobs:
           npm install --prefix /tmp/dsaf-pkg-test "./$PKG"
           /tmp/dsaf-pkg-test/node_modules/.bin/dsaf version
           rm -rf /tmp/dsaf-pkg-test "$PKG"
-      - run: node evolve/scripts/mine-signals.mjs --input evolve/fixtures/example-feedback.jsonl --scores-dir evolve/fixtures/calibration --format markdown
 
   runtime-playwright:
     runs-on: ubuntu-latest
@@ -77,9 +80,9 @@ jobs:
           node bin/dsaf.mjs runtime docs/demo/preview-shell.html --axe /tmp/dsaf-pw/node_modules/axe-core/axe.min.js
           node bin/dsaf.mjs runtime docs/index.html --live --skip-shell-check --extended-viewports --axe /tmp/dsaf-pw/node_modules/axe-core/axe.min.js
           node bin/dsaf.mjs runtime docs/demo/sample-report.html --live --skip-shell-check --extended-viewports --axe /tmp/dsaf-pw/node_modules/axe-core/axe.min.js
-          node bin/dsaf.mjs runtime evolve/fixtures/synthetic/mode-p-app/index.html --live --axe /tmp/dsaf-pw/node_modules/axe-core/axe.min.js
-          node bin/dsaf.mjs runtime --storybook evolve/fixtures/synthetic/storybook-static/index.json --axe /tmp/dsaf-pw/node_modules/axe-core/axe.min.js
-          if node bin/dsaf.mjs runtime evolve/fixtures/synthetic/mode-p-defects/index.html --live --axe /tmp/dsaf-pw/node_modules/axe-core/axe.min.js; then
+          node bin/dsaf.mjs runtime fixtures/synthetic/mode-p-app/index.html --live --axe /tmp/dsaf-pw/node_modules/axe-core/axe.min.js
+          node bin/dsaf.mjs runtime --storybook fixtures/synthetic/storybook-static/index.json --axe /tmp/dsaf-pw/node_modules/axe-core/axe.min.js
+          if node bin/dsaf.mjs runtime fixtures/synthetic/mode-p-defects/index.html --live --axe /tmp/dsaf-pw/node_modules/axe-core/axe.min.js; then
             echo "ERROR: defect fixture unexpectedly passed!"
             exit 1
           fi

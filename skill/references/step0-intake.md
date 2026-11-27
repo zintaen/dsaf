@@ -1,4 +1,4 @@
-# Step 0 — Fast Read-Only Recon & Clarification Gate (`v0.5.0`)
+# Step 0 — Fast Read-Only Recon & Clarification Gate (`v0.9.3`)
 
 Always execute this gate at the start of every DSAF run BEFORE creating `audit-output/`, scoring criteria, writing `draft/` previews, or running state-mutating interactions.
 
@@ -70,7 +70,7 @@ Before I start the audit, please confirm the parameters below:
 | **3. Platform & Viewports** | `(1A)` Desktop (`1440px`) · `(1B)` Mobile (`375px`) · `(1C)` Both (Desktop-first) · `(1D)` Both (Mobile-first) | Single viewport deepens platform ergonomics; testing both catches responsive overflow & `< 44px` tap failures | **`<1A..1D>`** — <viewport rationale> |
 | **4. Data Mutation Tier** | `(T0)` Strict Read-Only · `(T1)` Staging Safe-Create · `(T2)` Local Sandbox + `T2-Mock` + 5 Synthetic Datasets · `(T3)` Isolated Worktree | `T0` guarantees zero mutation but skips post-submit/edge tests; `T2 + T2-Mock` tests `100+` rows & `422/500` faults safely with zero cloud writes | **`<T0..T3>`** — <isolation rationale> |
 | **5. Ambition & Deliverables** | `(L1)` Surgical Polish · `(L2)` Structured Upgrade · `(L3)` Breakthrough Dual-Track (`draft/` HTML) · `(+SG)` Add Starter DS Spec & Executable CI Guardrails | `L1` minimizes code churn; `L3` lets you compare Pragmatic vs North-Star side-by-side in HTML; `+SG` outputs runnable lint/token rules | **`<L1..L3 [+SG]>`** — <maturity rationale> |
-| **6. Depth & Baseline Diff** | `(Q)` Quick (`DSAF-25` / 5–7 personas) · `(D)` Deep-Dive (`Full` / 8–12+ personas, 5-file dossier) · `(+Diff)` Enforce `audit-diff` against prior `scores.json` | Deep-Dive prevents report compression and uncovers edge/a11y flaws; `+Diff` blocks silent regressions across releases | **`<(Q|D) [+Diff]>`** — <depth rationale> |
+| **6. Depth & Baseline Diff** | `(Q)` Quick (`--depth quick` / `5+` baseline personas) · `(D)` Deep-Dive (`--depth deep` / `8+` signal-driven uncapped personas, 5-file dossier) · `(+Diff)` Enforce `audit-diff` against prior `scores.json` | Deep-Dive prevents report compression and uncovers edge/a11y flaws; `+Diff` blocks silent regressions across releases | **`<Q / D [+Diff]>`** — <depth rationale> |
 
 *Quick 1-line reply example (in your language): "Accept all recommendations" or "Proceed with recommendations, but use 1C, T2, L3+SG".*
 ```

@@ -12,7 +12,7 @@
       }
     } catch (e) {}
   </script>
-  <title>DSAF Audit Report — northwind-billing-web (Sample Audit)</title>
+  <title>DSAF Audit Report — billing-web-specimen</title>
   <style>
     :root {
       color-scheme: light dark;
@@ -24,7 +24,6 @@
       --fg: #101926;
       --muted: #455264;
       --accent: #132540;
-      --accent-fg: #FFFFFF;
       --pass-bg: #E7F3EC;
       --pass-border: #A9D4BC;
       --pass-fg: #0D5935;
@@ -48,7 +47,6 @@
         --fg: #EBF0F7;
         --muted: #B6C2D4;
         --accent: #F4BA17;
-        --accent-fg: #0B111B;
         --pass-bg: #123326;
         --pass-border: #2A6E53;
         --pass-fg: #7DE0B1;
@@ -76,7 +74,6 @@
         --fg: #EBF0F7;
         --muted: #B6C2D4;
         --accent: #F4BA17;
-        --accent-fg: #0B111B;
         --pass-bg: #123326;
         --pass-border: #2A6E53;
         --pass-fg: #7DE0B1;
@@ -110,6 +107,37 @@
       outline-offset: 2px;
     }
 
+    .skip-link {
+      position: fixed;
+      left: 16px;
+      top: 12px;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      border: 0;
+      overflow: hidden;
+      clip-path: inset(50%);
+      z-index: 100;
+      background: var(--surface);
+      color: var(--fg);
+      border-radius: 8px;
+      font-weight: 600;
+      text-decoration: none;
+    }
+    .skip-link:focus,
+    .skip-link:focus-visible {
+      width: auto;
+      height: auto;
+      min-height: 44px;
+      display: inline-flex;
+      align-items: center;
+      padding: 8px 16px;
+      clip-path: none;
+      border: 2px solid var(--ring);
+      outline: 2px solid var(--ring);
+      outline-offset: 2px;
+    }
+
     .topbar {
       background: var(--surface);
       border-bottom: 1px solid var(--border);
@@ -124,7 +152,7 @@
       align-items: center;
       justify-content: space-between;
       gap: 12px;
-      padding: 12px 0;
+      padding-block: 12px;
       flex-wrap: wrap;
     }
     .brand {
@@ -167,16 +195,22 @@
       gap: 16px;
       flex-wrap: wrap;
     }
+    .report-head > div {
+      min-width: 0;
+      max-width: 100%;
+    }
     h1 {
       margin: 0 0 6px;
       font-size: clamp(1.375rem, 1rem + 1.5vw, 2rem);
       line-height: 1.2;
       letter-spacing: -0.02em;
+      overflow-wrap: anywhere;
     }
     .meta-line {
       margin: 0;
       color: var(--muted);
       font-size: 14px;
+      overflow-wrap: anywhere;
     }
 
     .summary-strip {
@@ -233,6 +267,7 @@
       border-bottom: 1px solid var(--border);
       margin-bottom: 16px;
       scrollbar-width: thin;
+      scroll-padding-inline: 12px;
     }
     [role="tab"] {
       position: relative;
@@ -250,6 +285,10 @@
       white-space: nowrap;
     }
     [role="tab"]:hover { color: var(--fg); }
+    [role="tab"]:focus-visible,
+    .table-wrap:focus-visible {
+      outline-offset: -2px;
+    }
     [role="tab"][aria-selected="true"] {
       color: var(--fg);
     }
@@ -276,6 +315,7 @@
       overflow: auto;
       max-inline-size: 100%;
       container-type: inline-size;
+      border-radius: inherit;
     }
     table {
       width: 100%;
@@ -362,6 +402,7 @@
   </style>
 </head>
 <body>
+  <a class="skip-link" href="#main-content">Skip to main content</a>
   <header class="topbar">
     <div class="wrap topbar-inner">
       <div class="brand">
@@ -369,19 +410,19 @@
         <span class="pill pill--pass">PASS</span>
       </div>
       <div class="top-actions">
-        <a class="btn btn-secondary" href="./preview-shell.html">Open Preview Shell</a>
+        <a class="btn" href="./preview-shell.html">Open Preview Shell</a>
         <button type="button" class="btn" id="theme-toggle-btn">Switch theme</button>
       </div>
     </div>
   </header>
 
-  <main class="wrap">
+  <main class="wrap" id="main-content">
     <section class="report-head">
       <div>
-        <h1>northwind-billing-web (Sample Audit)</h1>
-        <p class="meta-line">Topology: <strong>Mode P</strong> (Mode P — Product UX/UI (No Formal Design System)) · Surface: <strong>operate</strong> · DSAF v0.9.2</p>
+        <h1>billing-web-specimen</h1>
+        <p class="meta-line">Topology: <strong>Mode C</strong> (Mode C — Product Conformance &amp; Drift) · Surface: <strong>operate</strong> · DSAF v0.9.3</p>
       </div>
-      <span class="pill">2026-11-26</span>
+      <span class="pill">2026-11-27</span>
     </section>
 
     <section class="summary-strip" aria-label="Audit key counts">
@@ -391,11 +432,11 @@
       </div>
       <div class="stat">
         <p class="stat-label">Reflex Warnings</p>
-        <p class="stat-val">3</p>
+        <p class="stat-val">4</p>
       </div>
       <div class="stat">
         <p class="stat-label">Token Compliance</p>
-        <p class="stat-val">50%</p>
+        <p class="stat-val">92.7%</p>
       </div>
       <div class="stat">
         <p class="stat-label">Personas Checked</p>
@@ -413,39 +454,39 @@
       <div role="tabpanel" aria-labelledby="tab-findings">
         <div class="panel-box">
           <div class="table-wrap" tabindex="0" role="region" aria-label="Active findings mapped to personas">
-            <table>
-              <thead>
-                <tr>
-                  <th>Rule &amp; Detail</th>
-                  <th>Tier</th>
-                  <th>Location</th>
-                  <th>Personas Impacted</th>
+            <table role="table">
+              <thead role="rowgroup">
+                <tr role="row">
+                  <th role="columnheader" scope="col">Rule &amp; Detail</th>
+                  <th role="columnheader" scope="col">Tier</th>
+                  <th role="columnheader" scope="col">Location</th>
+                  <th role="columnheader" scope="col">Personas Impacted</th>
                 </tr>
               </thead>
-              <tbody>
-                <tr>
-              <th scope="row" data-label="Rule"><code>dsaf/hardcoded-color</code><div class="sub-line">Hardcoded hex color `#cbd5e1` outside token definitions.</div></th>
-              <td data-label="Tier"><span class="pill pill--warn">Reflex</span></td>
-              <td data-label="Location"><code>src/app/billing/styles.css:1</code></td>
-              <td data-label="Personas"><span class="mono-text">P04</span></td>
+              <tbody role="rowgroup">
+                <tr role="row">
+              <th role="rowheader" scope="row" data-label="Rule"><code>dsaf/hardcoded-color</code><div class="sub-line">Hardcoded hex color <code>#ffffff</code> outside token definitions; bind <code>--dsaf-surface-elevated</code>.</div></th>
+              <td role="cell" data-label="Tier"><span class="pill pill--warn">Reflex</span></td>
+              <td role="cell" data-label="Location"><code>src/components/PlanSummaryCard.tsx:28</code></td>
+              <td role="cell" data-label="Personas"><span class="mono-text">P04, P08</span></td>
             </tr>
-<tr>
-              <th scope="row" data-label="Rule"><code>dsaf/hardcoded-color</code><div class="sub-line">Hardcoded hex color `#334155` outside token definitions.</div></th>
-              <td data-label="Tier"><span class="pill pill--warn">Reflex</span></td>
-              <td data-label="Location"><code>src/app/billing/styles.css:2</code></td>
-              <td data-label="Personas"><span class="mono-text">P04</span></td>
+<tr role="row">
+              <th role="rowheader" scope="row" data-label="Rule"><code>dsaf/hardcoded-color</code><div class="sub-line">Hardcoded hex color <code>#f8fafc</code> outside token definitions; bind <code>--dsaf-surface-subtle</code>.</div></th>
+              <td role="cell" data-label="Tier"><span class="pill pill--warn">Reflex</span></td>
+              <td role="cell" data-label="Location"><code>src/components/UpgradeBanner.tsx:14</code></td>
+              <td role="cell" data-label="Personas"><span class="mono-text">P04, P07, P08</span></td>
             </tr>
-<tr>
-              <th scope="row" data-label="Rule"><code>dsaf/off-grid-spacing</code><div class="sub-line">Off-grid spacing `padding: 13px`; use 4px/8px grid token.</div></th>
-              <td data-label="Tier"><span class="pill pill--warn">Reflex</span></td>
-              <td data-label="Location"><code>src/app/billing/styles.css:2</code></td>
-              <td data-label="Personas"><span class="mono-text">P01</span></td>
+<tr role="row">
+              <th role="rowheader" scope="row" data-label="Rule"><code>dsaf/hardcoded-color</code><div class="sub-line">Hardcoded hex color <code>#0f172a</code> outside token definitions; bind <code>--dsaf-ink-primary</code>.</div></th>
+              <td role="cell" data-label="Tier"><span class="pill pill--warn">Reflex</span></td>
+              <td role="cell" data-label="Location"><code>src/components/InvoiceBadge.tsx:19</code></td>
+              <td role="cell" data-label="Personas"><span class="mono-text">P04, P08</span></td>
             </tr>
-<tr>
-              <th scope="row" data-label="Rule"><code>dsaf/semantic-orphan-var</code><div class="sub-line">Unused semantic CSS custom property `--accent`.</div></th>
-              <td data-label="Tier"><span class="pill">Finish</span></td>
-              <td data-label="Location"><code>src/tokens.css:1</code></td>
-              <td data-label="Personas"><span class="mono-text">P01</span></td>
+<tr role="row">
+              <th role="rowheader" scope="row" data-label="Rule"><code>dsaf/off-grid-spacing</code><div class="sub-line">Off-grid spacing literal <code>18px</code>; snap to <code>16px</code> or <code>20px</code> grid token.</div></th>
+              <td role="cell" data-label="Tier"><span class="pill pill--warn">Reflex</span></td>
+              <td role="cell" data-label="Location"><code>src/styles/billing.css:64</code></td>
+              <td role="cell" data-label="Personas"><span class="mono-text">P01, P03</span></td>
             </tr>
               </tbody>
             </table>
@@ -456,75 +497,75 @@
       <div role="tabpanel" aria-labelledby="tab-personas" hidden="until-found">
         <div class="panel-box">
           <div class="table-wrap" tabindex="0" role="region" aria-label="Persona impact matrix">
-            <table>
-              <thead>
-                <tr>
-                  <th>Persona &amp; Axis</th>
-                  <th>Viewport</th>
-                  <th>Signal</th>
-                  <th>Impact</th>
+            <table role="table">
+              <thead role="rowgroup">
+                <tr role="row">
+                  <th role="columnheader" scope="col">Persona &amp; Axis</th>
+                  <th role="columnheader" scope="col">Viewport</th>
+                  <th role="columnheader" scope="col">Signal</th>
+                  <th role="columnheader" scope="col">Impact</th>
                 </tr>
               </thead>
-              <tbody>
-                <tr>
-              <th scope="row" data-label="Persona"><strong>P01</strong> · First-Time Visitor (Cold Arrival)<div class="sub-line">Onboarding &amp; Information Architecture</div></th>
-              <td data-label="Viewport">1440x900</td>
-              <td data-label="Source"><code>signal:baseline</code></td>
-              <td data-label="Impact"><span class="pill pill--warn">2 issues</span><div class="sub-line"><code>dsaf/off-grid-spacing</code>, <code>dsaf/semantic-orphan-var</code></div></td>
+              <tbody role="rowgroup">
+                <tr role="row">
+              <th role="rowheader" scope="row" data-label="Persona"><strong>P01</strong> · First-Time Visitor (Cold Arrival)<div class="sub-line">Onboarding &amp; Information Architecture</div></th>
+              <td role="cell" data-label="Viewport">1440x900</td>
+              <td role="cell" data-label="Signal"><code>signal:baseline</code></td>
+              <td role="cell" data-label="Impact"><span class="pill pill--warn">1 issue</span><div class="sub-line"><code>dsaf/off-grid-spacing</code></div></td>
             </tr>
-<tr>
-              <th scope="row" data-label="Persona"><strong>P02</strong> · Keyboard-Only Power User<div class="sub-line">Keyboard Navigation &amp; Focus Discipline</div></th>
-              <td data-label="Viewport">1280x800</td>
-              <td data-label="Source"><code>signal:baseline</code></td>
-              <td data-label="Impact"><span class="pill pill--pass">Clean</span></td>
+<tr role="row">
+              <th role="rowheader" scope="row" data-label="Persona"><strong>P02</strong> · Keyboard-Only Power User<div class="sub-line">Keyboard Navigation &amp; Focus Discipline</div></th>
+              <td role="cell" data-label="Viewport">1280x800</td>
+              <td role="cell" data-label="Signal"><code>signal:baseline</code></td>
+              <td role="cell" data-label="Impact"><span class="pill pill--pass">Clean</span></td>
             </tr>
-<tr>
-              <th scope="row" data-label="Persona"><strong>P03</strong> · Mobile Commuter (390px One-Handed + 3G)<div class="sub-line">Responsive Layout &amp; Touch Ergonomics</div></th>
-              <td data-label="Viewport">390x844</td>
-              <td data-label="Source"><code>signal:baseline</code></td>
-              <td data-label="Impact"><span class="pill pill--pass">Clean</span></td>
+<tr role="row">
+              <th role="rowheader" scope="row" data-label="Persona"><strong>P03</strong> · Mobile Commuter (390px One-Handed + 3G)<div class="sub-line">Responsive Layout &amp; Touch Ergonomics</div></th>
+              <td role="cell" data-label="Viewport">390x844</td>
+              <td role="cell" data-label="Signal"><code>signal:baseline</code></td>
+              <td role="cell" data-label="Impact"><span class="pill pill--warn">1 issue</span><div class="sub-line"><code>dsaf/off-grid-spacing</code></div></td>
             </tr>
-<tr>
-              <th scope="row" data-label="Persona"><strong>P04</strong> · Low-Vision &amp; Reduced-Motion Reader<div class="sub-line">Contrast, Zoom 200% &amp; Motion Sensitivity</div></th>
-              <td data-label="Viewport">720x900</td>
-              <td data-label="Source"><code>signal:baseline</code></td>
-              <td data-label="Impact"><span class="pill pill--warn">2 issues</span><div class="sub-line"><code>dsaf/hardcoded-color</code></div></td>
+<tr role="row">
+              <th role="rowheader" scope="row" data-label="Persona"><strong>P04</strong> · Low-Vision &amp; Reduced-Motion Reader<div class="sub-line">Contrast, Zoom 200% &amp; Motion Sensitivity</div></th>
+              <td role="cell" data-label="Viewport">720x900</td>
+              <td role="cell" data-label="Signal"><code>signal:baseline</code></td>
+              <td role="cell" data-label="Impact"><span class="pill pill--warn">3 issues</span><div class="sub-line"><code>dsaf/hardcoded-color</code></div></td>
             </tr>
-<tr>
-              <th scope="row" data-label="Persona"><strong>P05</strong> · International / Heavy-Data Stress User<div class="sub-line">Localization Diacritics &amp; Scale Resilience</div></th>
-              <td data-label="Viewport">768x1024</td>
-              <td data-label="Source"><code>signal:baseline</code></td>
-              <td data-label="Impact"><span class="pill pill--pass">Clean</span></td>
+<tr role="row">
+              <th role="rowheader" scope="row" data-label="Persona"><strong>P05</strong> · International / Heavy-Data Stress User<div class="sub-line">Localization Diacritics &amp; Scale Resilience</div></th>
+              <td role="cell" data-label="Viewport">768x1024</td>
+              <td role="cell" data-label="Signal"><code>signal:baseline</code></td>
+              <td role="cell" data-label="Impact"><span class="pill pill--pass">Clean</span></td>
             </tr>
-<tr>
-              <th scope="row" data-label="Persona"><strong>P06</strong> · Frequent Returning Operator<div class="sub-line">Repeat Workflow Speed &amp; State Retention</div></th>
-              <td data-label="Viewport">1440x900</td>
-              <td data-label="Source"><code>signal:operate_returning</code></td>
-              <td data-label="Impact"><span class="pill pill--pass">Clean</span></td>
+<tr role="row">
+              <th role="rowheader" scope="row" data-label="Persona"><strong>P06</strong> · Form-Error &amp; Browser Autofill User<div class="sub-line">Form Validation, Labels &amp; Autofill Ergonomics</div></th>
+              <td role="cell" data-label="Viewport">390x844</td>
+              <td role="cell" data-label="Signal"><code>signal:forms_autofill</code></td>
+              <td role="cell" data-label="Impact"><span class="pill pill--pass">Clean</span></td>
             </tr>
-<tr>
-              <th scope="row" data-label="Persona"><strong>P07</strong> · Spotty-Network &amp; Fault Recovery User<div class="sub-line">Error Tolerance &amp; T2-Mock Resilience</div></th>
-              <td data-label="Viewport">390x844</td>
-              <td data-label="Source"><code>signal:fault_resilience</code></td>
-              <td data-label="Impact"><span class="pill pill--pass">Clean</span></td>
+<tr role="row">
+              <th role="rowheader" scope="row" data-label="Persona"><strong>P07</strong> · Billing &amp; Seat Quota Manager<div class="sub-line">High-Risk Plan Confirmation &amp; Clarity</div></th>
+              <td role="cell" data-label="Viewport">1440x900</td>
+              <td role="cell" data-label="Signal"><code>signal:operate_billing</code></td>
+              <td role="cell" data-label="Impact"><span class="pill pill--warn">1 issue</span><div class="sub-line"><code>dsaf/hardcoded-color</code></div></td>
             </tr>
-<tr>
-              <th scope="row" data-label="Persona"><strong>P08</strong> · Permission-Constrained / Guest Reviewer<div class="sub-line">Auth Boundary &amp; Read-Only Safety</div></th>
-              <td data-label="Viewport">1280x800</td>
-              <td data-label="Source"><code>signal:auth_boundary</code></td>
-              <td data-label="Impact"><span class="pill pill--pass">Clean</span></td>
+<tr role="row">
+              <th role="rowheader" scope="row" data-label="Persona"><strong>P08</strong> · Night-Shift Dark-Mode Browser<div class="sub-line">Dark Surface Cohesion &amp; Eye Strain</div></th>
+              <td role="cell" data-label="Viewport">1440x900</td>
+              <td role="cell" data-label="Signal"><code>signal:dark_mode</code></td>
+              <td role="cell" data-label="Impact"><span class="pill pill--warn">3 issues</span><div class="sub-line"><code>dsaf/hardcoded-color</code></div></td>
             </tr>
-<tr>
-              <th scope="row" data-label="Persona"><strong>P09</strong> · Form-Error &amp; Browser Autofill User<div class="sub-line">Form Validation, Labels &amp; Autofill Ergonomics</div></th>
-              <td data-label="Viewport">390x844</td>
-              <td data-label="Source"><code>signal:forms_autofill</code></td>
-              <td data-label="Impact"><span class="pill pill--pass">Clean</span></td>
+<tr role="row">
+              <th role="rowheader" scope="row" data-label="Persona"><strong>P09</strong> · Invoice &amp; Audit Table Analyst<div class="sub-line">Dense Data Scanability &amp; Export Flow</div></th>
+              <td role="cell" data-label="Viewport">1280x800</td>
+              <td role="cell" data-label="Signal"><code>signal:dense_tables</code></td>
+              <td role="cell" data-label="Impact"><span class="pill pill--pass">Clean</span></td>
             </tr>
-<tr>
-              <th scope="row" data-label="Persona"><strong>P10</strong> · Dense-Data Table &amp; Filter Analyst<div class="sub-line">Dense Information Scannability &amp; Narrow-Container Adaptation</div></th>
-              <td data-label="Viewport">768x1024</td>
-              <td data-label="Source"><code>signal:dense_tables</code></td>
-              <td data-label="Impact"><span class="pill pill--pass">Clean</span></td>
+<tr role="row">
+              <th role="rowheader" scope="row" data-label="Persona"><strong>P10</strong> · Constrained Bandwidth Operator<div class="sub-line">Graceful Loading &amp; Offline Resilience</div></th>
+              <td role="cell" data-label="Viewport">390x844</td>
+              <td role="cell" data-label="Signal"><code>signal:low_bandwidth</code></td>
+              <td role="cell" data-label="Impact"><span class="pill pill--pass">Clean</span></td>
             </tr>
               </tbody>
             </table>
@@ -535,10 +576,10 @@
       <div role="tabpanel" aria-labelledby="tab-tokens" hidden="until-found">
         <div class="panel-box">
           <div class="metrics-grid">
-            <div class="metric-cell"><p class="metric-k">UI &amp; Style Files Scanned</p><p class="metric-v">3</p></div>
-            <div class="metric-cell"><p class="metric-k">DTCG Tokens</p><p class="metric-v">0</p></div>
-            <div class="metric-cell"><p class="metric-k">Hardcoded Colors / var() Refs</p><p class="metric-v">2 / 2</p></div>
-            <div class="metric-cell"><p class="metric-k">CSS Orphans (Semantic / Scale)</p><p class="metric-v">1 / 0</p></div>
+            <div class="metric-cell"><p class="metric-k">UI &amp; Style Files Scanned</p><p class="metric-v">18</p></div>
+            <div class="metric-cell"><p class="metric-k">DTCG Tokens</p><p class="metric-v">48</p></div>
+            <div class="metric-cell"><p class="metric-k">Hardcoded Colors / var() Refs</p><p class="metric-v">3 / 38</p></div>
+            <div class="metric-cell"><p class="metric-k">CSS Orphans (Semantic / Scale)</p><p class="metric-v">0 / 0</p></div>
             <div class="metric-cell"><p class="metric-k">!important / Off-Grid Spacing</p><p class="metric-v">0 / 1</p></div>
             <div class="metric-cell"><p class="metric-k">Waived / Unused Ignores</p><p class="metric-v">0 / 0</p></div>
           </div>
@@ -548,7 +589,7 @@
   </main>
 
   <footer class="wrap report-foot">
-    <span>Generated offline by @zintaen/dsaf v0.9.2</span>
+    <span>Generated offline by @zintaen/dsaf v0.9.3</span>
     <span>Read-Only Tier 0 Evidence Report</span>
   </footer>
 
@@ -557,6 +598,7 @@
       var meta = document.querySelector('meta[name="color-scheme"]');
       var themeBtn = document.getElementById("theme-toggle-btn");
       var mq = window.matchMedia("(prefers-color-scheme: dark)");
+      var manualTheme = meta && (meta.content === "light" || meta.content === "dark") ? meta.content : null;
       function currentScheme() {
         if (meta && (meta.content === "light" || meta.content === "dark")) return meta.content;
         return mq.matches ? "dark" : "light";
@@ -572,19 +614,36 @@
         themeBtn.addEventListener("click", function() {
           var target = currentScheme() === "dark" ? "light" : "dark";
           var sys = mq.matches ? "dark" : "light";
+          manualTheme = target === sys ? null : target;
+          meta.content = manualTheme || "light dark";
           try {
             if (target === sys) {
               localStorage.removeItem("dsaf-report-theme");
-              meta.content = "light dark";
             } else {
               localStorage.setItem("dsaf-report-theme", target);
-              meta.content = target;
             }
-          } catch (e) {
-            meta.content = target;
-          }
+          } catch (e) {}
           syncThemeBtn();
         });
+        window.addEventListener("storage", function(e) {
+          if (e.key !== null && e.key !== "dsaf-report-theme") return;
+          var nextVal = e.key === null ? null : e.newValue;
+          manualTheme = nextVal === "light" || nextVal === "dark" ? nextVal : null;
+          meta.content = manualTheme || "light dark";
+          syncThemeBtn();
+        });
+        if (typeof mq.addEventListener === "function") {
+          mq.addEventListener("change", function() {
+            var stored = null;
+            var storageOk = false;
+            try { stored = localStorage.getItem("dsaf-report-theme"); storageOk = true; } catch (e) {}
+            if (storageOk) {
+              manualTheme = stored === "light" || stored === "dark" ? stored : null;
+            }
+            meta.content = manualTheme === "light" || manualTheme === "dark" ? manualTheme : "light dark";
+            syncThemeBtn();
+          });
+        }
       }
 
       var tablist = document.querySelector('[focusgroup^="tablist"]');
@@ -607,8 +666,29 @@
               panels[j].setAttribute("hidden", "until-found");
             }
           }
-          if (shouldFocus) nextTab.focus();
+          if (shouldFocus) {
+            nextTab.focus();
+            var tablistEl = nextTab.parentElement;
+            if (tablistEl && tablistEl.scrollWidth > tablistEl.clientWidth) {
+              var tr = nextTab.getBoundingClientRect();
+              var lr = tablistEl.getBoundingClientRect();
+              var tPad = 8;
+              if (tr.right > lr.right - tPad) tablistEl.scrollLeft += tr.right - (lr.right - tPad);
+              else if (tr.left < lr.left + tPad) tablistEl.scrollLeft -= (lr.left + tPad) - tr.left;
+            }
+          }
         }
+        tablist.addEventListener("focusin", function(ev) {
+          var t = ev.target;
+          if (!t || !t.closest) return;
+          var tab = t.closest('[role="tab"]');
+          if (!tab || tablist.scrollWidth <= tablist.clientWidth) return;
+          var tr = tab.getBoundingClientRect();
+          var lr = tablist.getBoundingClientRect();
+          var tPad = 8;
+          if (tr.right > lr.right - tPad) tablist.scrollLeft += tr.right - (lr.right - tPad);
+          else if (tr.left < lr.left + tPad) tablist.scrollLeft -= (lr.left + tPad) - tr.left;
+        });
         selectTab(tabs[0], false);
         for (var i = 0; i < tabs.length; i++) {
           (function(tab, idx) {

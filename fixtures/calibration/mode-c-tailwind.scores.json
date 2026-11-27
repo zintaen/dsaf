@@ -1,45 +1,59 @@
 {
   "schema": "dsaf-scores/2",
-  "engine_version": "0.2.0",
-  "generated": "2026-11-26T11:35:26.991Z",
+  "engine_version": "0.9.3",
+  "generated": "2026-11-27T06:15:14.515Z",
   "type": "system",
-  "profile": "ds_core",
+  "profile": "product_conformance",
   "weights": {
-    "P1": 30,
-    "P2": 30,
-    "P3": 20,
+    "P1": 20,
+    "P2": 25,
+    "P3": 35,
     "P4": 20
   },
+  "review_provenance": null,
+  "waivers": [],
   "phases": {
     "before": {
       "pillars": [
         {
           "id": "P1",
           "name": "Foundations & Token Architecture",
-          "weight": 30,
+          "weight": 20,
           "scored_criteria": 3,
           "total_criteria": 3,
           "raw_sum": 5,
           "max_raw": 6,
           "pct": 83.33,
-          "weighted_points": 25,
-          "pts_per_step": 5
+          "weighted_points": 16.67,
+          "pts_per_step": 3.33
         },
         {
           "id": "P2",
           "name": "Component Architecture & Accessibility",
-          "weight": 30,
+          "weight": 25,
           "scored_criteria": 3,
           "total_criteria": 3,
-          "raw_sum": 4,
+          "raw_sum": 5,
           "max_raw": 6,
-          "pct": 66.67,
-          "weighted_points": 20,
-          "pts_per_step": 5
+          "pct": 83.33,
+          "weighted_points": 20.83,
+          "pts_per_step": 4.17
         },
         {
           "id": "P3",
           "name": "Product Conformance & Drift",
+          "weight": 35,
+          "scored_criteria": 2,
+          "total_criteria": 3,
+          "raw_sum": 2,
+          "max_raw": 4,
+          "pct": 50,
+          "weighted_points": 17.5,
+          "pts_per_step": 8.75
+        },
+        {
+          "id": "P4",
+          "name": "Governance, DX & AI Readiness",
           "weight": 20,
           "scored_criteria": 3,
           "total_criteria": 3,
@@ -48,84 +62,72 @@
           "pct": 66.67,
           "weighted_points": 13.33,
           "pts_per_step": 3.33
-        },
-        {
-          "id": "P4",
-          "name": "Governance, DX & AI Readiness",
-          "weight": 20,
-          "scored_criteria": 2,
-          "total_criteria": 3,
-          "raw_sum": 3,
-          "max_raw": 4,
-          "pct": 75,
-          "weighted_points": 15,
-          "pts_per_step": 5
         }
       ],
       "scored_weight_sum": 100,
-      "total": 73.33,
+      "total": 68.33,
       "hard_floor_blockers": [],
       "grade": "L3 — Built & Shipped",
       "criterion_unit_points": {
         "DS01": {
-          "exact_step": 5,
-          "pts_per_step": 5,
-          "max_pts": 10
+          "exact_step": 3.3333333333333335,
+          "pts_per_step": 3.33,
+          "max_pts": 6.67
         },
         "DS02": {
-          "exact_step": 5,
-          "pts_per_step": 5,
-          "max_pts": 10
+          "exact_step": 3.3333333333333335,
+          "pts_per_step": 3.33,
+          "max_pts": 6.67
         },
         "DS03": {
-          "exact_step": 5,
-          "pts_per_step": 5,
-          "max_pts": 10
+          "exact_step": 3.3333333333333335,
+          "pts_per_step": 3.33,
+          "max_pts": 6.67
         },
         "DS04": {
-          "exact_step": 5,
-          "pts_per_step": 5,
-          "max_pts": 10
+          "exact_step": 4.166666666666667,
+          "pts_per_step": 4.17,
+          "max_pts": 8.33
         },
         "DS05": {
-          "exact_step": 5,
-          "pts_per_step": 5,
-          "max_pts": 10
+          "exact_step": 4.166666666666667,
+          "pts_per_step": 4.17,
+          "max_pts": 8.33
         },
         "DS06": {
-          "exact_step": 5,
-          "pts_per_step": 5,
-          "max_pts": 10
+          "exact_step": 4.166666666666667,
+          "pts_per_step": 4.17,
+          "max_pts": 8.33
         },
         "DS07": {
-          "exact_step": 3.3333333333333335,
-          "pts_per_step": 3.33,
-          "max_pts": 6.67
+          "exact_step": 8.75,
+          "pts_per_step": 8.75,
+          "max_pts": 17.5
         },
         "DS08": {
-          "exact_step": 3.3333333333333335,
-          "pts_per_step": 3.33,
-          "max_pts": 6.67
+          "exact_step": 8.75,
+          "pts_per_step": 8.75,
+          "max_pts": 17.5
         },
         "DS09": {
-          "exact_step": 3.3333333333333335,
-          "pts_per_step": 3.33,
-          "max_pts": 6.67
-        },
-        "DS10": {
-          "exact_step": 5,
-          "pts_per_step": 5,
-          "max_pts": 10
-        },
-        "DS11": {
-          "exact_step": 5,
-          "pts_per_step": 5,
-          "max_pts": 10
-        },
-        "DS12": {
           "exact_step": null,
           "pts_per_step": null,
           "max_pts": null
+        },
+        "DS10": {
+          "exact_step": 3.3333333333333335,
+          "pts_per_step": 3.33,
+          "max_pts": 6.67
+        },
+        "DS11": {
+          "exact_step": 3.3333333333333335,
+          "pts_per_step": 3.33,
+          "max_pts": 6.67
+        },
+        "DS12": {
+          "exact_step": 3.3333333333333335,
+          "pts_per_step": 3.33,
+          "max_pts": 6.67
         }
       }
     },
@@ -134,30 +136,42 @@
         {
           "id": "P1",
           "name": "Foundations & Token Architecture",
-          "weight": 30,
+          "weight": 20,
           "scored_criteria": 3,
           "total_criteria": 3,
           "raw_sum": 6,
           "max_raw": 6,
           "pct": 100,
-          "weighted_points": 30,
-          "pts_per_step": 5
+          "weighted_points": 20,
+          "pts_per_step": 3.33
         },
         {
           "id": "P2",
           "name": "Component Architecture & Accessibility",
-          "weight": 30,
+          "weight": 25,
           "scored_criteria": 3,
           "total_criteria": 3,
           "raw_sum": 5,
           "max_raw": 6,
           "pct": 83.33,
-          "weighted_points": 25,
-          "pts_per_step": 5
+          "weighted_points": 20.83,
+          "pts_per_step": 4.17
         },
         {
           "id": "P3",
           "name": "Product Conformance & Drift",
+          "weight": 35,
+          "scored_criteria": 2,
+          "total_criteria": 3,
+          "raw_sum": 4,
+          "max_raw": 4,
+          "pct": 100,
+          "weighted_points": 35,
+          "pts_per_step": 8.75
+        },
+        {
+          "id": "P4",
+          "name": "Governance, DX & AI Readiness",
           "weight": 20,
           "scored_criteria": 3,
           "total_criteria": 3,
@@ -166,105 +180,93 @@
           "pct": 66.67,
           "weighted_points": 13.33,
           "pts_per_step": 3.33
-        },
-        {
-          "id": "P4",
-          "name": "Governance, DX & AI Readiness",
-          "weight": 20,
-          "scored_criteria": 2,
-          "total_criteria": 3,
-          "raw_sum": 4,
-          "max_raw": 4,
-          "pct": 100,
-          "weighted_points": 20,
-          "pts_per_step": 5
         }
       ],
       "scored_weight_sum": 100,
-      "total": 88.33,
+      "total": 89.17,
       "hard_floor_blockers": [],
       "grade": "L4 — Measured & Enforced (Caps at L3 for unverified self-audits)",
       "criterion_unit_points": {
         "DS01": {
-          "exact_step": 5,
-          "pts_per_step": 5,
-          "max_pts": 10
+          "exact_step": 3.3333333333333335,
+          "pts_per_step": 3.33,
+          "max_pts": 6.67
         },
         "DS02": {
-          "exact_step": 5,
-          "pts_per_step": 5,
-          "max_pts": 10
+          "exact_step": 3.3333333333333335,
+          "pts_per_step": 3.33,
+          "max_pts": 6.67
         },
         "DS03": {
-          "exact_step": 5,
-          "pts_per_step": 5,
-          "max_pts": 10
+          "exact_step": 3.3333333333333335,
+          "pts_per_step": 3.33,
+          "max_pts": 6.67
         },
         "DS04": {
-          "exact_step": 5,
-          "pts_per_step": 5,
-          "max_pts": 10
+          "exact_step": 4.166666666666667,
+          "pts_per_step": 4.17,
+          "max_pts": 8.33
         },
         "DS05": {
-          "exact_step": 5,
-          "pts_per_step": 5,
-          "max_pts": 10
+          "exact_step": 4.166666666666667,
+          "pts_per_step": 4.17,
+          "max_pts": 8.33
         },
         "DS06": {
-          "exact_step": 5,
-          "pts_per_step": 5,
-          "max_pts": 10
+          "exact_step": 4.166666666666667,
+          "pts_per_step": 4.17,
+          "max_pts": 8.33
         },
         "DS07": {
-          "exact_step": 3.3333333333333335,
-          "pts_per_step": 3.33,
-          "max_pts": 6.67
+          "exact_step": 8.75,
+          "pts_per_step": 8.75,
+          "max_pts": 17.5
         },
         "DS08": {
-          "exact_step": 3.3333333333333335,
-          "pts_per_step": 3.33,
-          "max_pts": 6.67
+          "exact_step": 8.75,
+          "pts_per_step": 8.75,
+          "max_pts": 17.5
         },
         "DS09": {
-          "exact_step": 3.3333333333333335,
-          "pts_per_step": 3.33,
-          "max_pts": 6.67
-        },
-        "DS10": {
-          "exact_step": 5,
-          "pts_per_step": 5,
-          "max_pts": 10
-        },
-        "DS11": {
-          "exact_step": 5,
-          "pts_per_step": 5,
-          "max_pts": 10
-        },
-        "DS12": {
           "exact_step": null,
           "pts_per_step": null,
           "max_pts": null
+        },
+        "DS10": {
+          "exact_step": 3.3333333333333335,
+          "pts_per_step": 3.33,
+          "max_pts": 6.67
+        },
+        "DS11": {
+          "exact_step": 3.3333333333333335,
+          "pts_per_step": 3.33,
+          "max_pts": 6.67
+        },
+        "DS12": {
+          "exact_step": 3.3333333333333335,
+          "pts_per_step": 3.33,
+          "max_pts": 6.67
         }
       }
     }
   },
   "deltas": {
-    "after_track_a": 15
+    "after_track_a": 20.84
   },
   "criterion_deltas": {
     "after_track_a": {
       "DS01": 0,
-      "DS02": 0,
-      "DS03": 5,
+      "DS02": 3.33,
+      "DS03": 0,
       "DS04": 0,
       "DS05": 0,
-      "DS06": 5,
-      "DS07": 0,
-      "DS08": 0,
-      "DS09": 0,
+      "DS06": 0,
+      "DS07": 8.75,
+      "DS08": 8.75,
+      "DS09": null,
       "DS10": 0,
-      "DS11": 5,
-      "DS12": null
+      "DS11": 0,
+      "DS12": 0
     }
   },
   "criteria": {
@@ -276,13 +278,28 @@
         "secondary_impact": false,
         "volatility": "FIXED",
         "bands": {
-          "prose": 25,
-          "artifacts": 30,
+          "prose": 20,
+          "artifacts": 35,
           "verification": 15
         },
-        "check_type": null
+        "check_type": "AUTO"
       },
       "DS02": {
+        "score": 1,
+        "findings": [
+          "TW-01"
+        ],
+        "reason": "",
+        "secondary_impact": false,
+        "volatility": "DYNAMIC",
+        "bands": {
+          "prose": 15,
+          "artifacts": 25,
+          "verification": 10
+        },
+        "check_type": "AUTO"
+      },
+      "DS03": {
         "score": 2,
         "findings": [],
         "reason": "",
@@ -293,22 +310,7 @@
           "artifacts": 35,
           "verification": 15
         },
-        "check_type": null
-      },
-      "DS03": {
-        "score": 1,
-        "findings": [
-          "SYS-01"
-        ],
-        "reason": "",
-        "secondary_impact": false,
-        "volatility": "DYNAMIC",
-        "bands": {
-          "prose": 25,
-          "artifacts": 20,
-          "verification": 5
-        },
-        "check_type": null
+        "check_type": "AUTO"
       },
       "DS04": {
         "score": 2,
@@ -318,30 +320,15 @@
         "volatility": "FIXED",
         "bands": {
           "prose": 20,
-          "artifacts": 35,
+          "artifacts": 30,
           "verification": 15
         },
-        "check_type": null
+        "check_type": "AUTO"
       },
       "DS05": {
         "score": 1,
         "findings": [
-          "SYS-02"
-        ],
-        "reason": "",
-        "secondary_impact": false,
-        "volatility": "FIXED",
-        "bands": {
-          "prose": 20,
-          "artifacts": 25,
-          "verification": 5
-        },
-        "check_type": null
-      },
-      "DS06": {
-        "score": 1,
-        "findings": [
-          "SYS-03"
+          "TW-02"
         ],
         "reason": "",
         "secondary_impact": false,
@@ -349,41 +336,11 @@
         "bands": {
           "prose": 20,
           "artifacts": 20,
-          "verification": 0
+          "verification": 10
         },
-        "check_type": null
+        "check_type": "AUTO"
       },
-      "DS07": {
-        "score": 1,
-        "findings": [
-          "SYS-04"
-        ],
-        "reason": "",
-        "secondary_impact": false,
-        "volatility": "FIXED",
-        "bands": {
-          "prose": 30,
-          "artifacts": 10,
-          "verification": 0
-        },
-        "check_type": null
-      },
-      "DS08": {
-        "score": 1,
-        "findings": [
-          "SYS-05"
-        ],
-        "reason": "",
-        "secondary_impact": false,
-        "volatility": "FIXED",
-        "bands": {
-          "prose": 20,
-          "artifacts": 15,
-          "verification": 5
-        },
-        "check_type": null
-      },
-      "DS09": {
+      "DS06": {
         "score": 2,
         "findings": [],
         "reason": "",
@@ -394,7 +351,46 @@
           "artifacts": 30,
           "verification": 15
         },
-        "check_type": null
+        "check_type": "AUTO"
+      },
+      "DS07": {
+        "score": 1,
+        "findings": [
+          "TW-01"
+        ],
+        "reason": "",
+        "secondary_impact": false,
+        "volatility": "FIXED",
+        "bands": {
+          "prose": 10,
+          "artifacts": 20,
+          "verification": 15
+        },
+        "check_type": "AUTO"
+      },
+      "DS08": {
+        "score": 1,
+        "findings": [
+          "TW-01"
+        ],
+        "reason": "",
+        "secondary_impact": false,
+        "volatility": "FIXED",
+        "bands": {
+          "prose": 10,
+          "artifacts": 25,
+          "verification": 15
+        },
+        "check_type": "AUTO"
+      },
+      "DS09": {
+        "score": "N/A",
+        "findings": [],
+        "reason": "Figma source absent on Tailwind app calibration sample",
+        "secondary_impact": false,
+        "volatility": "FIXED",
+        "bands": null,
+        "check_type": "AUTO+MANUAL"
       },
       "DS10": {
         "score": 2,
@@ -407,31 +403,37 @@
           "artifacts": 30,
           "verification": 10
         },
-        "check_type": null
+        "check_type": "AUTO"
       },
       "DS11": {
         "score": 1,
         "findings": [
-          "SYS-06"
+          "TW-02"
         ],
         "reason": "",
         "secondary_impact": false,
         "volatility": "FIXED",
         "bands": {
-          "prose": 20,
-          "artifacts": 15,
-          "verification": 0
+          "prose": 25,
+          "artifacts": 20,
+          "verification": 5
         },
-        "check_type": null
+        "check_type": "AUTO+MANUAL"
       },
       "DS12": {
-        "score": "N/A",
-        "findings": [],
-        "reason": "Figma Code Connect files absent in synthetic DS fixture",
+        "score": 1,
+        "findings": [
+          "TW-03"
+        ],
+        "reason": "",
         "secondary_impact": false,
         "volatility": "DYNAMIC",
-        "bands": null,
-        "check_type": null
+        "bands": {
+          "prose": 15,
+          "artifacts": 20,
+          "verification": 15
+        },
+        "check_type": "AUTO"
       }
     },
     "after_track_a": {
@@ -442,11 +444,11 @@
         "secondary_impact": false,
         "volatility": "FIXED",
         "bands": {
-          "prose": 25,
-          "artifacts": 30,
+          "prose": 20,
+          "artifacts": 35,
           "verification": 15
         },
-        "check_type": null
+        "check_type": "AUTO"
       },
       "DS02": {
         "score": 2,
@@ -459,7 +461,7 @@
           "artifacts": 35,
           "verification": 15
         },
-        "check_type": null
+        "check_type": "AUTO"
       },
       "DS03": {
         "score": 2,
@@ -472,7 +474,7 @@
           "artifacts": 35,
           "verification": 15
         },
-        "check_type": null
+        "check_type": "AUTO"
       },
       "DS04": {
         "score": 2,
@@ -482,25 +484,25 @@
         "volatility": "FIXED",
         "bands": {
           "prose": 20,
-          "artifacts": 35,
+          "artifacts": 30,
           "verification": 15
         },
-        "check_type": null
+        "check_type": "AUTO"
       },
       "DS05": {
         "score": 1,
         "findings": [
-          "SYS-02"
+          "TW-02"
         ],
         "reason": "",
         "secondary_impact": false,
         "volatility": "FIXED",
         "bands": {
           "prose": 20,
-          "artifacts": 25,
-          "verification": 5
+          "artifacts": 20,
+          "verification": 10
         },
-        "check_type": null
+        "check_type": "AUTO"
       },
       "DS06": {
         "score": 2,
@@ -511,41 +513,11 @@
         "bands": {
           "prose": 20,
           "artifacts": 30,
-          "verification": 20
+          "verification": 15
         },
-        "check_type": null
+        "check_type": "AUTO"
       },
       "DS07": {
-        "score": 1,
-        "findings": [
-          "SYS-04"
-        ],
-        "reason": "",
-        "secondary_impact": false,
-        "volatility": "FIXED",
-        "bands": {
-          "prose": 30,
-          "artifacts": 10,
-          "verification": 0
-        },
-        "check_type": null
-      },
-      "DS08": {
-        "score": 1,
-        "findings": [
-          "SYS-05"
-        ],
-        "reason": "",
-        "secondary_impact": false,
-        "volatility": "FIXED",
-        "bands": {
-          "prose": 20,
-          "artifacts": 15,
-          "verification": 5
-        },
-        "check_type": null
-      },
-      "DS09": {
         "score": 2,
         "findings": [],
         "reason": "",
@@ -553,10 +525,32 @@
         "volatility": "FIXED",
         "bands": {
           "prose": 20,
-          "artifacts": 30,
-          "verification": 15
+          "artifacts": 35,
+          "verification": 20
         },
-        "check_type": null
+        "check_type": "AUTO"
+      },
+      "DS08": {
+        "score": 2,
+        "findings": [],
+        "reason": "",
+        "secondary_impact": false,
+        "volatility": "FIXED",
+        "bands": {
+          "prose": 20,
+          "artifacts": 35,
+          "verification": 20
+        },
+        "check_type": "AUTO"
+      },
+      "DS09": {
+        "score": "N/A",
+        "findings": [],
+        "reason": "Figma source absent on Tailwind app calibration sample",
+        "secondary_impact": false,
+        "volatility": "FIXED",
+        "bands": null,
+        "check_type": "AUTO+MANUAL"
       },
       "DS10": {
         "score": 2,
@@ -569,29 +563,37 @@
           "artifacts": 30,
           "verification": 10
         },
-        "check_type": null
+        "check_type": "AUTO"
       },
       "DS11": {
-        "score": 2,
-        "findings": [],
+        "score": 1,
+        "findings": [
+          "TW-02"
+        ],
         "reason": "",
         "secondary_impact": false,
         "volatility": "FIXED",
         "bands": {
-          "prose": 20,
-          "artifacts": 35,
-          "verification": 15
+          "prose": 25,
+          "artifacts": 20,
+          "verification": 5
         },
-        "check_type": null
+        "check_type": "AUTO+MANUAL"
       },
       "DS12": {
-        "score": "N/A",
-        "findings": [],
-        "reason": "Figma Code Connect files absent in synthetic DS fixture",
+        "score": 1,
+        "findings": [
+          "TW-03"
+        ],
+        "reason": "",
         "secondary_impact": false,
         "volatility": "DYNAMIC",
-        "bands": null,
-        "check_type": null
+        "bands": {
+          "prose": 15,
+          "artifacts": 20,
+          "verification": 15
+        },
+        "check_type": "AUTO"
       }
     }
   }

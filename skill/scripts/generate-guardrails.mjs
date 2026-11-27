@@ -1,18 +1,20 @@
 #!/usr/bin/env node
 /**
- * DSAF v0.3.0 — CI & AI-Agent Design Guardrail Generator (+SG).
+ * DSAF v0.9.3 — CI & AI-Agent Design Guardrail Generator (+SG).
  * Emits zero-dependency discipline checker script, GitHub Actions workflow template,
  * and concise AI agent coding rules for downstream repos.
  */
 
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
+import { assertWritableOutputDir, assertWritableOutputFile, isDirectCliEntry } from "./ci-report.mjs";
 
-export const GENERATOR_VERSION = "0.9.2";
+export const GENERATOR_VERSION = "0.9.3";
 
 function buildDisciplineChecker(stack) {
   const checkTailwind = stack === "tailwind" || stack === "react";
@@ -22,14 +24,15 @@ function buildDisciplineChecker(stack) {
  * Separates CSS/inline-style hex drift and Tailwind arbitrary brackets from
  * declarative SVG presentation hexes and quoted swatch/palette constants.
  */
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
-import { basename, extname, join, relative, resolve } from "node:path";
+import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { basename, dirname, extname, isAbsolute, join, relative, resolve } from "node:path";
 
 const SKIP = new Set([
   ".git",
   "node_modules",
   "dist",
   "build",
+  "storybook-static",
   ".next",
   ".nuxt",
   ".svelte-kit",
@@ -38,49 +41,1869 @@ const SKIP = new Set([
   "coverage",
   "draft",
   "audit-output",
+  "dsaf-audit-output",
+  "playwright-report",
+  "test-results",
+  "_site",
+  "src-tauri",
+  ".vercel-static",
+  ".storybook-public",
   "__pycache__",
   ".venv",
 ]);
-const EXTS = new Set([".css", ".scss", ".tsx", ".jsx", ".vue", ".svelte", ".html"]);
-const HEX_RE = /#(?:[0-9a-fA-F]{8}|[0-9a-fA-F]{6}|[0-9a-fA-F]{4}|[0-9a-fA-F]{3})\\b/g;
+const EXTS = new Set([".css", ".scss", ".tsx", ".jsx", ".vue", ".svelte", ".html", ".htm", ".astro"]);
+const HEX_RE = /#(?:[0-9a-fA-F]{8}|[0-9a-fA-F]{6}|[0-9a-fA-F]{4}|[0-9a-fA-F]{3})(?![0-9a-fA-F_-])/g;
 const QUOTED_HEX_RE = /["']#(?:[0-9a-fA-F]{8}|[0-9a-fA-F]{6}|[0-9a-fA-F]{4}|[0-9a-fA-F]{3})["']/g;
-const SVG_BLOCK_RE = /<svg\\b[\\s\\S]*?<\\/svg>/gi;
 const SVG_PROP_HEX_RE =
   /(?:fill|stroke|stopColor|stop-color|floodColor|flood-color|lightingColor|lighting-color)\\s*(?:=|:)\\s*(?:\\{\\s*)?["']#(?:[0-9a-fA-F]{8}|[0-9a-fA-F]{6}|[0-9a-fA-F]{4}|[0-9a-fA-F]{3})["'](?:\\s*\\})?/gi;
 const TW_ARB_RE =
-  /(?:^|[\\s"'\`:])(?:bg|text|border|fill|stroke|ring|from|to|via|accent|outline|decoration|p|px|py|pt|pr|pb|pl|ps|pe|m|mx|my|mt|mr|mb|ml|ms|me|gap|gap-x|gap-y|space-x|space-y|rounded(?:-[a-z]+)?)-\\[(?:#[0-9a-fA-F]{3,8}|\\d+(?:\\.\\d+)?px)\\]/g;
+  /(?<=^|[\\s"'\`:])!?(?:-?(?:p|px|py|pt|pr|pb|pl|ps|pe|m|mx|my|mt|mr|mb|ml|ms|me|gap|gap-x|gap-y|space-x|space-y)|bg|text|border(?:-[trblxyse])?|divide(?:-[xy])?|shadow|drop-shadow|caret|ring-offset|inset-ring|placeholder|fill|stroke|ring|from|to|via|accent|outline|decoration|rounded(?:-[a-z]+)?)-\\[(?:#[0-9a-fA-F]{3,8}|\\d+(?:\\.\\d+)?px)\\]!?/g;
 
-function stripTokenBlocks(css) {
-  const stripped = css.replace(/\\/\\*[\\s\\S]*?\\*\\//g, "");
+function findSvgBlockRanges(src, isMarkupSfc = false, ext = "") {
+  const s = String(src || "");
+  const BT = String.fromCharCode(96);
+  const ranges = [];
+  const strSpans = computeJsStringLiteralSpans(s, isMarkupSfc, ext);
+  const inJsStr = (idx) => strSpans.some(([s0, e0]) => idx >= s0 && idx < e0);
+  const skipExprBraces = (openIdx) => {
+    let k = openIdx + 1;
+    let br = 1;
+    let q = null;
+    let lastSig = "{";
+    const parenStack = [];
+    while (k < s.length && br > 0) {
+      const c = s[k];
+      if (q) {
+        if (c === "\\\\" && k + 1 < s.length) { k += 2; continue; }
+        if (q === BT && c === "$" && s[k + 1] === "{") {
+          const innerEnd = skipExprBraces(k + 1);
+          if (innerEnd !== -1) { lastSig = "}"; k = innerEnd; continue; }
+        }
+        if (c === q || (q !== BT && c === "\\n")) { q = null; lastSig = c; }
+        k++;
+        continue;
+      }
+      const reEnd = skipJsRegexLiteral(s, k, lastSig, openIdx);
+      if (reEnd !== -1) { lastSig = "/"; k = reEnd; continue; }
+      if (c === '"' || c === "'" || c === BT) { q = c; }
+      else if (c === "{") { br++; lastSig = "{"; }
+      else if (c === "}") { br--; lastSig = "}"; if (br === 0) return k + 1; }
+      else if (c === "(") {
+        parenStack.push(/(?:^|[^\\w$])(?:if|while|for|with)\\s*$/.test(s.slice(Math.max(openIdx, k - 16), k)));
+        lastSig = "(";
+      } else if (c === ")") {
+        lastSig = parenStack.length > 0 && parenStack.pop() ? "control)" : ")";
+      } else if (!/\\s/.test(c)) {
+        lastSig = c;
+      }
+      k++;
+    }
+    return -1;
+  };
+  const scanOpenSvgEnd = (openStart) => {
+    let i = openStart + 4;
+    let q = null;
+    while (i < s.length) {
+      const ch = s[i];
+      if (q) {
+        if (q === BT && ch === "\\\\" && i + 1 < s.length) i += 2;
+        else {
+          if (q === BT && ch === "$" && s[i + 1] === "{") {
+            const bEnd = skipExprBraces(i + 1);
+            if (bEnd !== -1) { i = bEnd; continue; }
+          }
+          if (ch === q) q = null;
+          i++;
+        }
+        continue;
+      }
+      if (ch === "{") {
+        const bEnd = skipExprBraces(i);
+        if (bEnd !== -1) { i = bEnd; continue; }
+        i++;
+        continue;
+      }
+      if (ch === '"' || ch === "'" || ch === BT) q = ch;
+      else if (ch === ">") {
+        let p = i - 1;
+        while (p >= openStart && /\\s/.test(s[p])) p--;
+        return { end: i + 1, selfClosing: s[p] === "/" };
+      }
+      i++;
+    }
+    return null;
+  };
+  const scanTagClose = (tagStart) => {
+    let i = tagStart + 1;
+    let q = null;
+    while (i < s.length) {
+      const ch = s[i];
+      if (q) {
+        if (q === BT && ch === "\\\\" && i + 1 < s.length) { i += 2; continue; }
+        if (ch === q) q = null;
+        i++;
+        continue;
+      }
+      if (ch === "{") {
+        const bEnd = skipExprBraces(i);
+        if (bEnd !== -1) { i = bEnd; continue; }
+      }
+      if (ch === '"' || ch === "'" || ch === BT) q = ch;
+      else if (ch === ">") return i + 1;
+      i++;
+    }
+    return -1;
+  };
+  let cursor = 0;
+  while (cursor < s.length) {
+    const rest = s.slice(cursor);
+    const om = /<svg(?=[\\s/>])/i.exec(rest);
+    if (!om) break;
+    const start = cursor + om.index;
+    if (inJsStr(start)) { cursor = start + 4; continue; }
+    const openInfo = scanOpenSvgEnd(start);
+    if (!openInfo) { cursor = start + 4; continue; }
+    if (openInfo.selfClosing) {
+      ranges.push({ start, end: openInfo.end });
+      cursor = openInfo.end;
+      continue;
+    }
+    let depth = 1;
+    let scan = openInfo.end;
+    let matchedEnd = -1;
+    while (scan < s.length && depth > 0) {
+      const sc = s[scan];
+      if (sc === "{") {
+        const bEnd = skipExprBraces(scan);
+        if (bEnd !== -1) { scan = bEnd; continue; }
+        scan++;
+        continue;
+      }
+      if (sc === "<" && !inJsStr(scan)) {
+        if (/^<\\/svg(?=[\\s/>])/i.test(s.slice(scan, scan + 8))) {
+          const gt = s.indexOf(">", scan + 5);
+          if (gt === -1) break;
+          depth--;
+          scan = gt + 1;
+          if (depth === 0) {
+            matchedEnd = scan;
+            break;
+          }
+          continue;
+        }
+        if (/^<svg(?=[\\s/>])/i.test(s.slice(scan, scan + 8))) {
+          const innerOpen = scanOpenSvgEnd(scan);
+          if (!innerOpen) { scan += 4; continue; }
+          if (!innerOpen.selfClosing) depth++;
+          scan = innerOpen.end;
+          continue;
+        }
+        if (/^<[A-Za-z!]/.test(s.slice(scan, scan + 2))) {
+          const tEnd = scanTagClose(scan);
+          if (tEnd !== -1) { scan = tEnd; continue; }
+        }
+      }
+      scan++;
+    }
+    if (matchedEnd !== -1) {
+      ranges.push({ start, end: matchedEnd });
+      cursor = matchedEnd;
+    } else {
+      cursor = openInfo.end;
+    }
+  }
+  return ranges;
+}
+
+function endsWithCssTag(src, btIdx) {
+  const BT = String.fromCharCode(96);
+  let pos = btIdx - 1;
+  while (pos >= 0 && /\\s/.test(src[pos])) pos--;
+  if (pos >= 0 && src[pos] === ">") {
+    let angle = 1;
+    let q = null;
+    pos--;
+    while (pos >= 0 && angle > 0) {
+      const c = src[pos];
+      if (q) {
+        let bs = 0;
+        for (let b = pos - 1; b >= 0 && src[b] === "\\\\"; b--) bs++;
+        if (c === q && bs % 2 === 0) q = null;
+      } else if (c === '"' || c === "'" || c === BT) {
+        q = c;
+      } else if (c === ">" && !(pos > 0 && src[pos - 1] === "=")) {
+        angle++;
+      } else if (c === "<") {
+        angle--;
+      }
+      pos--;
+    }
+    if (angle !== 0) return false;
+    while (pos >= 0 && /\\s/.test(src[pos])) pos--;
+  }
+  const pre = src.slice(Math.max(0, pos - 24), pos + 1);
+  return /(?:^|[^a-zA-Z0-9_$])(?:css|createGlobalStyle|keyframes)$/.test(pre);
+}
+
+function isOpenJsxTagAttrString(candBody, restAfterSlash) {
+  let tagIdx = -1;
+  for (let p = candBody.length - 1; p >= 0; p--) {
+    if (candBody[p] === "<" && /^[A-Za-z][A-Za-z0-9_.:-]*(?=[\\s/]|$)/.test(candBody.slice(p + 1, p + 48))) {
+      tagIdx = p;
+      break;
+    }
+  }
+  if (tagIdx === -1) return false;
+  let k = tagIdx + 1;
+  while (k < candBody.length && /[A-Za-z0-9_.:-]/.test(candBody[k])) k++;
+  let q = null;
+  let brace = 0;
+  let paren = 0;
+  let sawEq = false;
+  while (k < candBody.length) {
+    const c = candBody[k];
+    if (q) {
+      if (c === "\\\\" && k + 1 < candBody.length) { k += 2; continue; }
+      if (c === q || c === "\\n") q = null;
+      k++;
+      continue;
+    }
+    if (c === '"' || c === "'") {
+      if (!sawEq) return false;
+      q = c;
+      sawEq = false;
+    } else if (c === "{") {
+      brace++;
+      sawEq = false;
+    } else if (c === "}") {
+      if (brace === 0) return false;
+      brace--;
+      sawEq = false;
+    } else if (c === "(") {
+      paren++;
+    } else if (c === ")") {
+      paren = Math.max(0, paren - 1);
+    } else if (c === "=" && brace === 0 && paren === 0 && candBody[k + 1] !== ">") {
+      sawEq = true;
+    } else if (c === ">" && brace === 0 && paren === 0) {
+      return false;
+    } else if (c === "<" && brace === 0 && paren === 0) {
+      return false;
+    }
+    k++;
+  }
+  if (!q) return false;
+  const qClose = restAfterSlash.indexOf(q);
+  if (qClose === -1) return false;
+  return restAfterSlash.indexOf(">", qClose + 1) !== -1 || /^\\s*(?:\\}\\s*)?$/.test(restAfterSlash.slice(qClose + 1));
+}
+
+function hasUnmatchedClosingTagBeforeClose(slice) {
+  const stack = [];
+  let i = 0;
+  while (i < slice.length) {
+    const closeAt = slice.indexOf("</", i);
+    const openAt = slice.indexOf("<", i);
+    if (openAt === -1) break;
+    if (closeAt === openAt) {
+      const cm = /^<\\/([A-Za-z][A-Za-z0-9_.:-]*)\\s*>/.exec(slice.slice(openAt, openAt + 64));
+      if (cm) {
+        const tag = cm[1].toLowerCase();
+        const matchIdx = stack.lastIndexOf(tag);
+        if (matchIdx === -1) return true;
+        stack.splice(matchIdx, 1);
+        i = openAt + cm[0].length;
+        continue;
+      }
+      i = openAt + 2;
+      continue;
+    }
+    const om = /^<([A-Za-z][A-Za-z0-9_.:-]*)(?=[\\s/>])/.exec(slice.slice(openAt, openAt + 64));
+    if (om) {
+      let j = openAt + 1;
+      let q = null;
+      let br = 0;
+      let selfClose = false;
+      while (j < slice.length) {
+        const c = slice[j];
+        if (q) { if (c === "\\\\" && j + 1 < slice.length) j += 2; else { if (c === q) q = null; j++; } continue; }
+        if (c === '"' || c === "'") q = c;
+        else if (c === "{") br++;
+        else if (c === "}") br = Math.max(0, br - 1);
+        else if (c === ">" && br === 0) {
+          if (slice[j - 1] === "/") selfClose = true;
+          j++;
+          break;
+        }
+        j++;
+      }
+      if (!selfClose) stack.push(om[1].toLowerCase());
+      i = j;
+      continue;
+    }
+    i = openAt + 1;
+  }
+  return false;
+}
+
+function hasArrowAfterReturnType(str, startAfterRp) {
+  const BT = String.fromCharCode(96);
+  let k = startAfterRp;
+  while (k < str.length && /\\s/.test(str[k])) k++;
+  if (str[k] !== ":") return false;
+  k++;
+  let paren = 0;
+  let brack = 0;
+  let brace = 0;
+  let angle = 0;
+  let q = null;
+  const limit = Math.min(str.length, k + 512);
+  while (k < limit) {
+    const ch = str[k];
+    if (q) {
+      if (ch === "\\\\" && k + 1 < limit) {
+        k += 2;
+        continue;
+      }
+      if (ch === q || (q !== BT && ch === "\\n")) q = null;
+      k++;
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === BT) q = ch;
+    else if (ch === "(") paren++;
+    else if (ch === ")") {
+      if (paren === 0) return false;
+      paren--;
+    } else if (ch === "[") brack++;
+    else if (ch === "]") brack = Math.max(0, brack - 1);
+    else if (ch === "{") brace++;
+    else if (ch === "}") {
+      if (brace === 0) return false;
+      brace--;
+    } else if (ch === "<") {
+      if (paren === 0 && brack === 0 && brace === 0 && str[k + 1] === "/") return false;
+      angle++;
+    } else if (ch === ">" && str[k - 1] !== "=") {
+      angle = Math.max(0, angle - 1);
+    } else if (ch === "=" && str[k + 1] === ">" && paren === 0 && brack === 0 && brace === 0 && angle === 0) {
+      return true;
+    } else if (ch === ";" && paren === 0 && brack === 0 && brace === 0 && angle === 0) {
+      return false;
+    }
+    k++;
+  }
+  return false;
+}
+
+function parseJsxOpenTagAt(s, ltIdx) {
+  if (s.startsWith("<>", ltIdx)) return { start: ltIdx, end: ltIdx + 2, tag: "", selfClosing: false, exprSpans: [], attrStrSpans: [] };
+  const om = /^<([A-Za-z][A-Za-z0-9_.:-]*)(?=[\\s/><])/.exec(s.slice(ltIdx, ltIdx + 64));
+  if (!om) return null;
+  const rawTag = om[1];
+  let j = ltIdx + 1 + rawTag.length;
+  if (s[j] === "<") {
+    if (!/^[A-Z]/.test(rawTag) && !rawTag.includes(".")) return null;
+    const BT = String.fromCharCode(96);
+    let gq = null;
+    let gAngle = 1;
+    let gParen = 0;
+    let gBrack = 0;
+    let gBrace = 0;
+    let gk = j + 1;
+    const gLimit = Math.min(s.length, gk + 1200);
+    while (gk < gLimit && gAngle > 0) {
+      const gc = s[gk];
+      if (gq) {
+        if (gc === "\\\\" && gk + 1 < gLimit) {
+          gk += 2;
+          continue;
+        }
+        if (gc === gq || (gq !== BT && gc === "\\n")) gq = null;
+        gk++;
+        continue;
+      }
+      if (gc === '"' || gc === "'" || gc === BT) gq = gc;
+      else if (gc === "(") gParen++;
+      else if (gc === ")") gParen = Math.max(0, gParen - 1);
+      else if (gc === "[") gBrack++;
+      else if (gc === "]") gBrack = Math.max(0, gBrack - 1);
+      else if (gc === "{") gBrace++;
+      else if (gc === "}") gBrace = Math.max(0, gBrace - 1);
+      else if (gParen === 0 && gBrack === 0 && gBrace === 0) {
+        if (gc === "<") gAngle++;
+        else if (gc === ">" && s[gk - 1] !== "=") {
+          gAngle--;
+          if (gAngle === 0) {
+            gk++;
+            break;
+          }
+        } else if (gc === ";") {
+          return null;
+        }
+      }
+      gk++;
+    }
+    if (gAngle !== 0 || gk >= s.length || !/[\\s/>]/.test(s[gk])) return null;
+    j = gk;
+  }
+  if (/^\\s*=/.test(s.slice(j, j + 16))) return null;
+  let q = null;
+  let qStart = -1;
+  let nonExpr = "";
+  const exprSpans = [];
+  const attrStrSpans = [];
+  while (j < s.length) {
+    const c = s[j];
+    if (q) {
+      if (c === q) {
+        if (qStart !== -1) attrStrSpans.push([qStart, j + 1]);
+        q = null;
+        qStart = -1;
+      }
+      j++;
+      continue;
+    }
+    if (c === '"' || c === "'") {
+      if (!/=\\s*$/.test(nonExpr)) return null;
+      q = c;
+      qStart = j;
+      nonExpr += " ";
+      j++;
+      continue;
+    }
+    if (c === "{") {
+      const be = findBalancedDelimEnd(s, j, "{", "}");
+      if (be === -1) return null;
+      exprSpans.push([j + 1, be]);
+      nonExpr += " ";
+      j = be + 1;
+      continue;
+    }
+    if (c === "," || c === ";" || c === "<") return null;
+    if (c === "=" && s[j + 1] === ">") return null;
+    if (c === ">") {
+      if (/(?:^|\\s)extends\\s+(?![=/>\\s])/.test(nonExpr)) return null;
+      if (nonExpr.trim() === "") {
+        const preCtx = s.slice(Math.max(0, ltIdx - 32), ltIdx);
+        if (/(?:^|[=:({[,;&|?]|=>|\\b(?:default|return|export|type|interface|class|function|const|let|var|new|as|satisfies))\\s*$/.test(preCtx)) {
+          let afterGt = j + 1;
+          while (afterGt < s.length && /\\s/.test(s[afterGt])) afterGt++;
+          if (s[afterGt] === "(") {
+            const rpEnd = findBalancedDelimEnd(s, afterGt, "(", ")");
+            if (rpEnd !== -1) {
+              const afterRpFull = s.slice(rpEnd + 1, rpEnd + 256);
+              const afterRp = afterRpFull.slice(0, 16);
+              const isArrowAfter = /^\\s*=>/.test(afterRp);
+              const isColonAfter = /^\\s*:/.test(afterRp);
+              if (isArrowAfter || isColonAfter) {
+                const paramInner = s.slice(afterGt + 1, rpEnd).trim();
+                const safeTag = rawTag.replace(/[.*+?^$(){}|[\\]\\\\]/g, "\\\\$&");
+                const hasCloseTag = new RegExp("</" + safeTag + "\\\\s*>", "i").test(s.slice(rpEnd + 1));
+                if (
+                  (isArrowAfter && (!hasCloseTag || /:|^\\s*$|^\\.\\.\\./.test(paramInner))) ||
+                  (isColonAfter &&
+                    (hasArrowAfterReturnType(s, rpEnd + 1) ||
+                      (!hasCloseTag && (paramInner === "" || /[:?]|^\\.\\.\\./.test(paramInner)))))
+                ) {
+                  return null;
+                }
+              }
+            }
+          }
+        }
+      }
+      let p = j - 1;
+      while (p >= ltIdx && /\\s/.test(s[p])) p--;
+      return { start: ltIdx, end: j + 1, tag: rawTag.toLowerCase(), selfClosing: s[p] === "/", exprSpans, attrStrSpans };
+    }
+    nonExpr += c;
+    j++;
+  }
+  return null;
+}
+
+function isUnclosedJsxOpenTagToEnd(s, ltIdx) {
+  const om = /^<([A-Za-z][A-Za-z0-9_.:-]*)(?=[\\s/])/.exec(s.slice(ltIdx, ltIdx + 64));
+  if (!om) return false;
+  let j = ltIdx + om[0].length;
+  let q = null;
+  const BT = String.fromCharCode(96);
+  while (j < s.length) {
+    const ch = s[j];
+    if (q) {
+      if (ch === "\\\\" && j + 1 < s.length) { j += 2; continue; }
+      if (q === BT && ch === "$" && s[j + 1] === "{") {
+        const be = findBalancedBraceEnd(s, j + 1);
+        if (be === -1) return true;
+        j = be + 1;
+        continue;
+      }
+      if (ch === q || (q !== BT && ch === "\\n")) q = null;
+      j++;
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === BT) { q = ch; j++; continue; }
+    if (ch === "{") {
+      const be = findBalancedBraceEnd(s, j);
+      if (be === -1) return true;
+      j = be + 1;
+      continue;
+    }
+    if (ch === ">" || ch === "<" || ch === ";") return false;
+    j++;
+  }
+  return true;
+}
+
+function inspectUnclosedJsxOpenTag(s, ltIdx) {
+  const om = /^<([A-Za-z][A-Za-z0-9_.:-]*)(?=[\\s/<]|$)/.exec(s.slice(ltIdx, ltIdx + 64));
+  if (!om) return null;
+  const rawTag = om[1];
+  const BT = String.fromCharCode(96);
+  let j = ltIdx + 1 + rawTag.length;
+  if (s[j] === "<") {
+    if (!/^[A-Z]/.test(rawTag) && !rawTag.includes(".")) return null;
+    let gq = null;
+    let gAngle = 1;
+    let gParen = 0;
+    let gBrack = 0;
+    let gBrace = 0;
+    let gk = j + 1;
+    while (gk < s.length && gAngle > 0) {
+      const gc = s[gk];
+      if (gq) {
+        if (gc === "\\\\" && gk + 1 < s.length) { gk += 2; continue; }
+        if (gc === gq || (gq !== BT && gc === "\\n")) gq = null;
+        gk++;
+        continue;
+      }
+      if (gc === '"' || gc === "'" || gc === BT) gq = gc;
+      else if (gc === "(") gParen++;
+      else if (gc === ")") gParen = Math.max(0, gParen - 1);
+      else if (gc === "[") gBrack++;
+      else if (gc === "]") gBrack = Math.max(0, gBrack - 1);
+      else if (gc === "{") gBrace++;
+      else if (gc === "}") gBrace = Math.max(0, gBrace - 1);
+      else if (gParen === 0 && gBrack === 0 && gBrace === 0) {
+        if (gc === "<") gAngle++;
+        else if (gc === ">" && s[gk - 1] !== "=") gAngle--;
+        else if (gc === ";") return null;
+      }
+      gk++;
+    }
+    if (gAngle > 0) return { exprStart: -1 };
+    if (gk < s.length && !/[\\s/>]/.test(s[gk])) return null;
+    j = gk;
+  }
+  if (/^\\s*=/.test(s.slice(j, j + 16))) return null;
+  let q = null;
+  let nonExpr = "";
+  while (j < s.length) {
+    const ch = s[j];
+    if (q) {
+      if (ch === "\\\\" && j + 1 < s.length) { j += 2; continue; }
+      if (ch === q) q = null;
+      j++;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      if (!/=\\s*$/.test(nonExpr)) return null;
+      q = ch;
+      nonExpr += " ";
+      j++;
+      continue;
+    }
+    if (ch === "{") {
+      const be = findBalancedDelimEnd(s, j, "{", "}");
+      if (be === -1) return { exprStart: j + 1 };
+      nonExpr += " ";
+      j = be + 1;
+      continue;
+    }
+    if (ch === ">" || ch === "<" || ch === ";" || ch === "," || ch === "&" || ch === "?" || ch === "(" || ch === ")" || ch === "[" || ch === "|") {
+      return null;
+    }
+    if (ch === "=" && s[j + 1] === ">") return null;
+    nonExpr += ch;
+    j++;
+  }
+  return { exprStart: -1 };
+}
+
+function isInOpenJsxChildren(priorSrc) {
+  const s = String(priorSrc || "");
+  const BT = String.fromCharCode(96);
+  const stack = [];
+  const top = () => (stack.length > 0 ? stack[stack.length - 1] : null);
+  let i = 0;
+  let lastSig = "";
+  const parenStack = [];
+  const scanJsxOpenTag = (ltIdx) => parseJsxOpenTagAt(s, ltIdx);
+  while (i < s.length) {
+    const t = top();
+    if (t && t.kind === "jsx") {
+      if (s[i] === "<") {
+        if (s.startsWith("</>", i)) {
+          if (t.kind === "jsx") stack.pop();
+          i += 3;
+          lastSig = ">";
+          continue;
+        }
+        const cm = /^<\\/([A-Za-z][A-Za-z0-9_.:-]*)\\s*>/.exec(s.slice(i, i + 64));
+        if (cm) {
+          const closeTag = cm[1].toLowerCase();
+          for (let si = stack.length - 1; si >= 0; si--) {
+            if (stack[si].kind !== "jsx") break;
+            if (stack[si].tag === closeTag) {
+              stack.splice(si);
+              break;
+            }
+          }
+          i += cm[0].length;
+          lastSig = ">";
+          continue;
+        }
+        const openTag = scanJsxOpenTag(i);
+        if (openTag) {
+          if (!openTag.selfClosing) stack.push({ kind: "jsx", tag: openTag.tag });
+          i = openTag.end;
+          lastSig = ">";
+          continue;
+        }
+        const inc = inspectUnclosedJsxOpenTag(s, i);
+        if (inc) {
+          return inc.exprStart === -1 ? false : isInOpenJsxChildren(s.slice(inc.exprStart));
+        }
+      } else if (s[i] === "{") {
+        stack.push({ kind: "brace", isTpl: false });
+        lastSig = "{";
+        i++;
+        continue;
+      }
+      i++;
+      continue;
+    }
+    const ch = s[i];
+    if (ch === "/") {
+      const reEnd = skipJsRegexLiteral(s, i, lastSig, 0);
+      if (reEnd !== -1) { lastSig = "/"; i = reEnd; continue; }
+    }
+    if (ch === '"' || ch === "'") {
+      const q = ch;
+      i++;
+      while (i < s.length) {
+        if (s[i] === "\\\\" && i + 1 < s.length) { i += 2; continue; }
+        if (s[i] === q || s[i] === "\\n") break;
+        i++;
+      }
+      lastSig = q;
+      i++;
+      continue;
+    }
+    if (ch === BT) {
+      const btEnd = findTemplateLiteralEnd(s, i);
+      if (btEnd === -1) break;
+      lastSig = BT;
+      i = btEnd + 1;
+      continue;
+    }
+    if (ch === "<") {
+      const canStartJsx =
+        lastSig === "" ||
+        lastSig === "control)" ||
+        /[=([,:;?+&|!{}>]/.test(lastSig) ||
+        /(?:^|[^\\w$.])(?:return|case|throw|else|default|yield|await|void)\\s*$|=>\\s*$/.test(
+          s.slice(Math.max(0, i - 24), i)
+        );
+      if (canStartJsx) {
+        const openTag = scanJsxOpenTag(i);
+        if (openTag) {
+          if (!openTag.selfClosing) stack.push({ kind: "jsx", tag: openTag.tag });
+          i = openTag.end;
+          lastSig = ">";
+          continue;
+        }
+        const inc = inspectUnclosedJsxOpenTag(s, i);
+        if (inc) {
+          return inc.exprStart === -1 ? false : isInOpenJsxChildren(s.slice(inc.exprStart));
+        }
+      }
+      lastSig = "<";
+      i++;
+      continue;
+    }
+    if (ch === "{") { stack.push({ kind: "brace", isTpl: false }); lastSig = "{"; }
+    else if (ch === "}") {
+      if (t && t.kind === "brace") stack.pop();
+      lastSig = "}";
+    } else if (ch === "(") {
+      parenStack.push(/(?:^|[^\\w$])(?:if|while|for|with)\\s*$/.test(s.slice(Math.max(0, i - 16), i)));
+      stack.push({ kind: "paren" });
+      lastSig = "(";
+    } else if (ch === ")") {
+      if (t && t.kind === "paren") stack.pop();
+      lastSig = parenStack.length > 0 && parenStack.pop() ? "control)" : ")";
+    } else if (!/\\s/.test(ch)) {
+      lastSig = ch === ">" && i > 0 && s[i - 1] === "=" ? "=>" : ch;
+    }
+    i++;
+  }
+  const tEnd = top();
+  return Boolean(tEnd && tEnd.kind === "jsx");
+}
+
+function createJsxChildrenCursor(outArr) {
+  const BT = String.fromCharCode(96);
+  const stack = [];
+  const top = () => (stack.length > 0 ? stack[stack.length - 1] : null);
+  let outIdx = 0;
+  let buf = "";
+  let curPos = 0;
+  let quote = null;
+  let lastSig = "";
+  const parenStack = [];
+
+  return () => {
+    while (outIdx < outArr.length) buf += outArr[outIdx++];
+    while (curPos < buf.length) {
+      const ch = buf[curPos];
+      if (quote) {
+        if (ch === "\\\\") {
+          if (curPos + 1 >= buf.length) break;
+          curPos += 2;
+          continue;
+        }
+        if (quote === BT && ch === "$") {
+          if (curPos + 1 >= buf.length) break;
+          if (buf[curPos + 1] === "{") {
+            stack.push({ kind: "brace", isTpl: true });
+            quote = null;
+            lastSig = "{";
+            curPos += 2;
+            continue;
+          }
+        }
+        if (ch === quote || (quote !== BT && ch === "\\n")) {
+          lastSig = quote;
+          quote = null;
+        }
+        curPos++;
+        continue;
+      }
+      const t = top();
+      if (t && t.kind === "jsx") {
+        if (ch === "<") {
+          if (buf.startsWith("</>", curPos)) {
+            stack.pop();
+            curPos += 3;
+            lastSig = ">";
+            continue;
+          }
+          const cm = /^<\\/([A-Za-z][A-Za-z0-9_.:-]*)\\s*>/.exec(buf.slice(curPos, curPos + 64));
+          if (cm) {
+            const closeTag = cm[1].toLowerCase();
+            for (let si = stack.length - 1; si >= 0; si--) {
+              if (stack[si].kind !== "jsx") break;
+              if (stack[si].tag === closeTag) {
+                stack.splice(si);
+                break;
+              }
+            }
+            curPos += cm[0].length;
+            lastSig = ">";
+            continue;
+          }
+          const openTag = parseJsxOpenTagAt(buf, curPos);
+          if (openTag) {
+            if (!openTag.selfClosing) stack.push({ kind: "jsx", tag: openTag.tag });
+            curPos = openTag.end;
+            lastSig = ">";
+            continue;
+          }
+          const inc = inspectUnclosedJsxOpenTag(buf, curPos);
+          if (inc) {
+            return inc.exprStart === -1 ? false : isInOpenJsxChildren(buf.slice(inc.exprStart));
+          }
+        } else if (ch === "{") {
+          stack.push({ kind: "brace", isTpl: false });
+          lastSig = "{";
+          curPos++;
+          continue;
+        }
+        curPos++;
+        continue;
+      }
+      if (ch === "/") {
+        const reEnd = skipJsRegexLiteral(buf, curPos, lastSig, 0);
+        if (reEnd !== -1 && reEnd <= buf.length) {
+          lastSig = "/";
+          curPos = reEnd;
+          continue;
+        }
+      }
+      if (ch === '"' || ch === "'" || ch === BT) {
+        const isContract =
+          ch === "'" &&
+          curPos > 0 &&
+          /[A-Za-z0-9]/.test(buf[curPos - 1]) &&
+          curPos + 1 < buf.length &&
+          /[A-Za-z]/.test(buf[curPos + 1]);
+        if (!isContract) quote = ch;
+        curPos++;
+        continue;
+      }
+      if (ch === "<") {
+        const canStartJsx =
+          lastSig === "" ||
+          lastSig === "control)" ||
+          /[=([,:;?+&|!{}>]/.test(lastSig) ||
+          /(?:^|[^\\w$.])(?:return|case|throw|else|default|yield|await|void)\\s*$|=>\\s*$/.test(
+            buf.slice(Math.max(0, curPos - 24), curPos)
+          );
+        if (canStartJsx) {
+          const openTag = parseJsxOpenTagAt(buf, curPos);
+          if (openTag) {
+            if (!openTag.selfClosing) stack.push({ kind: "jsx", tag: openTag.tag });
+            curPos = openTag.end;
+            lastSig = ">";
+            continue;
+          }
+          const inc = inspectUnclosedJsxOpenTag(buf, curPos);
+          if (inc) {
+            return inc.exprStart === -1 ? false : isInOpenJsxChildren(buf.slice(inc.exprStart));
+          }
+        }
+        lastSig = "<";
+        curPos++;
+        continue;
+      }
+      if (ch === "{") {
+        stack.push({ kind: "brace", isTpl: false });
+        lastSig = "{";
+      } else if (ch === "}") {
+        if (t && t.kind === "brace") {
+          const popped = stack.pop();
+          if (popped.isTpl) {
+            quote = BT;
+            curPos++;
+            continue;
+          }
+        }
+        lastSig = "}";
+      } else if (ch === "(") {
+        parenStack.push(/(?:^|[^\\w$])(?:if|while|for|with)\\s*$/.test(buf.slice(Math.max(0, curPos - 16), curPos)));
+        stack.push({ kind: "paren" });
+        lastSig = "(";
+      } else if (ch === ")") {
+        if (t && t.kind === "paren") stack.pop();
+        lastSig = parenStack.length > 0 && parenStack.pop() ? "control)" : ")";
+      } else if (!/\\s/.test(ch)) {
+        lastSig = ch === ">" && curPos > 0 && buf[curPos - 1] === "=" ? "=>" : ch;
+      }
+      curPos++;
+    }
+    const tEnd = top();
+    return Boolean(tEnd && tEnd.kind === "jsx");
+  };
+}
+
+function isTsNonNullBang(str, idx, minStart = 0) {
+  let b = idx - 1;
+  while (b >= minStart && /[ \\t\\r]/.test(str[b])) b--;
+  if (b < minStart || str[b] !== "!") return false;
+  let p = b - 1;
+  while (p >= minStart && /[ \\t\\r]/.test(str[p])) p--;
+  if (p < minStart) return false;
+  const prevC = str[p];
+  if (!/[A-Za-z0-9_$\\])\\]]/.test(prevC)) return false;
+  if (prevC === ")") {
+    const BT = String.fromCharCode(96);
+    const rawWin = Math.max(minStart, p - 8192);
+    const winNl = rawWin > minStart ? str.indexOf("\\n", rawWin) : -1;
+    const scanStart = rawWin === minStart ? minStart : (winNl !== -1 && winNl < p ? winNl + 1 : rawWin);
+    const openParens = [];
+    let matchedOpen = -1;
+    let qF = null;
+    const tplBraces = [];
+    let braceDepthF = 0;
+    let lastSigF = "";
+    let lastPoppedCtrl = false;
+    let lastBangIsNonNull = false;
+    const isCtrlWord = (pos) => {
+      let kwEnd = pos - 1;
+      while (kwEnd >= scanStart && /[ \\t\\r\\n]/.test(str[kwEnd])) kwEnd--;
+      if (kwEnd >= scanStart && /[A-Za-z0-9_$]/.test(str[kwEnd])) {
+        let kwStart = kwEnd;
+        while (kwStart > scanStart && /[A-Za-z0-9_$]/.test(str[kwStart - 1])) kwStart--;
+        const kw = str.slice(kwStart, kwEnd + 1);
+        return /^(?:if|while|for|with|catch|switch)$/.test(kw);
+      }
+      return false;
+    };
+    const evalBangAt = (bangIdx) => {
+      let qB = bangIdx - 1;
+      while (qB >= scanStart && /[ \\t\\r]/.test(str[qB])) qB--;
+      if (qB < scanStart) return false;
+      const pc = str[qB];
+      if (pc === ")") return !lastPoppedCtrl;
+      if (pc === "]") return true;
+      if (!/[A-Za-z0-9_$]/.test(pc)) return false;
+      let ks = qB;
+      while (ks > scanStart && /[A-Za-z0-9_$]/.test(str[ks - 1])) ks--;
+      const w = str.slice(ks, qB + 1);
+      let bKs = ks - 1;
+      while (bKs >= scanStart && /[ \\t\\r]/.test(str[bKs])) bKs--;
+      const isMem = bKs >= scanStart && str[bKs] === ".";
+      return isMem || !/^(?:return|case|throw|typeof|void|delete|in|of|new|yield|await|else|do|default)$/.test(w);
+    };
+    const skipFwdRegex = (rxStart) => {
+      const nextC = str[rxStart + 1] || "";
+      if (str[rxStart] !== "/" || nextC === "/" || nextC === "*" || nextC === ">") return -1;
+      if (rxStart > scanStart && str[rxStart - 1] === "<") return -1;
+      const isPost = (lastSigF === "+" || lastSigF === "-") && /(?:\\+\\+|--)\\s*$/.test(str.slice(Math.max(scanStart, rxStart - 16), rxStart));
+      if (isPost) return -1;
+      const okS =
+        lastSigF === "" ||
+        lastSigF === "control)" ||
+        (lastSigF === "!" && !lastBangIsNonNull) ||
+        /[=([,:;&|?{}~+\\-*%^]/.test(lastSigF) ||
+        /(?:^|[^\\w$.])(?:return|case|throw|typeof|void|delete|in|of|new|yield|await|else|do|default)\\s*$|=>\\s*$/.test(
+          str.slice(Math.max(scanStart, rxStart - 24), rxStart)
+        );
+      if (!okS) return -1;
+      let rj = rxStart + 1;
+      let inCls = false;
+      let okClose = false;
+      while (rj <= p && str[rj] !== "\\n") {
+        const rc = str[rj];
+        if (rc === "\\\\" && rj + 1 <= p && str[rj + 1] !== "\\n") {
+          rj += 2;
+          continue;
+        }
+        if (rc === "[") inCls = true;
+        else if (rc === "]" && inCls) inCls = false;
+        else if (rc === "/" && !inCls) {
+          okClose = true;
+          rj++;
+          while (rj <= p && /[dgimsuvy]/.test(str[rj])) rj++;
+          break;
+        }
+        rj++;
+      }
+      return okClose ? rj : -1;
+    };
+    let fk = scanStart;
+    while (fk <= p) {
+      const fc = str[fk];
+      if (qF) {
+        if (fc === "\\\\" && fk + 1 <= p) {
+          fk += 2;
+          continue;
+        }
+        if (qF === BT && fc === "$" && fk + 1 <= p && str[fk + 1] === "{") {
+          tplBraces.push(braceDepthF);
+          braceDepthF++;
+          qF = null;
+          lastSigF = "{";
+          fk += 2;
+          continue;
+        }
+        if (fc === qF || (qF !== BT && fc === "\\n")) {
+          lastSigF = qF;
+          qF = null;
+        }
+        fk++;
+        continue;
+      }
+      if (fc === "/" && fk + 1 <= p && str[fk + 1] === "/") {
+        const eol = str.indexOf("\\n", fk + 2);
+        fk = eol === -1 || eol > p ? p + 1 : eol + 1;
+        continue;
+      }
+      if (fc === "/" && fk + 1 <= p && str[fk + 1] === "*") {
+        const ce = str.indexOf("*/", fk + 2);
+        fk = ce === -1 || ce + 2 > p ? p + 1 : ce + 2;
+        continue;
+      }
+      const rxEnd = skipFwdRegex(fk);
+      if (rxEnd !== -1 && rxEnd <= p + 1) {
+        lastSigF = "/";
+        fk = rxEnd;
+        continue;
+      }
+      if (fc === '"' || fc === "'" || fc === BT) {
+        qF = fc;
+        fk++;
+        continue;
+      }
+      if (fc === "{") {
+        braceDepthF++;
+        lastSigF = "{";
+        fk++;
+        continue;
+      }
+      if (fc === "}") {
+        if (tplBraces.length > 0 && braceDepthF - 1 === tplBraces[tplBraces.length - 1]) {
+          tplBraces.pop();
+          braceDepthF--;
+          qF = BT;
+          lastSigF = "}";
+          fk++;
+          continue;
+        }
+        if (braceDepthF > 0) braceDepthF--;
+        lastSigF = "}";
+        fk++;
+        continue;
+      }
+      if (fc === "(") {
+        openParens.push({ pos: fk, isCtrl: isCtrlWord(fk) });
+        lastSigF = "(";
+        fk++;
+        continue;
+      }
+      if (fc === ")") {
+        const popped = openParens.length > 0 ? openParens.pop() : null;
+        lastPoppedCtrl = Boolean(popped && popped.isCtrl);
+        if (fk === p) {
+          matchedOpen = popped ? popped.pos : -1;
+          break;
+        }
+        lastSigF = lastPoppedCtrl ? "control)" : ")";
+        fk++;
+        continue;
+      }
+      if (fc === "!") {
+        lastBangIsNonNull = evalBangAt(fk);
+        lastSigF = "!";
+        fk++;
+        continue;
+      }
+      if (!/\\s/.test(fc)) {
+        lastSigF = fc === ">" && fk > scanStart && str[fk - 1] === "=" ? "=>" : fc;
+      }
+      fk++;
+    }
+    if (matchedOpen !== -1 && isCtrlWord(matchedOpen)) return false;
+  }
+  if (/[A-Za-z0-9_$]/.test(prevC)) {
+    let ks = p;
+    while (ks > minStart && /[A-Za-z0-9_$]/.test(str[ks - 1])) ks--;
+    const word = str.slice(ks, p + 1);
+    let beforeKs = ks - 1;
+    while (beforeKs >= minStart && /[ \\t\\r]/.test(str[beforeKs])) beforeKs--;
+    const isMemberAccess = beforeKs >= minStart && str[beforeKs] === ".";
+    if (
+      !isMemberAccess &&
+      /^(?:return|case|throw|typeof|void|delete|in|of|new|yield|await|else|do|default)$/.test(word)
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function skipJsRegexLiteral(str, i, lastSig, minStart = 0) {
+  const ch = str[i];
+  const next = str[i + 1] || "";
+  if (ch !== "/" || next === "/" || next === "*" || next === ">") return -1;
+  if (i > minStart && str[i - 1] === "<") return -1;
+  const isPost = (lastSig === "+" || lastSig === "-") && /(?:\\+\\+|--)\\s*$/.test(str.slice(Math.max(minStart, i - 16), i));
+  if (isPost) return -1;
+  const okSig =
+    lastSig === "" ||
+    lastSig === "control)" ||
+    (lastSig === "!" && !isTsNonNullBang(str, i, minStart)) ||
+    /[=([,:;&|?{}~+\\-*%^]/.test(lastSig) ||
+    /(?:^|[^\\w$.])(?:return|case|throw|typeof|void|delete|in|of|new|yield|await|else|do|default)\\s*$|=>\\s*$/.test(
+      str.slice(Math.max(minStart, i - 24), i)
+    );
+  if (!okSig) return -1;
+  let j = i + 1;
+  let inClass = false;
+  let closed = false;
+  while (j < str.length && str[j] !== "\\n") {
+    const rc = str[j];
+    if (rc === "\\\\" && j + 1 < str.length && str[j + 1] !== "\\n") {
+      j += 2;
+      continue;
+    }
+    if (rc === "[") inClass = true;
+    else if (rc === "]" && inClass) inClass = false;
+    else if (rc === "/" && !inClass) {
+      closed = true;
+      j++;
+      const seenFlags = new Set();
+      let badFlags = false;
+      while (j < str.length && /[A-Za-z0-9_$]/.test(str[j])) {
+        if (!/[dgimsuvy]/.test(str[j]) || seenFlags.has(str[j])) {
+          badFlags = true;
+          break;
+        }
+        seenFlags.add(str[j]);
+        j++;
+      }
+      if (badFlags) closed = false;
+      break;
+    }
+    j++;
+  }
+  return closed ? j : -1;
+}
+
+function isHtmlAttrAssign(outArr) {
+  const fullTail = outArr.slice(-2048).join("");
+  const near = fullTail.slice(-64);
+  if (!/[A-Za-z0-9_:-]\\s*=\\s*$/.test(near)) return false;
+  const tail = fullTail.slice(-2048);
+  const BT = String.fromCharCode(96);
+  let brace = 0;
+  let q = null;
+  const tplBraces = [];
+  let lastLt = -1;
+  let lastGt = -1;
+  let genericDepth = 0;
+  let lastSig = "";
+  const parenStack = [];
+  for (let k = 0; k < tail.length; k++) {
+    const c = tail[k];
+    if (q) {
+      if (c === "\\\\" && k + 1 < tail.length) {
+        k++;
+        continue;
+      }
+      if (q === BT && c === "$" && k + 1 < tail.length && tail[k + 1] === "{") {
+        tplBraces.push(brace);
+        brace++;
+        q = null;
+        lastSig = "{";
+        k++;
+        continue;
+      }
+      if (c === q) {
+        q = null;
+        lastSig = c;
+      }
+      continue;
+    }
+    if (brace > 0) {
+      if (c === "/" && tail[k + 1] === "*") {
+        const ce = tail.indexOf("*/", k + 2);
+        k = ce === -1 ? tail.length : ce + 1;
+        continue;
+      }
+      if (c === "/" && tail[k + 1] === "/") {
+        const nl = tail.indexOf("\\n", k + 2);
+        k = nl === -1 ? tail.length : nl;
+        lastSig = "";
+        continue;
+      }
+      const reEnd = skipJsRegexLiteral(tail, k, lastSig, 0);
+      if (reEnd !== -1 && reEnd <= tail.length) {
+        lastSig = "/";
+        k = reEnd - 1;
+        continue;
+      }
+    }
+    if (c === '"' || c === "'" || c === BT) {
+      if (lastLt > lastGt || brace > 0) q = c;
+      lastSig = c;
+    } else if (c === "{") {
+      brace++;
+      lastSig = "{";
+    } else if (c === "}") {
+      if (tplBraces.length > 0 && brace - 1 === tplBraces[tplBraces.length - 1]) {
+        tplBraces.pop();
+        brace--;
+        q = BT;
+        lastSig = "}";
+      } else if (brace > 0) {
+        brace--;
+        lastSig = "}";
+      }
+    } else if (c === "(" && brace > 0) {
+      parenStack.push(/(?:^|[^\\w$])(?:if|while|for|with)\\s*$/.test(tail.slice(Math.max(0, k - 16), k)));
+      lastSig = "(";
+    } else if (c === ")" && brace > 0) {
+      lastSig = parenStack.length > 0 && parenStack.pop() ? "control)" : ")";
+    } else if (c === "<" && brace === 0) {
+      const prevCh = k > 0 ? tail[k - 1] : "";
+      const isJsKw =
+        /[A-Za-z]/.test(prevCh) &&
+        /(?:^|[^\\w$.])(?:return|case|throw|else|default|yield|await|void)$/.test(tail.slice(Math.max(0, k - 16), k));
+      const blockedByOperand = !isJsKw && /[A-Za-z0-9_$\\]\\])]/.test(prevCh);
+      if (
+        lastLt > lastGt &&
+        (genericDepth > 0 || (/[A-Za-z0-9_$.]/.test(prevCh) && !/\\s/.test(tail.slice(lastLt + 1, k))))
+      ) {
+        genericDepth++;
+      } else if (!blockedByOperand && /[A-Za-z]/.test(tail[k + 1] || "")) {
+        lastLt = k;
+        genericDepth = 0;
+      }
+      lastSig = "<";
+    } else if (c === ">" && brace === 0 && !(k > 0 && tail[k - 1] === "=")) {
+      if (genericDepth > 0) genericDepth--;
+      else lastGt = k;
+      lastSig = ">";
+    } else if (brace === 0 && lastLt > lastGt && (c === ";" || (c === "=" && tail[k + 1] === ">") || (c === "," && genericDepth === 0))) {
+      lastLt = -1;
+      genericDepth = 0;
+      lastSig = c === "=" && tail[k + 1] === ">" ? "=>" : c;
+    } else if (!/\\s/.test(c)) {
+      lastSig = c === ">" && k > 0 && tail[k - 1] === "=" ? "=>" : c;
+    }
+  }
+  return lastLt !== -1 && lastLt > lastGt;
+}
+
+function stripComments(text, isCss = true, allowLineComments = !isCss, allowBacktickStrings = !isCss) {
+  const out = [];
+  let inSingle = false;
+  let inDouble = false;
+  let quoteMultiline = false;
+  let escaped = false;
+  let lastSig = "";
+  const tplModes = [];
+  const parenStack = [];
+  const BT = String.fromCharCode(96);
+  const topMode = () => (tplModes.length > 0 ? tplModes[tplModes.length - 1] : null);
+  const inCssTpl = () => isCss && allowBacktickStrings && (!topMode() || topMode().kind === "css-tpl");
+  const isInOpenJsxNow = !isCss ? createJsxChildrenCursor(out) : () => false;
+
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    const next = text[i + 1];
+    const mode = topMode();
+
+    if (mode && mode.kind === "opaque-tpl") {
+      out.push(ch);
+      if (escaped) {
+        escaped = false;
+      } else if (ch === "\\\\") {
+        escaped = true;
+      } else if (ch === "$" && next === "{") {
+        out.push("{");
+        i++;
+        tplModes.push({ kind: "expr", braceDepth: 0 });
+        lastSig = "{";
+      } else if (ch === BT) {
+        tplModes.pop();
+        lastSig = BT;
+      }
+      continue;
+    }
+
+    if (inSingle || inDouble) {
+      out.push(ch);
+      if (escaped) {
+        escaped = false;
+      } else if (!quoteMultiline && ch === "\\\\") {
+        escaped = true;
+      } else if (!quoteMultiline && ch === "\\n") {
+        inSingle = false;
+        inDouble = false;
+        quoteMultiline = false;
+      } else if (inSingle && ch === "'") {
+        inSingle = false;
+        quoteMultiline = false;
+        lastSig = "'";
+      } else if (inDouble && ch === '"') {
+        inDouble = false;
+        quoteMultiline = false;
+        lastSig = '"';
+      }
+      continue;
+    }
+
+    if (isCss && (!mode || mode.kind === "css-tpl") && ch === "\\\\" && i + 1 < text.length) {
+      out.push(ch, text[i + 1]);
+      i += 1;
+      continue;
+    }
+
+    let isUnquotedUrlStart = false;
+    if (isCss && (!mode || mode.kind === "css-tpl") && (ch === "u" || ch === "U") && (i === 0 || !/[A-Za-z0-9_$-]/.test(text[i - 1])) && /^url\\(/i.test(text.slice(i, i + 4))) {
+      let uWs = i + 4;
+      while (uWs < text.length && /[ \\t\\r\\n]/.test(text[uWs])) uWs++;
+      isUnquotedUrlStart = text[uWs] !== '"' && text[uWs] !== "'" && !(text[uWs] === "/" && text[uWs + 1] === "*");
+    }
+    if (isUnquotedUrlStart) {
+      let uk = i + 4;
+      let uDepth = 1;
+      let uq = null;
+      let uEsc = false;
+      let uValid = true;
+      let uScss = 0;
+      const isDataUrl = /^url\\(\\s*data:/i.test(text.slice(i, i + 20));
+      while (uk < text.length && uDepth > 0) {
+        const uc = text[uk];
+        if (uEsc) { uEsc = false; uk++; continue; }
+        if (uc === "\\\\") { uEsc = true; uk++; continue; }
+        if (uq) {
+          if (uc === uq || uc === "\\n") {
+            if (uc === "\\n") { uValid = false; break; }
+            uq = null;
+          }
+          uk++;
+          continue;
+        }
+        if (uc === '"' || uc === "'") { uq = uc; uk++; continue; }
+        if (uScss > 0) {
+          if (uc === "{") uScss++;
+          else if (uc === "}") uScss--;
+          uk++;
+          continue;
+        }
+        if ((uc === "#" || (allowBacktickStrings && uc === "$")) && text[uk + 1] === "{") {
+          uScss = 1;
+          uk += 2;
+          continue;
+        }
+        if (uc === "{" || uc === "}" || (uc === ";" && !isDataUrl) || uc === "\\n") { uValid = false; break; }
+        if (uc === "(") uDepth++;
+        else if (uc === ")") uDepth--;
+        uk++;
+      }
+      if (uValid && uDepth === 0) {
+        out.push(text.slice(i, uk));
+        i = uk - 1;
+        continue;
+      }
+    }
+
+    if (ch === "/" && next === "*") {
+      const closeIdx = text.indexOf("*/", i + 2);
+      if (closeIdx !== -1) {
+        const chBefore = i > 0 ? text[i - 1] : "";
+        const inOpenJsx = !isCss && chBefore !== "{" && isInOpenJsxNow();
+        if (!inOpenJsx) {
+          i += 2;
+          while (i < text.length && !(text[i] === "*" && text[i + 1] === "/")) {
+            if (text[i] === "\\n") out.push("\\n");
+            i++;
+          }
+          if (i + 1 < text.length) i += 1;
+          out.push(" ");
+          continue;
+        }
+      }
+    }
+
+    if (!isCss && ch === "<" && text.startsWith("<!--", i)) {
+      const hEnd = text.indexOf("-->", i + 4);
+      const isJsOperandBefore = /[A-Za-z0-9_$)\\]]/.test(lastSig);
+      if (hEnd !== -1 && (!isJsOperandBefore || isInOpenJsxNow())) {
+        for (let k = i; k < hEnd + 3; k++) {
+          if (text[k] === "\\n") out.push("\\n");
+        }
+        i = hEnd + 2;
+        out.push(" ");
+        continue;
+      }
+    }
+
+    if (allowLineComments && ch === "/" && next === "/") {
+      const prev = text[i - 1] || "";
+      const isUrlSchemeBefore =
+        prev === ":" &&
+        /(?:^|[^\\w$-])(?:https?|wss?|ftps?|file|blob|chrome|about|capacitor|ionic|s3|gs|git|ssh):$/i.test(
+          text.slice(Math.max(0, i - 24), i)
+        ) &&
+        /^\\/\\/[A-Za-z0-9._~[\\]-]/.test(text.slice(i, i + 32));
+      const isProtoUrlAfterEq = prev === "=" && /^\\/\\/[A-Za-z0-9._-]+\\//.test(text.slice(i, i + 64));
+      const recentOut = out.slice(-64).join("");
+      const inCssUrlCtx = isCss && (!mode || mode.kind === "css-tpl") && /(?:^|[^A-Za-z0-9_$-])url\\(\\s*$/i.test(recentOut);
+      const inOpenJsxLine = !isCss && isInOpenJsxNow();
+      if (!isUrlSchemeBefore && !isProtoUrlAfterEq && !inCssUrlCtx && !inOpenJsxLine) {
+        while (i < text.length && text[i] !== "\\n") i++;
+        out.push("\\n");
+        continue;
+      }
+    }
+
+    if (!isCss || (mode && mode.kind === "expr")) {
+      const isPostfixIncDec =
+        (lastSig === "+" || lastSig === "-") && /(?:\\+\\+|--)\\s*$/.test(text.slice(Math.max(0, i - 16), i));
+      if (
+        ch === "/" &&
+        next !== "/" &&
+        next !== "*" &&
+        next !== ">" &&
+        (i === 0 || text[i - 1] !== "<") &&
+        !isPostfixIncDec &&
+        (lastSig === "" ||
+          lastSig === "control)" ||
+          (lastSig === "!" && !isTsNonNullBang(text, i, 0)) ||
+          /[=([,:;&|?{}~+\\-*%^]/.test(lastSig) ||
+          /(?:^|[^\\w$.])(?:return|case|throw|typeof|void|delete|in|of|new|yield|await|else|do|default)\\s*$|=>\\s*$/.test(
+            text.slice(Math.max(0, i - 24), i)
+          ))
+      ) {
+        let j = i + 1;
+        let inClass = false;
+        let closed = false;
+        while (j < text.length && text[j] !== "\\n") {
+          const rc = text[j];
+          if (rc === "\\\\" && j + 1 < text.length && text[j + 1] !== "\\n") {
+            j += 2;
+            continue;
+          }
+          if (rc === "[") inClass = true;
+          else if (rc === "]" && inClass) inClass = false;
+          else if (!inClass && /^<\\/[A-Za-z][A-Za-z0-9_.:-]*\\s*>/.test(text.slice(j, j + 64))) {
+            closed = false;
+            break;
+          } else if (rc === "/" && !inClass) {
+            const eol = text.indexOf("\\n", j + 1);
+            const lineEnd = eol === -1 ? text.length : eol;
+            const candBody = text.slice(i + 1, j);
+            const restAfterSlash = text.slice(j + 1, lineEnd);
+            let tagIdx = -1;
+            for (let p = candBody.length - 1; p >= 0; p--) {
+              if (candBody[p] === "<" && /^[A-Za-z][A-Za-z0-9_.:-]*(?=[\\s/]|$)/.test(candBody.slice(p + 1, p + 48))) {
+                tagIdx = p;
+                break;
+              }
+            }
+            let isHtmlAttrUrlSlash = false;
+            if (tagIdx !== -1) {
+              let k2 = tagIdx + 1;
+              while (k2 < candBody.length && /[A-Za-z0-9_.:-]/.test(candBody[k2])) k2++;
+              let q2 = null;
+              let brace2 = 0;
+              let paren2 = 0;
+              let sawEq2 = false;
+              let attrClosedEarly = false;
+              while (k2 < candBody.length) {
+                const c2 = candBody[k2];
+                if (q2) {
+                  if (c2 === "\\\\" && k2 + 1 < candBody.length) { k2 += 2; continue; }
+                  if (c2 === q2 || c2 === "\\n") q2 = null;
+                  k2++;
+                  continue;
+                }
+                if (c2 === '"' || c2 === "'") {
+                  if (brace2 === 0 && !sawEq2) { attrClosedEarly = true; break; }
+                  q2 = c2;
+                  sawEq2 = false;
+                } else if (c2 === "{") {
+                  brace2++;
+                  sawEq2 = false;
+                } else if (c2 === "}") {
+                  if (brace2 === 0) { attrClosedEarly = true; break; }
+                  brace2--;
+                  sawEq2 = false;
+                } else if (c2 === "(") paren2++;
+                else if (c2 === ")") paren2 = Math.max(0, paren2 - 1);
+                else if (c2 === "=" && brace2 === 0 && paren2 === 0 && candBody[k2 + 1] !== ">") sawEq2 = true;
+                else if ((c2 === ">" || c2 === "<") && brace2 === 0 && paren2 === 0) { attrClosedEarly = true; break; }
+                k2++;
+              }
+              if (!attrClosedEarly && q2) {
+                const qClose = restAfterSlash.indexOf(q2);
+                if (qClose !== -1 && (restAfterSlash.indexOf(">", qClose + 1) !== -1 || /^\\s*(?:\\}\\s*)?$/.test(restAfterSlash.slice(qClose + 1)))) {
+                  isHtmlAttrUrlSlash = true;
+                }
+              }
+            }
+            if (isHtmlAttrUrlSlash || text[j + 1] === "*" || text[j + 1] === "/") {
+              closed = false;
+              break;
+            }
+            closed = true;
+            j++;
+            const seenFlags = new Set();
+            let badFlags = false;
+            while (j < text.length && /[A-Za-z0-9_$]/.test(text[j])) {
+              if (!/[dgimsuvy]/.test(text[j]) || seenFlags.has(text[j])) {
+                badFlags = true;
+                break;
+              }
+              seenFlags.add(text[j]);
+              j++;
+            }
+            if (badFlags || (j < text.length && (/["'\`>]/.test(text[j]) || text.startsWith("/>", j)))) {
+              closed = false;
+            }
+            break;
+          }
+          j++;
+        }
+        if (closed) {
+          out.push(text.slice(i, j));
+          lastSig = "/";
+          i = j - 1;
+          continue;
+        }
+      }
+
+      if (ch === "(") {
+        parenStack.push(/(?:^|[^\\w$])(?:if|while|for|with)\\s*$/.test(text.slice(Math.max(0, i - 16), i)));
+        lastSig = "(";
+        out.push(ch);
+        continue;
+      }
+      if (ch === ")") {
+        lastSig = parenStack.length > 0 && parenStack.pop() ? "control)" : ")";
+        out.push(ch);
+        continue;
+      }
+    }
+
+    if (inCssTpl() && ch === "$" && next === "{") {
+      out.push("$" + "{");
+      tplModes.push({ kind: "expr", braceDepth: 0 });
+      lastSig = "{";
+      i++;
+      continue;
+    }
+
+    if (allowBacktickStrings && mode && mode.kind === "expr") {
+      if (ch === "{") {
+        mode.braceDepth++;
+        lastSig = "{";
+        out.push(ch);
+        continue;
+      }
+      if (ch === "}") {
+        if (mode.braceDepth === 0) {
+          tplModes.pop();
+          lastSig = "}";
+          out.push(ch);
+          continue;
+        }
+        mode.braceDepth--;
+        lastSig = "}";
+        out.push(ch);
+        continue;
+      }
+    }
+
+    const isOpenJsxProseQuote = () => {
+      if (isCss || tplModes.length > 0 || out.length === 0) return false;
+      if (lastSig === "=" && isHtmlAttrAssign(out)) return false;
+      return isInOpenJsxNow();
+    };
+    if (ch === "'") {
+      if (isOpenJsxProseQuote()) {
+        lastSig = ch;
+        out.push(ch);
+        continue;
+      }
+      const prev = text[i - 1] || "";
+      const prev2 = text[i - 2] || "";
+      const nxt = text[i + 1] || "";
+      const recentOut = out.slice(-48).join("");
+      const prevCtx = recentOut.slice(-24);
+      const isJsValCtx = /[=([,:+?{&|!]\\s*$|(?:^|[^\\w$])(?:return|case|default|throw|typeof|void|delete|in|of|else|await|yield|do|extends|import|from|as|satisfies)\\s*$|=>\\s*$/.test(prevCtx);
+      const eolIdx = text.indexOf("\\n", i + 1);
+      const lastNlOut = recentOut.lastIndexOf("\\n");
+      const lineBeforeQ = lastNlOut === -1 ? recentOut : recentOut.slice(lastNlOut + 1);
+      const restLine = text.slice(i + 1, eolIdx === -1 ? text.length : eolIdx);
+      let hasClosingSingleQuoteOnLine = false;
+      for (let rq = 0; rq < restLine.length; rq++) {
+        if (restLine[rq] === "\\\\" && rq + 1 < restLine.length) { rq++; continue; }
+        if (restLine[rq] === "'") {
+          const rPrev = rq > 0 ? restLine[rq - 1] : "";
+          const rPrev2 = rq > 1 ? restLine[rq - 2] : "";
+          const rNext = restLine[rq + 1] || "";
+          const between = restLine.slice(0, rq);
+          const afterQ = restLine.slice(rq + 1, rq + 16);
+          const isOtherLead =
+            (rq === 0 || /[\\s>([]/.test(rPrev)) &&
+            /^(?:\\d{2}s\\b|(?:tis|twas|twill|twere|em|til|bout|round|cause)\\b)/i.test(afterQ) &&
+            !/^(?:\\d{2}s|[a-z]+)'/i.test(afterQ);
+          const isTailPos =
+            !isJsValCtx &&
+            !/[=([,:;?+&|!{]\\s*$/.test(lineBeforeQ) &&
+            ((/[sSnN]/.test(rPrev) && /[A-Za-z0-9]/.test(rPrev2)) || ((rPrev === "n" || rPrev === "N") && rPrev2 === "'")) &&
+            (rNext === "" || /[\\s<.,;:!?)\\]}\\"-]/.test(rNext));
+          if (
+            !(/[A-Za-z]/.test(rPrev) && /[A-Za-z]/.test(rNext)) &&
+            !isOtherLead &&
+            !isTailPos &&
+            !/[<>]/.test(between) &&
+            !/=\\s*$/.test(between)
+          ) {
+            hasClosingSingleQuoteOnLine = true;
+            break;
+          }
+        }
+      }
+      const isProseLeadingApostrophe =
+        !isCss &&
+        (!isJsValCtx || !hasClosingSingleQuoteOnLine) &&
+        (prev === "" || /[\\s>([]/.test(prev)) &&
+        /^'(?:\\d{2}s|tis|twas|twere|twill|twould|em|cause|til|bout|round|neath|gainst|mid|mongst|n)(?![A-Za-z0-9_$])/i.test(text.slice(i, i + 16));
+      const isJsKeywordBefore =
+        /(?:^|[^A-Za-z0-9_$])(?:return|in|of|case|throw|typeof|void|delete|else|do|await|yield|as|from|import|export|extends|satisfies|new)$/.test(
+          recentOut
+        );
+      if (
+        !isCss &&
+        (isProseLeadingApostrophe ||
+          (/[A-Za-z0-9]/.test(prev) && /[A-Za-z]/.test(nxt)) ||
+          (!isJsKeywordBefore &&
+            ((/[sSnN]/.test(prev) && /[A-Za-z0-9]/.test(prev2)) || ((prev === "n" || prev === "N") && prev2 === "'")) &&
+            (nxt === "" || /[\\s<.,;:!?)\\]}\\"-]/.test(nxt))))
+      ) {
+        lastSig = ch;
+        out.push(ch);
+        continue;
+      }
+      inSingle = true;
+      quoteMultiline = !isCss && lastSig === "=" && isHtmlAttrAssign(out);
+    } else if (ch === '"') {
+      if (isOpenJsxProseQuote()) {
+        lastSig = ch;
+        out.push(ch);
+        continue;
+      }
+      inDouble = true;
+      quoteMultiline = !isCss && lastSig === "=" && isHtmlAttrAssign(out);
+    } else if (allowBacktickStrings && ch === BT) {
+      if (isOpenJsxProseQuote()) {
+        lastSig = BT;
+        out.push(ch);
+        continue;
+      }
+      if (isCss && mode && mode.kind === "css-tpl") {
+        tplModes.pop();
+      } else if (isCss && mode && mode.kind === "expr" && endsWithCssTag(text, i)) {
+        tplModes.push({ kind: "css-tpl" });
+      } else {
+        tplModes.push({ kind: "opaque-tpl" });
+      }
+      quoteMultiline = true;
+      lastSig = BT;
+    } else if (!/\\s/.test(ch)) lastSig = ch;
+    out.push(ch);
+  }
+  return out.join("");
+}
+
+function isTokenDefinitionHeader(hdr) {
+  if (!hdr) return false;
+  const parts = [];
+  let cur = "";
+  let parenDepth = 0;
+  let bracketDepth = 0;
+  for (let i = 0; i < hdr.length; i++) {
+    const c = hdr[i];
+    if (c === "(") parenDepth++;
+    else if (c === ")") parenDepth = Math.max(0, parenDepth - 1);
+    else if (c === "[") bracketDepth++;
+    else if (c === "]") bracketDepth = Math.max(0, bracketDepth - 1);
+    if (c === "," && parenDepth === 0 && bracketDepth === 0) {
+      parts.push(cur.trim());
+      cur = "";
+    } else {
+      cur += c;
+    }
+  }
+  if (cur.trim()) parts.push(cur.trim());
+  if (!parts.length) return false;
+  return parts.every((sel) =>
+    /^(?::root|:host(?:\\([^)]*\\))?|@property\\s+--[a-zA-Z0-9_-]+|@theme(?:\\s+(?:inline|static|reference|default))*|html\\.(?:dark|light)|body\\.(?:dark|light)|(?:html|body|:root)?\\[data-(?:uxs-)?theme(?:[^\\]]*)\\])$/i.test(
+      sel.replace(/\\s+/g, " ")
+    )
+  );
+}
+
+function isFullSkipTokenHeader(hdr) {
+  if (!hdr) return false;
+  return /^(?:@property\\s+--[a-zA-Z0-9_-]+|@theme(?:\\s+(?:inline|static|reference|default))*)$/i.test(
+    String(hdr).trim().replace(/\\s+/g, " ")
+  );
+}
+
+function stripTokenBlocks(css, allowLineComments = false, allowBacktickStrings = false) {
+  const BT = String.fromCharCode(96);
+  const stripped = stripComments(css, true, allowLineComments, allowBacktickStrings);
   const out = [];
   let idx = 0;
-  let depth = 0;
-  let skipDepth = null;
+  const skipStack = [];
+  const modeStack = [];
   let curHeader = "";
+  let headerOutStart = 0;
+  let quote = null;
+  let scssInterpDepth = 0;
+  const skipMode = () => (skipStack.length > 0 ? skipStack[skipStack.length - 1] : false);
+  const isSkipped = () => skipMode() === "full";
+  const pushChar = (c) => {
+    if (!isSkipped()) out.push(c);
+    else if (c === "\\n") out.push("\\n");
+  };
 
   while (idx < stripped.length) {
     const ch = stripped[idx];
+    const top = modeStack.length > 0 ? modeStack[modeStack.length - 1] : null;
+    if (top && top.kind === "opaque-tpl") {
+      pushChar(ch);
+      if (ch === "\\\\" && idx + 1 < stripped.length) {
+        idx++;
+        pushChar(stripped[idx]);
+      } else if (ch === "$" && stripped[idx + 1] === "{") {
+        idx++;
+        pushChar("{");
+        modeStack.push({ kind: "expr", braceDepth: 0, quote: null, lastSig: "{", parenStack: [] });
+      } else if (ch === BT) {
+        modeStack.pop();
+      }
+      idx++;
+      continue;
+    }
+    if (top && top.kind === "expr") {
+      if (top.quote) {
+        pushChar(ch);
+        if (ch === "\\\\" && idx + 1 < stripped.length) {
+          idx++;
+          pushChar(stripped[idx]);
+        } else if (ch === top.quote || ch === "\\n") {
+          top.quote = null;
+          top.lastSig = ch;
+        }
+        idx++;
+        continue;
+      }
+      const reEnd = skipJsRegexLiteral(stripped, idx, top.lastSig || "", 0);
+      if (reEnd !== -1) {
+        for (let k = idx; k < reEnd; k++) pushChar(stripped[k]);
+        top.lastSig = "/";
+        idx = reEnd;
+        continue;
+      }
+      pushChar(ch);
+      if (ch === "'" || ch === '"') {
+        top.quote = ch;
+      } else if (ch === BT) {
+        const tplKind = endsWithCssTag(stripped, idx) ? "css-tpl" : "opaque-tpl";
+        if (tplKind === "css-tpl") {
+          modeStack.push({ kind: "css-tpl", savedHeader: curHeader, savedHeaderOutStart: headerOutStart });
+          curHeader = "";
+          headerOutStart = out.length;
+        } else {
+          modeStack.push({ kind: "opaque-tpl" });
+        }
+        top.lastSig = BT;
+      } else if (ch === "(") {
+        top.parenStack.push(/(?:^|[^\\w$])(?:if|while|for|with)\\s*$/.test(stripped.slice(Math.max(0, idx - 16), idx)));
+        top.lastSig = "(";
+      } else if (ch === ")") {
+        top.lastSig = top.parenStack.length > 0 && top.parenStack.pop() ? "control)" : ")";
+      } else if (ch === "{") {
+        top.braceDepth++;
+        top.lastSig = "{";
+      } else if (ch === "}") {
+        if (top.braceDepth === 0) modeStack.pop();
+        else {
+          top.braceDepth--;
+          top.lastSig = "}";
+        }
+      } else if (!/\\s/.test(ch)) {
+        top.lastSig = ch;
+      }
+      idx++;
+      continue;
+    }
+    if (quote) {
+      pushChar(ch);
+      curHeader += ch;
+      if (ch === "\\\\" && idx + 1 < stripped.length) {
+        idx++;
+        pushChar(stripped[idx]);
+        curHeader += stripped[idx];
+      } else if (ch === quote || ch === "\\n") {
+        quote = null;
+      }
+      idx++;
+      continue;
+    }
+    if (allowBacktickStrings && top && top.kind === "css-tpl" && ch === BT) {
+      pushChar(ch);
+      curHeader = top.savedHeader || "";
+      headerOutStart = top.savedHeaderOutStart ?? out.length;
+      modeStack.pop();
+      idx++;
+      continue;
+    }
+    if (allowBacktickStrings && ch === "$" && stripped[idx + 1] === "{") {
+      pushChar("$");
+      pushChar("{");
+      curHeader += "$" + "{}";
+      modeStack.push({ kind: "expr", braceDepth: 0, quote: null, lastSig: "{", parenStack: [] });
+      idx += 2;
+      continue;
+    }
+    if (allowBacktickStrings && ch === BT) {
+      pushChar(ch);
+      modeStack.push({ kind: "opaque-tpl" });
+      idx++;
+      continue;
+    }
+    if (ch === "\\\\" && idx + 1 < stripped.length) {
+      pushChar(ch);
+      curHeader += ch;
+      idx++;
+      pushChar(stripped[idx]);
+      curHeader += stripped[idx];
+      idx++;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      if (!isSkipped()) out.push(ch);
+      curHeader += ch;
+      idx++;
+      continue;
+    }
+    if (allowLineComments && ch === "#" && stripped[idx + 1] === "{") {
+      scssInterpDepth++;
+      pushChar("#");
+      pushChar("{");
+      curHeader += "#{";
+      idx += 2;
+      continue;
+    }
+    if (scssInterpDepth > 0) {
+      if (ch === "{") scssInterpDepth++;
+      else if (ch === "}") scssInterpDepth--;
+      pushChar(ch);
+      curHeader += ch;
+      idx++;
+      continue;
+    }
     if (ch === "{") {
-      depth++;
       const hdr = curHeader.trim();
       curHeader = "";
-      if (
-        skipDepth === null &&
-        /(^|,|\\s)(:root|\\[data-theme[^\\]]*\\]|@theme(?:\\s+inline)?\\b|html\\[data-uxs-theme[^\\]]*\\]|html\\.(?:dark|light)\\b|:host\\b)/i.test(
-          hdr
-        )
-      ) {
-        skipDepth = depth;
+      const hdrOut0 = headerOutStart;
+      const parentMode = skipMode();
+      let nextMode = parentMode;
+      if (isFullSkipTokenHeader(hdr)) nextMode = "full";
+      else if (parentMode === "full") nextMode = "full";
+      else if (isTokenDefinitionHeader(hdr)) nextMode = "vars-only";
+      else if (!/^@(?:media|supports|layer|container|document|scope|keyframes|-webkit-keyframes|-moz-keyframes|starting-style)\\b/i.test(hdr)) nextMode = false;
+      skipStack.push(nextMode);
+      if (nextMode === "full" && parentMode !== "full") {
+        for (let k = hdrOut0; k < out.length; k++) {
+          if (out[k] !== "\\n") out[k] = " ";
+        }
       }
+      if (nextMode !== "full") out.push(parentMode === "full" ? " {" : ch);
+      headerOutStart = out.length;
     } else if (ch === "}") {
-      if (skipDepth !== null && depth === skipDepth) skipDepth = null;
-      depth = Math.max(0, depth - 1);
       curHeader = "";
+      const popped = skipStack.pop();
+      if (popped !== "full") out.push(ch);
+      headerOutStart = out.length;
     } else {
-      if (skipDepth === null) out.push(ch);
-      if (depth === 0 || (skipDepth === null && ch !== ";" && ch !== "}")) {
+      pushChar(ch);
+      if (ch === ";") {
+        curHeader = "";
+        headerOutStart = out.length;
+      } else {
         curHeader += ch;
-        if (ch === ";") curHeader = "";
       }
     }
     idx++;
@@ -88,8 +1911,367 @@ function stripTokenBlocks(css) {
   return out.join("");
 }
 
-function stripCssCustomPropDefs(text) {
-  return text.replace(/(?:["']?--[a-zA-Z0-9_-]+["']?\\s*:[^;}\\n]+;?,?)/g, "");
+function stripCssCustomPropDefs(text, isJsx = false, allowBackticks = isJsx) {
+  const BT = String.fromCharCode(96);
+  const out = [];
+  let i = 0;
+  let inS = false;
+  let inD = false;
+  let esc = false;
+  let rootLastSig = "";
+  const rootParenStack = [];
+  const modeStack = [];
+
+  while (i < text.length) {
+    const ch = text[i];
+    const top = modeStack.length > 0 ? modeStack[modeStack.length - 1] : null;
+    if (inS || inD) {
+      out.push(ch);
+      if (esc) esc = false;
+      else if (ch === "\\\\") esc = true;
+      else if (ch === "\\n") {
+        inS = false;
+        inD = false;
+      } else if (inS && ch === "'") {
+        inS = false;
+        if (top && top.kind === "expr") top.lastSig = "'";
+        else if (!top) rootLastSig = "'";
+      } else if (inD && ch === '"') {
+        inD = false;
+        if (top && top.kind === "expr") top.lastSig = '"';
+        else if (!top) rootLastSig = '"';
+      }
+      i++;
+      continue;
+    }
+    if (top && top.kind === "opaque-tpl") {
+      out.push(ch);
+      if (esc) esc = false;
+      else if (ch === "\\\\") esc = true;
+      else if (ch === "$" && text[i + 1] === "{") {
+        out.push("{");
+        i++;
+        modeStack.push({ kind: "expr", braceDepth: 0, lastSig: "{", parenStack: [] });
+      } else if (ch === BT) {
+        modeStack.pop();
+        const outer = modeStack.length > 0 ? modeStack[modeStack.length - 1] : null;
+        if (outer && outer.kind === "expr") outer.lastSig = BT;
+        else if (!outer) rootLastSig = BT;
+      }
+      i++;
+      continue;
+    }
+    if ((top && top.kind === "expr") || (!top && isJsx)) {
+      const lastSigCur = top ? top.lastSig || "" : rootLastSig;
+      const reEnd = skipJsRegexLiteral(text, i, lastSigCur, 0);
+      if (reEnd !== -1) {
+        out.push(text.slice(i, reEnd));
+        if (top) top.lastSig = "/";
+        else rootLastSig = "/";
+        i = reEnd;
+        continue;
+      }
+    }
+    if (top && top.kind === "expr") {
+      if (ch === "'") {
+        inS = true;
+        out.push(ch);
+        top.lastSig = "'";
+        i++;
+        continue;
+      }
+      if (ch === '"') {
+        inD = true;
+        out.push(ch);
+        top.lastSig = '"';
+        i++;
+        continue;
+      }
+      if (allowBackticks && ch === BT) {
+        const isCssTpl = !isJsx && endsWithCssTag(text, i);
+        modeStack.push({ kind: isCssTpl ? "css-tpl" : "opaque-tpl" });
+        top.lastSig = BT;
+        out.push(ch);
+        i++;
+        continue;
+      }
+      if (ch === "(") {
+        top.parenStack.push(/(?:^|[^\\w$])(?:if|while|for|with)\\s*$/.test(text.slice(Math.max(0, i - 16), i)));
+        top.lastSig = "(";
+        out.push(ch);
+        i++;
+        continue;
+      }
+      if (ch === ")") {
+        top.lastSig = top.parenStack.length > 0 && top.parenStack.pop() ? "control)" : ")";
+        out.push(ch);
+        i++;
+        continue;
+      }
+      if (ch === "{") {
+        top.braceDepth++;
+        top.lastSig = "{";
+        out.push(ch);
+        i++;
+        continue;
+      }
+      if (ch === "}") {
+        if (top.braceDepth === 0) modeStack.pop();
+        else {
+          top.braceDepth--;
+          top.lastSig = "}";
+        }
+        out.push(ch);
+        i++;
+        continue;
+      }
+      if (!/\\s/.test(ch)) top.lastSig = ch;
+      if (!isJsx) {
+        out.push(ch);
+        i++;
+        continue;
+      }
+    }
+
+    if (allowBackticks && (!top || top.kind === "css-tpl")) {
+      if (top && top.kind === "css-tpl" && ch === BT) {
+        modeStack.pop();
+        const outer = modeStack.length > 0 ? modeStack[modeStack.length - 1] : null;
+        if (outer && outer.kind === "expr") outer.lastSig = BT;
+        else if (!outer) rootLastSig = BT;
+        out.push(ch);
+        i++;
+        continue;
+      }
+      if (ch === "$" && text[i + 1] === "{") {
+        out.push("$" + "{");
+        modeStack.push({ kind: "expr", braceDepth: 0, lastSig: "{", parenStack: [] });
+        i += 2;
+        continue;
+      }
+    }
+
+    let matchLen = 0;
+    if (isJsx && (ch === "'" || ch === '"')) {
+      let p = i - 1;
+      while (p >= 0 && /\\s/.test(text[p])) p--;
+      const prevSig = p >= 0 ? text[p] : "";
+      if (prevSig === "" || prevSig === "{" || prevSig === "," || prevSig === ";") {
+        const m = /^["']--[a-zA-Z0-9_-]+["']\\s*:/.exec(text.slice(i, i + 128));
+        if (m) matchLen = m[0].length;
+      }
+    } else if (isJsx && ch === "[") {
+      let p = i - 1;
+      while (p >= 0 && /\\s/.test(text[p])) p--;
+      const prevSig = p >= 0 ? text[p] : "";
+      if (prevSig === "" || prevSig === "{" || prevSig === "," || prevSig === ";") {
+        const m = /^\\[\\s*(?:["']--[a-zA-Z0-9_-]+["']|\\x60--[a-zA-Z0-9_-]+\\x60)\\s*\\]\\s*:/.exec(text.slice(i, i + 128));
+        if (m) matchLen = m[0].length;
+      }
+    } else if (!isJsx && ch === "-" && text[i + 1] === "-") {
+      const prev = i > 0 ? text[i - 1] : "";
+      if (!/[a-zA-Z0-9_.&#:-]/.test(prev)) {
+        const m = /^--[a-zA-Z0-9_-]+\\s*:(?!:)/.exec(text.slice(i, i + 128));
+        if (m) matchLen = m[0].length;
+      }
+    }
+
+    if (matchLen > 0) {
+      let j = i + matchLen;
+      let pDepth = 0;
+      let bDepth = 0;
+      let brDepth = 0;
+      let vInS = false;
+      let vInD = false;
+      let vInT = false;
+      let vEsc = false;
+      let vRootLastSig = ":";
+      const vRootParenStack = [];
+      const vTpl = [];
+      while (j < text.length) {
+        const vc = text[j];
+        if (vInS || vInD || vInT) {
+          if (vc === "\\n") out.push("\\n");
+          if (vEsc) vEsc = false;
+          else if (vc === "\\\\") vEsc = true;
+          else if (vInT && vc === "$" && text[j + 1] === "{") {
+            vTpl.push({ braceDepth: 0, fromBacktick: true, lastSig: "{", parenStack: [] });
+            vInT = false;
+            j += 2;
+            continue;
+          } else if ((vInS || vInD) && vc === "\\n") {
+            vInS = false;
+            vInD = false;
+          } else if (vInS && vc === "'") {
+            vInS = false;
+            if (vTpl.length > 0) vTpl[vTpl.length - 1].lastSig = "'";
+            else vRootLastSig = "'";
+          } else if (vInD && vc === '"') {
+            vInD = false;
+            if (vTpl.length > 0) vTpl[vTpl.length - 1].lastSig = '"';
+            else vRootLastSig = '"';
+          } else if (vInT && vc === BT) {
+            vInT = false;
+            if (vTpl.length > 0) vTpl[vTpl.length - 1].lastSig = BT;
+            else vRootLastSig = BT;
+          }
+          j++;
+          continue;
+        }
+        if (vTpl.length > 0) {
+          const vf = vTpl[vTpl.length - 1];
+          const reVEnd = skipJsRegexLiteral(text, j, vf.lastSig, 0);
+          if (reVEnd !== -1) {
+            for (let rk = j; rk < reVEnd; rk++) {
+              if (text[rk] === "\\n") out.push("\\n");
+            }
+            vf.lastSig = "/";
+            j = reVEnd;
+            continue;
+          }
+          if (vc === "\\n") out.push("\\n");
+          if (vc === "'") {
+            vInS = true;
+            vf.lastSig = "'";
+            j++;
+            continue;
+          }
+          if (vc === '"') {
+            vInD = true;
+            vf.lastSig = '"';
+            j++;
+            continue;
+          }
+          if (allowBackticks && vc === BT) {
+            vInT = true;
+            vf.lastSig = BT;
+            j++;
+            continue;
+          }
+          if (vc === "(") {
+            vf.parenStack.push(/(?:^|[^\\w$])(?:if|while|for|with)\\s*$/.test(text.slice(Math.max(0, j - 16), j)));
+            vf.lastSig = "(";
+            j++;
+            continue;
+          }
+          if (vc === ")") {
+            vf.lastSig = vf.parenStack.length > 0 && vf.parenStack.pop() ? "control)" : ")";
+            j++;
+            continue;
+          }
+          if (vc === "{") {
+            vf.braceDepth++;
+            vf.lastSig = "{";
+            j++;
+            continue;
+          }
+          if (vc === "}") {
+            if (vf.braceDepth === 0) {
+              const frame = vTpl.pop();
+              vInT = frame.fromBacktick;
+              if (vTpl.length > 0) vTpl[vTpl.length - 1].lastSig = frame.fromBacktick ? BT : "}";
+              else vRootLastSig = frame.fromBacktick ? BT : "}";
+              j++;
+              continue;
+            }
+            vf.braceDepth--;
+            vf.lastSig = "}";
+            j++;
+            continue;
+          }
+          if (!/\\s/.test(vc)) vf.lastSig = vc;
+          j++;
+          continue;
+        }
+        if (isJsx) {
+          const reTopEnd = skipJsRegexLiteral(text, j, vRootLastSig, 0);
+          if (reTopEnd !== -1) {
+            for (let rk = j; rk < reTopEnd; rk++) {
+              if (text[rk] === "\\n") out.push("\\n");
+            }
+            vRootLastSig = "/";
+            j = reTopEnd;
+            continue;
+          }
+        }
+        if (!isJsx && allowBackticks && vc === "$" && text[j + 1] === "{") {
+          vTpl.push({ braceDepth: 0, fromBacktick: false, lastSig: "{", parenStack: [] });
+          j += 2;
+          continue;
+        }
+        if (!isJsx && top && top.kind === "css-tpl" && vc === BT) {
+          break;
+        }
+        if (vc === "\\n") out.push("\\n");
+        if (vc === "'") {
+          vInS = true;
+          vRootLastSig = "'";
+        } else if (vc === '"') {
+          vInD = true;
+          vRootLastSig = '"';
+        } else if (allowBackticks && isJsx && vc === BT) {
+          vInT = true;
+          vRootLastSig = BT;
+        } else if (vc === "(") {
+          vRootParenStack.push(/(?:^|[^\\w$])(?:if|while|for|with)\\s*$/.test(text.slice(Math.max(0, j - 16), j)));
+          vRootLastSig = "(";
+          pDepth++;
+        } else if (vc === ")") {
+          if (pDepth === 0 && bDepth === 0 && brDepth === 0) break;
+          vRootLastSig = vRootParenStack.length > 0 && vRootParenStack.pop() ? "control)" : ")";
+          pDepth = Math.max(0, pDepth - 1);
+        } else if (vc === "[") {
+          brDepth++;
+          vRootLastSig = "[";
+        } else if (vc === "]") {
+          brDepth = Math.max(0, brDepth - 1);
+          vRootLastSig = "]";
+        } else if (vc === "{") {
+          bDepth++;
+          vRootLastSig = "{";
+        } else if (vc === "}") {
+          if (pDepth === 0 && bDepth === 0 && brDepth === 0) break;
+          bDepth = Math.max(0, bDepth - 1);
+          vRootLastSig = "}";
+        } else if (pDepth === 0 && bDepth === 0 && brDepth === 0) {
+          if (vc === ";" || (isJsx && vc === ",")) {
+            vRootLastSig = vc;
+            j++;
+            break;
+          }
+          if (!/\\s/.test(vc)) vRootLastSig = vc;
+        } else if (!/\\s/.test(vc)) {
+          vRootLastSig = vc;
+        }
+        j++;
+      }
+      if (!top) rootLastSig = j > i ? text[j - 1] : ";";
+      i = j;
+      continue;
+    }
+
+    if (!isJsx && (!top || top.kind === "css-tpl") && ch === "\\\\" && i + 1 < text.length) {
+      out.push(ch, text[i + 1]);
+      i += 2;
+      continue;
+    }
+    if (ch === "'") inS = true;
+    else if (ch === '"') inD = true;
+    else if (allowBackticks && ch === BT) modeStack.push({ kind: "opaque-tpl" });
+    else if (!top && isJsx) {
+      if (ch === "(") {
+        rootParenStack.push(/(?:^|[^\\w$])(?:if|while|for|with)\\s*$/.test(text.slice(Math.max(0, i - 16), i)));
+        rootLastSig = "(";
+      } else if (ch === ")") {
+        rootLastSig = rootParenStack.length > 0 && rootParenStack.pop() ? "control)" : ")";
+      } else if (!/\\s/.test(ch)) {
+        rootLastSig = ch;
+      }
+    }
+    out.push(ch);
+    i++;
+  }
+  return out.join("");
 }
 
 function maskRange(chars, start, end) {
@@ -98,79 +2280,2088 @@ function maskRange(chars, start, end) {
   }
 }
 
-function findBalancedBraceEnd(str, openBraceIdx) {
-  let depth = 0;
+function maskCssUrls(src) {
+  const s = String(src || "");
+  const out = [];
+  let i = 0;
+  while (i < s.length) {
+    const ch = s[i];
+    if (ch === '"' || ch === "'") {
+      const q = ch;
+      let k = i + 1;
+      while (k < s.length) {
+        if (s[k] === "\\\\" && k + 1 < s.length) { k += 2; continue; }
+        if (s[k] === q || s[k] === "\\n") { k++; break; }
+        k++;
+      }
+      const lit = s.slice(i, k);
+      if (lit.length >= 2 && lit[lit.length - 1] === q && /url\\(/i.test(lit)) {
+        const inner = lit.slice(1, -1);
+        const maskedInner = [];
+        let ui = 0;
+        while (ui < inner.length) {
+          if ((inner[ui] === "u" || inner[ui] === "U") && (ui === 0 || !/[A-Za-z0-9_$-]/.test(inner[ui - 1])) && /^url\\(/i.test(inner.slice(ui, ui + 4))) {
+            let uj = ui + 4;
+            let ud = 1;
+            let uq2 = null;
+            while (uj < inner.length && ud > 0) {
+              const uc = inner[uj];
+              if (uq2) {
+                if (uc === "\\\\" && uj + 1 < inner.length) { uj += 2; continue; }
+                if (uc === uq2 || uc === "\\n") uq2 = null;
+                uj++;
+                continue;
+              }
+              if (uc === '"' || uc === "'") { uq2 = uc; uj++; continue; }
+              if (uc === "(") ud++;
+              else if (uc === ")") ud--;
+              uj++;
+            }
+            if (ud === 0) {
+              const seg = inner.slice(ui, uj);
+              maskedInner.push(seg.includes("#") ? seg.replace(/[^\\n]/g, " ") : seg);
+              ui = uj;
+              continue;
+            }
+          }
+          maskedInner.push(inner[ui]);
+          ui++;
+        }
+        out.push(q + maskedInner.join("") + q);
+      } else {
+        out.push(lit);
+      }
+      i = k;
+      continue;
+    }
+    if ((ch === "u" || ch === "U") && (i === 0 || !/[A-Za-z0-9_$-]/.test(s[i - 1])) && /^url\\(/i.test(s.slice(i, i + 4))) {
+      let j = i + 4;
+      let depth = 1;
+      let uq = null;
+      while (j < s.length && depth > 0) {
+        const c = s[j];
+        if (uq) {
+          if (c === "\\\\" && j + 1 < s.length) { j += 2; continue; }
+          if (c === uq || c === "\\n") uq = null;
+          j++;
+          continue;
+        }
+        if (c === '"' || c === "'") { uq = c; j++; continue; }
+        if (c === "(") depth++;
+        else if (c === ")") depth--;
+        j++;
+      }
+      if (depth === 0) {
+        const seg = s.slice(i, j);
+        out.push(seg.includes("#") ? seg.replace(/[^\\n]/g, " ") : seg);
+        i = j;
+        continue;
+      }
+    }
+    out.push(ch);
+    i++;
+  }
+  return out.join("");
+}
+
+function maskCssNonColorHashes(cssSrc, allowBackticks = false) {
+  const BT = String.fromCharCode(96);
+  const noUrls = maskCssUrls(cssSrc);
+  const chars = noUrls.split("");
+  let headerStart = 0;
   let quote = null;
-  for (let i = openBraceIdx; i < str.length; i++) {
-    const ch = str[i];
-    if (quote) {
-      if (ch === "\\\\") {
+  let interpDepth = 0;
+  let interpStart = -1;
+  const tplStack = [];
+  const interpSpans = [];
+  const topTpl = () => (tplStack.length > 0 ? tplStack[tplStack.length - 1] : null);
+  const maskHeader = (hdrStart, idx) => {
+    if (/^@(?:mixin|function|include|each|if|else\\s+if|while|for|supports|container)\\b/i.test(noUrls.slice(hdrStart, idx).trimStart())) return;
+    let outsideHash = false;
+    for (let k = hdrStart; k < idx; k++) {
+      if (chars[k] === "#" && !interpSpans.some(([s0, e0]) => k >= s0 && k <= e0)) {
+        outsideHash = true;
+        break;
+      }
+    }
+    if (!outsideHash) return;
+    for (let k = hdrStart; k < idx; k++) {
+      if (chars[k] !== "\\n" && !interpSpans.some(([s0, e0]) => k >= s0 && k <= e0)) chars[k] = " ";
+    }
+  };
+  for (let i = 0; i < noUrls.length; i++) {
+    const ch = noUrls[i];
+    const top = topTpl();
+    if (top && top.kind === "opaque-tpl") {
+      if (ch === "\\\\" && i + 1 < noUrls.length) {
         i++;
         continue;
       }
-      if (ch === quote) quote = null;
+      if (ch === "$" && noUrls[i + 1] === "{") {
+        tplStack.push({ kind: "expr", braceDepth: 0, start: i, savedHeaderStart: headerStart, lastSig: "{", parenStack: [] });
+        i++;
+        continue;
+      }
+      if (ch === BT) tplStack.pop();
       continue;
     }
-    if (ch === '"' || ch === "'" || ch === "\`") {
+    if (quote) {
+      if (ch === "\\\\" && i + 1 < noUrls.length) {
+        i++;
+        continue;
+      }
+      if (allowBackticks && ch === "$" && noUrls[i + 1] === "{") {
+        const endE = findBalancedDelimEnd(noUrls, i + 1, "{", "}");
+        if (endE !== -1) {
+          i = endE;
+          continue;
+        }
+      }
+      if (ch === quote || ch === "\\n") quote = null;
+      continue;
+    }
+    if ((!top || top.kind === "css-tpl") && ch === "\\\\" && i + 1 < noUrls.length) {
+      i++;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
       quote = ch;
       continue;
     }
-    if (ch === "{") depth++;
-    else if (ch === "}") {
+    if (allowBackticks && top && top.kind === "expr") {
+      const reEnd = skipJsRegexLiteral(noUrls, i, top.lastSig || "", top.start + 2);
+      if (reEnd !== -1) {
+        top.lastSig = "/";
+        i = reEnd - 1;
+        continue;
+      }
+      if (ch === BT) {
+        if (endsWithCssTag(noUrls, i)) {
+          tplStack.push({ kind: "css-tpl", savedHeaderStart: headerStart });
+          headerStart = i + 1;
+        } else {
+          tplStack.push({ kind: "opaque-tpl" });
+        }
+        top.lastSig = BT;
+        continue;
+      }
+      if (ch === "(") {
+        top.parenStack.push(/(?:^|[^\\w$])(?:if|while|for|with)\\s*$/.test(noUrls.slice(Math.max(0, i - 16), i)));
+        top.lastSig = "(";
+        continue;
+      }
+      if (ch === ")") {
+        top.lastSig = top.parenStack.length > 0 && top.parenStack.pop() ? "control)" : ")";
+        continue;
+      }
+      if (ch === "{") {
+        top.braceDepth++;
+        top.lastSig = "{";
+        continue;
+      }
+      if (ch === "}") {
+        if (top.braceDepth === 0) {
+          tplStack.pop();
+          interpSpans.push([top.start, i]);
+          headerStart = top.savedHeaderStart;
+          const pTop = topTpl();
+          if (pTop && pTop.kind === "expr") pTop.lastSig = "}";
+        } else {
+          top.braceDepth--;
+          top.lastSig = "}";
+        }
+        continue;
+      }
+      if (!/\\s/.test(ch)) top.lastSig = ch;
+      continue;
+    }
+    if (allowBackticks && ch === "$" && noUrls[i + 1] === "{") {
+      tplStack.push({ kind: "expr", braceDepth: 0, start: i, savedHeaderStart: headerStart, lastSig: "{", parenStack: [] });
+      i++;
+      continue;
+    }
+    if (allowBackticks && ch === BT) {
+      if (top && top.kind === "css-tpl") {
+        headerStart = top.savedHeaderStart;
+        tplStack.pop();
+      } else {
+        tplStack.push({ kind: "opaque-tpl" });
+      }
+      continue;
+    }
+    if (ch === "{") {
+      if (interpDepth > 0 || (i > 0 && (noUrls[i - 1] === "#" || noUrls[i - 1] === "$"))) {
+        if (interpDepth === 0) interpStart = i;
+        interpDepth++;
+      } else {
+        maskHeader(headerStart, i);
+        headerStart = i + 1;
+      }
+    } else if (ch === ";") {
+      if (interpDepth === 0) headerStart = i + 1;
+    } else if (ch === "}") {
+      if (interpDepth > 0) {
+        interpDepth--;
+        if (interpDepth === 0 && interpStart !== -1) {
+          interpSpans.push([interpStart, i]);
+          interpStart = -1;
+        }
+      } else {
+        headerStart = i + 1;
+      }
+    }
+  }
+  return chars.join("");
+}
+
+function findBalancedDelimEnd(str, openIdx, openCh, closeCh) {
+  const BT = String.fromCharCode(96);
+  let depth = 0;
+  let inS = false;
+  let inD = false;
+  let inT = false;
+  let esc = false;
+  let lastSig = "";
+  const tplExprDepths = [];
+  const parenStack = [];
+  for (let i = openIdx; i < str.length; i++) {
+    const ch = str[i];
+    const next = str[i + 1] || "";
+    if (inS || inD || inT) {
+      if (esc) esc = false;
+      else if (ch === "\\\\") esc = true;
+      else if (inT && ch === "$" && next === "{") {
+        tplExprDepths.push(0);
+        inT = false;
+        lastSig = "{";
+        i++;
+      } else if ((inS || inD) && ch === "\\n") {
+        inS = false;
+        inD = false;
+      } else if (inS && ch === "'") {
+        inS = false;
+        lastSig = "'";
+      } else if (inD && ch === '"') {
+        inD = false;
+        lastSig = '"';
+      } else if (inT && ch === BT) {
+        inT = false;
+        lastSig = BT;
+      }
+      continue;
+    }
+    if (ch === "/" && next === "*") {
+      const endC = str.indexOf("*/", i + 2);
+      if (endC !== -1) {
+        i = endC + 1;
+        continue;
+      }
+    }
+    if (ch === "/" && next === "/") {
+      const endL = str.indexOf("\\n", i + 2);
+      if (endL === -1) return -1;
+      i = endL;
+      continue;
+    }
+    const reEnd = skipJsRegexLiteral(str, i, lastSig, openIdx);
+    if (reEnd !== -1) {
+      lastSig = "/";
+      i = reEnd - 1;
+      continue;
+    }
+    if (ch === "(") {
+      parenStack.push(/(?:^|[^\\w$])(?:if|while|for|with)\\s*$/.test(str.slice(Math.max(openIdx, i - 16), i)));
+      lastSig = "(";
+      if (openCh === "(") depth++;
+      continue;
+    }
+    if (ch === ")") {
+      lastSig = parenStack.length > 0 && parenStack.pop() ? "control)" : ")";
+      if (closeCh === ")") {
+        depth--;
+        if (depth === 0) return i;
+      }
+      continue;
+    }
+    if (ch === "'") {
+      inS = true;
+      continue;
+    }
+    if (ch === '"') {
+      inD = true;
+      continue;
+    }
+    if (ch === BT) {
+      inT = true;
+      continue;
+    }
+    if (tplExprDepths.length > 0) {
+      if (ch === "{") {
+        tplExprDepths[tplExprDepths.length - 1]++;
+        lastSig = "{";
+        continue;
+      }
+      if (ch === "}") {
+        if (tplExprDepths[tplExprDepths.length - 1] === 0) {
+          tplExprDepths.pop();
+          inT = true;
+          lastSig = BT;
+          continue;
+        }
+        tplExprDepths[tplExprDepths.length - 1]--;
+        lastSig = "}";
+        continue;
+      }
+    }
+    if (ch === openCh) depth++;
+    else if (ch === closeCh) {
       depth--;
       if (depth === 0) return i;
     }
+    if (!/\\s/.test(ch)) lastSig = ch;
   }
   return -1;
 }
 
-function extractStyleRegions(raw) {
+function findBalancedBraceEnd(str, openBraceIdx) {
+  return findBalancedDelimEnd(str, openBraceIdx, "{", "}");
+}
+
+function skipOptionalTsGeneric(str, idx) {
+  const BT = String.fromCharCode(96);
+  let i = idx;
+  while (i < str.length && /\\s/.test(str[i])) i++;
+  if (str[i] !== "<") return i;
+  let angle = 1;
+  let quote = null;
+  let esc = false;
+  i++;
+  while (i < str.length && angle > 0) {
+    const ch = str[i];
+    if (quote) {
+      if (esc) esc = false;
+      else if (ch === "\\\\") esc = true;
+      else if (ch === quote) quote = null;
+      i++;
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === BT) quote = ch;
+    else if (ch === "<") angle++;
+    else if (ch === ">" && str[i - 1] !== "=") angle--;
+    i++;
+  }
+  if (angle !== 0) return -1;
+  while (i < str.length && /\\s/.test(str[i])) i++;
+  return i;
+}
+
+function findTemplateLiteralEnd(str, openBtIdx) {
+  const BT = String.fromCharCode(96);
+  let i = openBtIdx + 1;
+  while (i < str.length) {
+    const ch = str[i];
+    if (ch === "\\\\") {
+      i += 2;
+      continue;
+    }
+    if (ch === "$" && str[i + 1] === "{") {
+      const exprEnd = findBalancedBraceEnd(str, i + 1);
+      if (exprEnd !== -1) {
+        i = exprEnd + 1;
+        continue;
+      }
+      i += 2;
+      continue;
+    }
+    if (ch === BT) return i;
+    i++;
+  }
+  return -1;
+}
+
+function findBalancedParenEnd(str, openParenIdx) {
+  return findBalancedDelimEnd(str, openParenIdx, "(", ")");
+}
+
+function stripSvelteCssPropDecls(jsExpr) {
+  const BT = String.fromCharCode(96);
+  const s = stripComments(jsExpr, false, true);
+  const chars = s.split("");
+  const stack = [];
+  let lastSig = "";
+  const parenStack = [];
+  let i = 0;
+  while (i < s.length) {
+    const ch = s[i];
+    const top = stack.length > 0 ? stack[stack.length - 1] : null;
+    if (top && (top.kind === "q" || top.kind === "tpl")) {
+      if (ch === "\\\\" && i + 1 < s.length) {
+        const escCh = s[i + 1];
+        if (top.kind === "q") {
+          if (escCh === top.quote) {
+            top.cssQ = top.cssQ === escCh ? null : (!top.cssQ ? escCh : top.cssQ);
+          } else if (escCh === "\\\\" && top.cssQ && i + 2 < s.length && s[i + 2] !== top.quote) {
+            if (top.cssQ === top.quote && s[i + 2] === "\\\\" && i + 3 < s.length && s[i + 3] === top.quote) {
+              i += 4;
+              continue;
+            }
+            if (s[i + 2] === top.cssQ) {
+              i += 3;
+              continue;
+            }
+          }
+        }
+        i += 2;
+        continue;
+      }
+      if (top.kind === "tpl" && ch === "$" && s[i + 1] === "{") {
+        stack.push({ kind: "expr", braceDepth: 0 });
+        lastSig = "{";
+        i += 2;
+        continue;
+      }
+      if ((top.kind === "q" && ch === top.quote) || (top.kind === "tpl" && ch === BT)) {
+        stack.pop();
+        lastSig = top.quote || BT;
+        i++;
+        continue;
+      }
+      if (top.cssQ) {
+        if (ch === top.cssQ || ch === "\\n") top.cssQ = null;
+        i++;
+        continue;
+      }
+      if (ch === '"' || ch === "'") {
+        top.cssQ = ch;
+        i++;
+        continue;
+      }
+      if (ch === "/" && s[i + 1] === "*") {
+        const outerQ = top.kind === "tpl" ? BT : top.quote;
+        let cEnd = i + 2;
+        while (cEnd < s.length) {
+          if (s[cEnd] === "\\\\" && cEnd + 1 < s.length) { cEnd += 2; continue; }
+          if (top.kind === "tpl" && s[cEnd] === "$" && s[cEnd + 1] === "{") {
+            const bEnd = findBalancedBraceEnd(s, cEnd + 1);
+            if (bEnd !== -1) { cEnd = bEnd + 1; continue; }
+          }
+          if (s[cEnd] === outerQ) break;
+          if (s[cEnd] === "*" && s[cEnd + 1] === "/") { cEnd += 2; break; }
+          cEnd++;
+        }
+        maskRange(chars, i, cEnd);
+        i = cEnd;
+        continue;
+      }
+      if (ch === "-" && s[i + 1] === "-") {
+        const prev = i > 0 ? s[i - 1] : "";
+        if (!/[a-zA-Z0-9_.&#:(-]/.test(prev)) {
+          const m = /^--[a-zA-Z0-9_-]+\\s*:(?!:)/.exec(s.slice(i, i + 128));
+          if (m) {
+            const outerQ = top.kind === "tpl" ? BT : top.quote;
+            let j = i + m[0].length;
+            let pD = 0;
+            let cssQ = null;
+            let inCssComment = false;
+            const eStack = [];
+            while (j < s.length) {
+              const vc = s[j];
+              if (eStack.length > 0) {
+                const eTop = eStack[eStack.length - 1];
+                if (eTop.mode === "q") {
+                  if (vc === "\\\\" && j + 1 < s.length) { j += 2; continue; }
+                  if (vc === eTop.quote || vc === "\\n") {
+                    const popped = eStack.pop();
+                    if (eStack.length > 0 && eStack[eStack.length - 1].mode === "expr") {
+                      eStack[eStack.length - 1].lastSig = popped.quote;
+                    }
+                  }
+                  j++;
+                  continue;
+                }
+                if (eTop.mode === "tpl") {
+                  if (vc === "\\\\" && j + 1 < s.length) { j += 2; continue; }
+                  if (vc === "$" && s[j + 1] === "{") {
+                    eStack.push({ mode: "expr", braceDepth: 0, lastSig: "{", parenStack: [] });
+                    j += 2;
+                    continue;
+                  }
+                  if (vc === BT) {
+                    eStack.pop();
+                    if (eStack.length > 0 && eStack[eStack.length - 1].mode === "expr") {
+                      eStack[eStack.length - 1].lastSig = BT;
+                    }
+                  }
+                  j++;
+                  continue;
+                }
+                const reE = skipJsRegexLiteral(s, j, eTop.lastSig, i);
+                if (reE !== -1) { eTop.lastSig = "/"; j = reE; continue; }
+                if (vc === "'" || vc === '"') { eStack.push({ mode: "q", quote: vc }); j++; continue; }
+                if (vc === BT) { eStack.push({ mode: "tpl" }); j++; continue; }
+                if (vc === "(") {
+                  eTop.parenStack.push(/(?:^|[^\\w$])(?:if|while|for|with)\\s*$/.test(s.slice(Math.max(0, j - 16), j)));
+                  eTop.lastSig = "(";
+                  j++;
+                  continue;
+                }
+                if (vc === ")") {
+                  eTop.lastSig = eTop.parenStack.length > 0 && eTop.parenStack.pop() ? "control)" : ")";
+                  j++;
+                  continue;
+                }
+                if (vc === "{") { eTop.braceDepth++; eTop.lastSig = "{"; j++; continue; }
+                if (vc === "}") {
+                  if (eTop.braceDepth === 0) {
+                    eStack.pop();
+                    if (eStack.length > 0 && eStack[eStack.length - 1].mode === "expr") {
+                      eStack[eStack.length - 1].lastSig = "}";
+                    }
+                  } else {
+                    eTop.braceDepth--;
+                    eTop.lastSig = "}";
+                  }
+                  j++;
+                  continue;
+                }
+                if (!/\\s/.test(vc)) eTop.lastSig = vc;
+                j++;
+                continue;
+              }
+              if (inCssComment) {
+                if (vc === "\\\\" && j + 1 < s.length) { j += 2; continue; }
+                if (outerQ === BT && vc === "$" && s[j + 1] === "{") {
+                  eStack.push({ mode: "expr", braceDepth: 0, lastSig: "{", parenStack: [] });
+                  j += 2;
+                  continue;
+                }
+                if (vc === outerQ) break;
+                if (vc === "*" && s[j + 1] === "/") {
+                  inCssComment = false;
+                  j += 2;
+                  continue;
+                }
+                j++;
+                continue;
+              }
+              if (cssQ) {
+                if (vc === "\\\\" && j + 1 < s.length) {
+                  const vEsc = s[j + 1];
+                  if (top.kind === "q") {
+                    if (vEsc === outerQ) {
+                      cssQ = cssQ === vEsc ? null : cssQ;
+                      j += 2;
+                      continue;
+                    }
+                    if (vEsc === "\\\\" && j + 2 < s.length && s[j + 2] !== outerQ) {
+                      if (cssQ === outerQ && s[j + 2] === "\\\\" && j + 3 < s.length && s[j + 3] === outerQ) {
+                        j += 4;
+                        continue;
+                      }
+                      if (s[j + 2] === cssQ) {
+                        j += 3;
+                        continue;
+                      }
+                    }
+                  }
+                  j += 2;
+                  continue;
+                }
+                if (outerQ === BT && vc === "$" && s[j + 1] === "{") {
+                  eStack.push({ mode: "expr", braceDepth: 0, lastSig: "{", parenStack: [] });
+                  j += 2;
+                  continue;
+                }
+                if (vc === outerQ) break;
+                if (vc === cssQ || vc === "\\n") cssQ = null;
+                j++;
+                continue;
+              }
+              if (vc === "\\\\" && j + 1 < s.length) {
+                const vEsc = s[j + 1];
+                if (top.kind === "q" && vEsc === outerQ) {
+                  cssQ = outerQ;
+                  j += 2;
+                  continue;
+                }
+                j += 2;
+                continue;
+              }
+              if (outerQ === BT && vc === "$" && s[j + 1] === "{") {
+                eStack.push({ mode: "expr", braceDepth: 0, lastSig: "{", parenStack: [] });
+                j += 2;
+                continue;
+              }
+              if (vc === outerQ) break;
+              if (vc === "/" && s[j + 1] === "*") {
+                inCssComment = true;
+                j += 2;
+                continue;
+              }
+              if (vc === '"' || vc === "'") { cssQ = vc; j++; continue; }
+              if (vc === "(") pD++;
+              else if (vc === ")") pD = Math.max(0, pD - 1);
+              else if (vc === ";" && pD === 0) { j++; break; }
+              j++;
+            }
+            maskRange(chars, i, j);
+            i = j;
+            continue;
+          }
+        }
+      }
+      i++;
+      continue;
+    }
+    const reEnd = skipJsRegexLiteral(s, i, lastSig, 0);
+    if (reEnd !== -1) {
+      lastSig = "/";
+      i = reEnd;
+      continue;
+    }
+    if (ch === "'" || ch === '"') {
+      stack.push({ kind: "q", quote: ch, cssQ: null });
+      lastSig = ch;
+      i++;
+      continue;
+    }
+    if (ch === BT) {
+      stack.push({ kind: "tpl", cssQ: null });
+      lastSig = BT;
+      i++;
+      continue;
+    }
+    if (top && top.kind === "expr") {
+      if (ch === "{") { top.braceDepth++; lastSig = "{"; i++; continue; }
+      if (ch === "}") {
+        if (top.braceDepth === 0) { stack.pop(); lastSig = "}"; i++; continue; }
+        top.braceDepth--;
+        lastSig = "}";
+        i++;
+        continue;
+      }
+    }
+    if (ch === "(") { parenStack.push(/(?:^|[^\\w$])(?:if|while|for|with)\\s*$/.test(s.slice(Math.max(0, i - 16), i))); lastSig = "("; }
+    else if (ch === ")") lastSig = parenStack.length > 0 && parenStack.pop() ? "control)" : ")";
+    else if (!/\\s/.test(ch)) lastSig = ch;
+    i++;
+  }
+  return chars.join("");
+}
+
+function extractJsStringLiterals(jsSrc) {
+  const s = String(jsSrc || "");
+  const BT = String.fromCharCode(96);
+  const out = [];
+  let i = 0;
+  let lastSig = "";
+  const parenStack = [];
+  const skipBeforeWsAndComments = (str, pos) => {
+    let p = pos - 1;
+    while (p >= 0) {
+      if (/\\s/.test(str[p])) { p--; continue; }
+      if (p >= 1 && str[p] === "/" && str[p - 1] === "*") {
+        const open = str.lastIndexOf("/*", p - 2);
+        if (open !== -1) { p = open - 1; continue; }
+      }
+      break;
+    }
+    return p + 1;
+  };
+  const skipAfterWsAndComments = (str, pos) => {
+    let p = pos;
+    while (p < str.length) {
+      if (/\\s/.test(str[p])) { p++; continue; }
+      if (str[p] === "/" && str[p + 1] === "*") {
+        const close = str.indexOf("*/", p + 2);
+        if (close !== -1) { p = close + 2; continue; }
+      }
+      break;
+    }
+    return p;
+  };
+  const isComparisonOperand = (str, startIdx, endIdx) => {
+    const bEnd = skipBeforeWsAndComments(str, startIdx);
+    if (/(?:===|!==|==|!=)$/.test(str.slice(Math.max(0, bEnd - 4), bEnd))) return true;
+    const aStart = skipAfterWsAndComments(str, endIdx);
+    if (/^(?:===|!==|==|!=)/.test(str.slice(aStart, aStart + 4))) return true;
+    return false;
+  };
+  const scanTpl = (openBtIdx, tplChunks) => {
+    let k = openBtIdx + 1;
+    let buf = "";
+    let esc = false;
+    while (k < s.length) {
+      const c = s[k];
+      if (esc) {
+        buf += c === "\\n" ? "\\n" : c === "'" || c === '"' || c === "\\\\" ? "\\\\" + c : c;
+        esc = false;
+        k++;
+        continue;
+      }
+      if (c === "\\\\") {
+        esc = true;
+        k++;
+        continue;
+      }
+      if (c === "$" && s[k + 1] === "{") {
+        const endE = findBalancedDelimEnd(s, k + 1, "{", "}");
+        if (endE === -1) break;
+        if (buf.trim()) tplChunks.push(stripComments(buf, true, false, false));
+        buf = "";
+        const nested = extractJsStringLiterals(s.slice(k + 2, endE));
+        if (nested) tplChunks.push(nested);
+        k = endE + 1;
+        continue;
+      }
+      if (c === BT) {
+        if (buf.trim()) tplChunks.push(stripComments(buf, true, false, false));
+        return k;
+      }
+      buf += c;
+      k++;
+    }
+    if (buf.trim()) tplChunks.push(stripComments(buf, true, false, false));
+    return s.length - 1;
+  };
+  while (i < s.length) {
+    const ch = s[i];
+    if (ch === "/" && s[i + 1] === "*") {
+      const cEnd = s.indexOf("*/", i + 2);
+      if (cEnd === -1) break;
+      i = cEnd + 2;
+      continue;
+    }
+    if (ch === "/" && s[i + 1] === "/") {
+      while (i < s.length && s[i] !== "\\n") i++;
+      continue;
+    }
+    const reEnd = skipJsRegexLiteral(s, i, lastSig, 0);
+    if (reEnd !== -1) {
+      lastSig = "/";
+      i = reEnd;
+      continue;
+    }
+    if (ch === "'" || ch === '"') {
+      const q = ch;
+      let k = i + 1;
+      let buf = "";
+      while (k < s.length) {
+        const c = s[k];
+        if (c === "\\\\" && k + 1 < s.length) {
+          buf += s[k + 1] === "\\n" ? "\\n" : c + s[k + 1];
+          k += 2;
+          continue;
+        }
+        if (c === q || c === "\\n") break;
+        buf += c;
+        k++;
+      }
+      const litEnd = k < s.length ? k + 1 : s.length;
+      if (buf.trim() && !isComparisonOperand(s, i, litEnd)) out.push(stripComments(buf, true, false, false));
+      lastSig = q;
+      i = litEnd;
+      continue;
+    }
+    if (ch === BT) {
+      const tplChunks = [];
+      const closeIdx = scanTpl(i, tplChunks);
+      const tplEnd = closeIdx + 1;
+      if (tplChunks.length > 0 && !isComparisonOperand(s, i, tplEnd)) {
+        out.push(...tplChunks);
+      }
+      i = tplEnd;
+      lastSig = BT;
+      continue;
+    }
+    if (ch === "(") {
+      parenStack.push(/(?:^|[^\\w$])(?:if|while|for|with)\\s*$/.test(s.slice(Math.max(0, i - 16), i)));
+      lastSig = "(";
+    } else if (ch === ")") {
+      lastSig = parenStack.length > 0 && parenStack.pop() ? "control)" : ")";
+    } else if (!/\\s/.test(ch)) {
+      lastSig = ch;
+    }
+    i++;
+  }
+  return out.join(" ");
+}
+
+function maskCssQuotedStrings(cssSrc) {
+  const s = String(cssSrc || "");
+  const chars = s.split("");
+  let q = null;
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (q) {
+      if (c === "\\\\" && i + 1 < s.length) {
+        if (chars[i] !== "\\n") chars[i] = " ";
+        if (chars[i + 1] !== "\\n") chars[i + 1] = " ";
+        i++;
+        continue;
+      }
+      if (c === q || c === "\\n") {
+        q = null;
+        continue;
+      }
+      if (chars[i] !== "\\n") chars[i] = " ";
+      continue;
+    }
+    if (c === "\\\\" && i + 1 < s.length) { i++; continue; }
+    if (c === '"' || c === "'") q = c;
+  }
+  return chars.join("");
+}
+
+function maskCssQuotedStringsInTpl(cssSrc) {
+  const s = String(cssSrc || "");
+  const chars = s.split("");
+  let i = 0;
+  let q = null;
+  while (i < s.length) {
+    const c = s[i];
+    if (q) {
+      if (c === "\\\\" && i + 1 < s.length) {
+        if (chars[i] !== "\\n") chars[i] = " ";
+        if (chars[i + 1] !== "\\n") chars[i + 1] = " ";
+        i += 2;
+        continue;
+      }
+      if (c === "$" && s[i + 1] === "{") {
+        const endE = findBalancedBraceEnd(s, i + 1);
+        if (endE !== -1) {
+          for (let k = i; k <= endE; k++) if (chars[k] !== "\\n") chars[k] = " ";
+          i = endE + 1;
+          continue;
+        }
+      }
+      if (c === q || c === "\\n") {
+        q = null;
+        i++;
+        continue;
+      }
+      if (chars[i] !== "\\n") chars[i] = " ";
+      i++;
+      continue;
+    }
+    if (c === "\\\\" && i + 1 < s.length) { i += 2; continue; }
+    if (c === "$" && s[i + 1] === "{") {
+      const endE = findBalancedBraceEnd(s, i + 1);
+      if (endE !== -1) { i = endE + 1; continue; }
+    }
+    if (c === '"' || c === "'") q = c;
+    i++;
+  }
+  return chars.join("");
+}
+
+function extractImportantFromTplCss(innerCss) {
+  const s = String(innerCss || "");
+  const out = [];
+  let i = 0;
+  let cssQuote = null;
+  while (i < s.length) {
+    const ch = s[i];
+    if (cssQuote) {
+      if (ch === "\\\\" && i + 1 < s.length) {
+        out.push(s[i + 1] === "\\n" ? "\\n" : "  ");
+        i += 2;
+        continue;
+      }
+      if (ch === "$" && s[i + 1] === "{") {
+        const endE = findBalancedDelimEnd(s, i + 1, "{", "}");
+        if (endE !== -1) {
+          for (let k = i; k <= endE; k++) out.push(s[k] === "\\n" ? "\\n" : " ");
+          i = endE + 1;
+          continue;
+        }
+      }
+      if (ch === cssQuote || ch === "\\n") {
+        cssQuote = null;
+        out.push(ch);
+      } else {
+        out.push(" ");
+      }
+      i++;
+      continue;
+    }
+    if (ch === "\\\\" && i + 1 < s.length) {
+      out.push(ch, s[i + 1]);
+      i += 2;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      cssQuote = ch;
+      out.push(ch);
+      i++;
+      continue;
+    }
+    if (ch === "$" && s[i + 1] === "{") {
+      const endE = findBalancedDelimEnd(s, i + 1, "{", "}");
+      if (endE === -1) {
+        out.push("$" + "{");
+        i += 2;
+        continue;
+      }
+      const lit = maskCssQuotedStrings(extractJsStringLiterals(s.slice(i + 2, endE)));
+      out.push(lit ? " " + lit + " " : " var(--_) ");
+      i = endE + 1;
+      continue;
+    }
+    out.push(ch);
+    i++;
+  }
+  return out.join("");
+}
+
+function extractColorsFromTplCss(innerCss) {
+  const s = String(innerCss || "");
+  const out = [];
+  let i = 0;
+  let cssQuote = null;
+  while (i < s.length) {
+    const ch = s[i];
+    if (cssQuote) {
+      if (ch === "\\\\" && i + 1 < s.length) {
+        out.push(s[i + 1] === "\\n" ? "\\n" : "  ");
+        i += 2;
+        continue;
+      }
+      if (ch === "$" && s[i + 1] === "{") {
+        const endE = findBalancedDelimEnd(s, i + 1, "{", "}");
+        if (endE !== -1) {
+          for (let k = i; k <= endE; k++) out.push(s[k] === "\\n" ? "\\n" : " ");
+          i = endE + 1;
+          continue;
+        }
+      }
+      if (ch === cssQuote || ch === "\\n") {
+        cssQuote = null;
+        out.push(ch);
+      } else {
+        out.push(" ");
+      }
+      i++;
+      continue;
+    }
+    if (ch === "\\\\" && i + 1 < s.length) {
+      out.push(ch, s[i + 1]);
+      i += 2;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      cssQuote = ch;
+      out.push(ch);
+      i++;
+      continue;
+    }
+    if (ch === "$" && s[i + 1] === "{") {
+      const endE = findBalancedDelimEnd(s, i + 1, "{", "}");
+      if (endE === -1) {
+        out.push("$" + "{");
+        i += 2;
+        continue;
+      }
+      const lit = extractJsStringLiterals(s.slice(i + 2, endE));
+      const cleanLit = lit
+        ? maskCssNonColorHashes(
+            maskCssQuotedStrings(stripCssCustomPropDefs(stripTokenBlocks(lit, true, false), false, false)),
+            false
+          )
+        : "";
+      out.push(cleanLit ? " " + cleanLit + " " : " var(--_) ");
+      i = endE + 1;
+      continue;
+    }
+    out.push(ch);
+    i++;
+  }
+  return out.join("");
+}
+
+function stripSvelteQuotedStyleForColors(attrCss) {
+  const s = String(attrCss || "");
+  const out = [];
+  let i = 0;
+  let cssQuote = null;
+  while (i < s.length) {
+    const ch = s[i];
+    if (cssQuote) {
+      if (ch === "\\\\" && i + 1 < s.length) {
+        out.push(s[i + 1] === "\\n" ? "\\n" : "  ");
+        i += 2;
+        continue;
+      }
+      if (ch === "{") {
+        const endB = findBalancedDelimEnd(s, i, "{", "}");
+        if (endB !== -1) {
+          for (let k = i; k <= endB; k++) out.push(s[k] === "\\n" ? "\\n" : " ");
+          i = endB + 1;
+          continue;
+        }
+      }
+      if (ch === cssQuote || ch === "\\n") {
+        cssQuote = null;
+        out.push(ch);
+      } else {
+        out.push(" ");
+      }
+      i++;
+      continue;
+    }
+    if (ch === "\\\\" && i + 1 < s.length) {
+      out.push(ch, s[i + 1]);
+      i += 2;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      cssQuote = ch;
+      out.push(ch);
+      i++;
+      continue;
+    }
+    if (ch === "/" && s[i + 1] === "*") {
+      const cEnd = s.indexOf("*/", i + 2);
+      const stop = cEnd === -1 ? s.length : cEnd + 2;
+      out.push(" ");
+      for (let k = i; k < stop; k++) if (s[k] === "\\n") out.push("\\n");
+      i = stop;
+      continue;
+    }
+    if (ch === "{") {
+      const endB = findBalancedDelimEnd(s, i, "{", "}");
+      if (endB !== -1) {
+        out.push("{" + stripComments(s.slice(i + 1, endB), false, true, true) + "}");
+        i = endB + 1;
+        continue;
+      }
+    }
+    out.push(ch);
+    i++;
+  }
+  return out.join("");
+}
+
+function stripStaticCssInSvelteQuoted(attrCss) {
+  const s = stripSvelteQuotedStyleForColors(attrCss);
+  const chars = s.split("");
+  let i = 0;
+  let cssQuote = null;
+  while (i < s.length) {
+    const ch = s[i];
+    if (cssQuote) {
+      if (ch === "\\\\" && i + 1 < s.length) { i += 2; continue; }
+      if (ch === "{") {
+        const endB = findBalancedDelimEnd(s, i, "{", "}");
+        if (endB !== -1) { i = endB + 1; continue; }
+      }
+      if (ch === cssQuote || ch === "\\n") cssQuote = null;
+      i++;
+      continue;
+    }
+    if (ch === '"' || ch === "'") { cssQuote = ch; i++; continue; }
+    if (ch === "{") {
+      const endB = findBalancedDelimEnd(s, i, "{", "}");
+      if (endB !== -1) { i = endB + 1; continue; }
+    }
+    if (ch === "-" && s[i + 1] === "-") {
+      const prev = i > 0 ? s[i - 1] : "";
+      if (!/[a-zA-Z0-9_.&#:-]/.test(prev)) {
+        const dm = /^--[a-zA-Z0-9_-]+\\s*:(?!:)/.exec(s.slice(i, i + 128));
+        if (dm) {
+          let j = i + dm[0].length;
+          let pD = 0;
+          let declQ = null;
+          let stop = s.length;
+          while (j < s.length) {
+            const dc = s[j];
+            if (declQ) {
+              if (dc === "\\\\" && j + 1 < s.length) { j += 2; continue; }
+              if (dc === "{") {
+                const endB = findBalancedDelimEnd(s, j, "{", "}");
+                if (endB !== -1) { j = endB + 1; continue; }
+              }
+              if (dc === declQ || dc === "\\n") declQ = null;
+              j++;
+              continue;
+            }
+            if (dc === "{") {
+              const endB = findBalancedDelimEnd(s, j, "{", "}");
+              if (endB !== -1) { j = endB + 1; continue; }
+            }
+            if (dc === '"' || dc === "'") { declQ = dc; j++; continue; }
+            if (dc === "(") pD++;
+            else if (dc === ")") pD = Math.max(0, pD - 1);
+            else if (dc === ";" && pD === 0) { stop = j + 1; break; }
+            j++;
+          }
+          maskRange(chars, i, stop);
+          i = stop;
+          continue;
+        }
+      }
+    }
+    i++;
+  }
+  return chars.join("");
+}
+
+function extractImportantFromSvelteQuoted(attrCss) {
+  const s = String(attrCss || "");
+  const out = [];
+  let i = 0;
+  let last = 0;
+  while (i < s.length) {
+    if (s[i] === "{") {
+      const endB = findBalancedDelimEnd(s, i, "{", "}");
+      if (endB === -1) break;
+      out.push(s.slice(last, i));
+      const lit = maskCssQuotedStrings(extractJsStringLiterals(s.slice(i + 1, endB)));
+      if (lit) out.push(" " + lit + " ");
+      i = endB + 1;
+      last = i;
+      continue;
+    }
+    i++;
+  }
+  out.push(s.slice(last));
+  return out.join("");
+}
+
+function extractColorsFromSvelteQuoted(attrCss) {
+  const s = String(attrCss || "");
+  const out = [];
+  let i = 0;
+  let cssQuote = null;
+  while (i < s.length) {
+    const ch = s[i];
+    if (cssQuote) {
+      if (ch === "\\\\" && i + 1 < s.length) {
+        out.push(s[i + 1] === "\\n" ? "\\n" : "  ");
+        i += 2;
+        continue;
+      }
+      if (ch === "{") {
+        const endB = findBalancedDelimEnd(s, i, "{", "}");
+        if (endB !== -1) {
+          for (let k = i; k <= endB; k++) out.push(s[k] === "\\n" ? "\\n" : " ");
+          i = endB + 1;
+          continue;
+        }
+      }
+      if (ch === cssQuote || ch === "\\n") {
+        cssQuote = null;
+        out.push(ch);
+      } else {
+        out.push(" ");
+      }
+      i++;
+      continue;
+    }
+    if (ch === "\\\\" && i + 1 < s.length) {
+      out.push(ch, s[i + 1]);
+      i += 2;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      cssQuote = ch;
+      out.push(ch);
+      i++;
+      continue;
+    }
+    if (ch === "{") {
+      const endB = findBalancedDelimEnd(s, i, "{", "}");
+      if (endB !== -1) {
+        const lit = extractJsStringLiterals(s.slice(i + 1, endB));
+        out.push(lit ? " " + lit + " " : " ");
+        i = endB + 1;
+        continue;
+      }
+    }
+    out.push(ch);
+    i++;
+  }
+  return out.join("");
+}
+
+function findStyleTagClose(src, bodyStart, isScss = false, isJsxStyle = false, caseSensitive = false) {
+  const s = String(src || "");
+  const BT = String.fromCharCode(96);
+  const closeRe = caseSensitive ? /^<\\/style\\s*>/ : /^<\\/style\\s*>/i;
+  let i = bodyStart;
+  let q = null;
+  let tailBuf = "";
+  const pushTail = (ch) => {
+    tailBuf = tailBuf.length >= 64 ? tailBuf.slice(-48) + ch : tailBuf + ch;
+  };
+  while (i < s.length) {
+    const ch = s[i];
+    const next = s[i + 1];
+    if (q) {
+      if (ch === "\\\\" && i + 1 < s.length) { pushTail("  "); i += 2; continue; }
+      if (ch === q || ch === "\\n") q = null;
+      pushTail(ch);
+      i++;
+      continue;
+    }
+    if (ch === "/" && next === "*") {
+      const cEnd = s.indexOf("*/", i + 2);
+      if (cEnd === -1) return null;
+      pushTail(" ");
+      i = cEnd + 2;
+      continue;
+    }
+    if (isScss && ch === "/" && next === "/") {
+      const prev = i > bodyStart ? s[i - 1] : "";
+      const isUrlSchemeBefore =
+        prev === ":" &&
+        /(?:^|[^\\w$-])(?:https?|wss?|ftps?|blob|data|s3|gs|git|ssh):$/i.test(s.slice(Math.max(bodyStart, i - 24), i)) &&
+        /^\\/\\/[A-Za-z0-9._~[\\]-]/.test(s.slice(i, i + 32));
+      const isProtoUrl = /(?:^|[^A-Za-z0-9_$-])url\\(\\s*$/i.test(tailBuf);
+      if (!isUrlSchemeBefore && !isProtoUrl) {
+        const eol = s.indexOf("\\n", i + 2);
+        if (eol === -1) return null;
+        pushTail("\\n");
+        i = eol + 1;
+        continue;
+      }
+    }
+    if (isJsxStyle && ch === "{") {
+      const bEnd = findBalancedBraceEnd(s, i);
+      if (bEnd !== -1) { pushTail(" "); i = bEnd + 1; continue; }
+    }
+    if (isJsxStyle && ch === BT) {
+      const btEnd = findTemplateLiteralEnd(s, i);
+      if (btEnd !== -1) { pushTail(" "); i = btEnd + 1; continue; }
+    }
+    if (ch === "\\\\" && i + 1 < s.length) { pushTail("  "); i += 2; continue; }
+    if (ch === '"' || ch === "'") { q = ch; pushTail(ch); i++; continue; }
+    if (ch === "<" && next === "/") {
+      const cm = closeRe.exec(s.slice(i, i + 20));
+      if (cm) return { closeStart: i, closeEnd: i + cm[0].length, closeText: cm[0] };
+    }
+    pushTail(ch);
+    i++;
+  }
+  return null;
+}
+
+function splitAstroFrontmatter(src) {
+  const s = String(src || "");
+  const BT = String.fromCharCode(96);
+  const m = /^(\\s*---[ \\t]*(?:\\n|$))/.exec(s);
+  if (!m) return null;
+  const openEnd = m[0].length;
+  let i = openEnd;
+  let q = null;
+  let lastSig = "";
+  const parenStack = [];
+  while (i < s.length) {
+    const ch = s[i];
+    if (q) {
+      if (ch === "\\\\" && i + 1 < s.length) { i += 2; continue; }
+      if (q === BT && ch === "$" && s[i + 1] === "{") {
+        const be = findBalancedBraceEnd(s, i + 1);
+        if (be !== -1) { i = be + 1; continue; }
+      }
+      if (ch === q || (q !== BT && ch === "\\n")) {
+        q = null;
+        lastSig = ch;
+      }
+      i++;
+      continue;
+    }
+    if (ch === "/" && s[i + 1] === "*") {
+      const cEnd = s.indexOf("*/", i + 2);
+      i = cEnd === -1 ? s.length : cEnd + 2;
+      continue;
+    }
+    if (ch === "/" && s[i + 1] === "/") {
+      const eol = s.indexOf("\\n", i + 2);
+      i = eol === -1 ? s.length : eol + 1;
+      continue;
+    }
+    const reEnd = skipJsRegexLiteral(s, i, lastSig, openEnd);
+    if (reEnd !== -1) {
+      lastSig = "/";
+      i = reEnd;
+      continue;
+    }
+    if (ch === "'" || ch === '"' || ch === BT) { q = ch; i++; continue; }
+    if ((i === openEnd || s[i - 1] === "\\n") && s.startsWith("---", i)) {
+      const rest = s.slice(i + 3, i + 32);
+      if (/^[ \\t]*(?:\\n|$)/.test(rest)) {
+        const nl = /^[ \\t]*\\n/.exec(rest);
+        return { openEnd, closeStart: i, closeEnd: i + 3 + (nl ? nl[0].length : 0) };
+      }
+    }
+    if (ch === "(") {
+      parenStack.push(/(?:^|[^\\w$])(?:if|while|for|with)\\s*$/.test(s.slice(Math.max(openEnd, i - 16), i)));
+      lastSig = "(";
+    } else if (ch === ")") {
+      lastSig = parenStack.length > 0 && parenStack.pop() ? "control)" : ")";
+    } else if (!/\\s/.test(ch)) {
+      lastSig = ch;
+    }
+    i++;
+  }
+  return null;
+}
+
+function computeMarkupRegions(src, isMarkupSfc = false, ext = "") {
+  const s = String(src || "");
+  const BT = String.fromCharCode(96);
+  const spans = [];
+  const openTags = [];
+  const proseSpans = [];
+  const scanRange = (startIdx, endIdx, initSig = "", trackJsx = false) => {
+    let i = startIdx;
+    let lastSig = initSig;
+    const parenStack = [];
+    const stack = [];
+    let proseStart = -1;
+    const top = () => (stack.length > 0 ? stack[stack.length - 1] : null);
+    const flushProse = (pos) => {
+      if (proseStart !== -1 && pos > proseStart) proseSpans.push([proseStart, pos]);
+      proseStart = -1;
+    };
+    while (i < endIdx) {
+      const t = top();
+      if (trackJsx && t && t.kind === "jsx") {
+        if (s[i] === "<") {
+          if (s.startsWith("</>", i)) {
+            flushProse(i);
+            const idx = stack.map((e) => e.kind + ":" + (e.tag || "")).lastIndexOf("jsx:");
+            if (idx !== -1) stack.splice(idx, 1);
+            i += 3;
+            lastSig = ">";
+            proseStart = top()?.kind === "jsx" ? i : -1;
+            continue;
+          }
+          const cm = /^<\\/([A-Za-z][A-Za-z0-9_.:-]*)\\s*>/.exec(s.slice(i, Math.min(endIdx, i + 64)));
+          if (cm) {
+            flushProse(i);
+            const closeTag = cm[1].toLowerCase();
+            for (let si = stack.length - 1; si >= 0; si--) {
+              if (stack[si].kind === "jsx" && stack[si].tag === closeTag) {
+                stack.splice(si);
+                break;
+              }
+            }
+            i += cm[0].length;
+            lastSig = ">";
+            proseStart = top()?.kind === "jsx" ? i : -1;
+            continue;
+          }
+          const openTag = parseJsxOpenTagAt(s, i);
+          if (openTag && openTag.end <= endIdx) {
+            flushProse(i);
+            openTags.push(openTag);
+            for (const as of openTag.attrStrSpans) spans.push(as);
+            for (const [es, ee] of openTag.exprSpans) scanRange(es, ee, "{", true);
+            if (!openTag.selfClosing) stack.push({ kind: "jsx", tag: openTag.tag });
+            i = openTag.end;
+            lastSig = ">";
+            proseStart = i;
+            continue;
+          }
+        } else if (s[i] === "{") {
+          flushProse(i);
+          stack.push({ kind: "brace" });
+          lastSig = "{";
+          i++;
+          continue;
+        }
+        i++;
+        continue;
+      }
+      const ch = s[i];
+      const next = i + 1 < endIdx ? s[i + 1] : "";
+      if (ch === "/" && next === "*") {
+        const cEnd = s.indexOf("*/", i + 2);
+        if (cEnd === -1 || cEnd >= endIdx) break;
+        i = cEnd + 2;
+        continue;
+      }
+      if (ch === "/" && next === "/") {
+        while (i < endIdx && s[i] !== "\\n") i++;
+        continue;
+      }
+      const reEnd = skipJsRegexLiteral(s, i, lastSig, startIdx);
+      if (reEnd !== -1 && reEnd <= endIdx) { spans.push([i, reEnd]); lastSig = "/"; i = reEnd; continue; }
+      if (trackJsx && ch === "<") {
+        const isAfterJsxCloseOrArrow =
+          lastSig === ">" && /(?:=>|\\/>|<\\/[A-Za-z0-9_.:-]*\\s*>)\\s*$/.test(s.slice(Math.max(startIdx, i - 48), i));
+        const canStartJsx =
+          lastSig === "" ||
+          lastSig === "control)" ||
+          isAfterJsxCloseOrArrow ||
+          /[=([,:;?+&|!{}]/.test(lastSig) ||
+          /(?:^|[^\\w$.])(?:return|case|throw|else|default|yield|await|void)\\s*$|=>\\s*$/.test(
+            s.slice(Math.max(startIdx, i - 24), i)
+          );
+        if (canStartJsx) {
+          const openTag = parseJsxOpenTagAt(s, i);
+          if (openTag && openTag.end <= endIdx) {
+            openTags.push(openTag);
+            for (const as of openTag.attrStrSpans) spans.push(as);
+            for (const [es, ee] of openTag.exprSpans) scanRange(es, ee, "{", true);
+            if (!openTag.selfClosing) {
+              stack.push({ kind: "jsx", tag: openTag.tag });
+              proseStart = openTag.end;
+            }
+            i = openTag.end;
+            lastSig = ">";
+            continue;
+          }
+        }
+      }
+      if (ch === BT) {
+        const isCssTag = /\\b(?:css|createGlobalStyle|keyframes|styled(?:\\.[A-Za-z0-9_]+)?)$/.test(
+          s.slice(Math.max(startIdx, i - 32), i).trimEnd()
+        );
+        let tk = i + 1;
+        let segStart = tk;
+        let closedBt = false;
+        const localBtSpans = [];
+        while (tk < endIdx) {
+          if (s[tk] === "\\\\" && tk + 1 < endIdx) { tk += 2; continue; }
+          if (s[tk] === "$" && tk + 1 < endIdx && s[tk + 1] === "{") {
+            if (!isCssTag && tk > segStart) localBtSpans.push([segStart - 1, tk]);
+            const be = findBalancedBraceEnd(s, tk + 1);
+            if (be === -1 || be >= endIdx) {
+              tk += 2;
+              segStart = tk;
+              continue;
+            }
+            scanRange(tk + 2, be, "{", trackJsx);
+            tk = be + 1;
+            segStart = tk;
+            continue;
+          }
+          if (s[tk] === BT) {
+            if (!isCssTag && tk > segStart) localBtSpans.push([segStart - 1, tk + 1]);
+            tk++;
+            closedBt = true;
+            break;
+          }
+          tk++;
+        }
+        if (closedBt) {
+          for (const sp of localBtSpans) spans.push(sp);
+          lastSig = BT;
+          i = tk;
+        } else {
+          lastSig = BT;
+          i++;
+        }
+        continue;
+      }
+      if (ch === '"' || ch === "'") {
+        const prev = i > 0 ? s[i - 1] : "";
+        const nxt = i + 1 < endIdx ? s[i + 1] : "";
+        if (ch === "'" && /[A-Za-z0-9]/.test(prev) && /[A-Za-z]/.test(nxt)) {
+          lastSig = ch;
+          i++;
+          continue;
+        }
+        let k = i + 1;
+        let closedSameLine = false;
+        while (k < endIdx) {
+          if (s[k] === "\\\\" && k + 1 < endIdx) { k += 2; continue; }
+          if (s[k] === "\\n") break;
+          if (s[k] === ch) { closedSameLine = true; k++; break; }
+          k++;
+        }
+        if (closedSameLine) {
+          spans.push([i, k]);
+          lastSig = ch;
+          i = k;
+          continue;
+        }
+      }
+      if (ch === "{") {
+        if (trackJsx) stack.push({ kind: "brace" });
+        lastSig = "{";
+      } else if (ch === "}") {
+        if (trackJsx) {
+          for (let si = stack.length - 1; si >= 0; si--) {
+            if (stack[si].kind === "brace") { stack.splice(si, 1); break; }
+          }
+          proseStart = top()?.kind === "jsx" ? i + 1 : -1;
+        }
+        lastSig = "}";
+      } else if (ch === "(") {
+        parenStack.push(/(?:^|[^\\w$])(?:if|while|for|with)\\s*$/.test(s.slice(Math.max(startIdx, i - 16), i)));
+        if (trackJsx) stack.push({ kind: "paren" });
+        lastSig = "(";
+      } else if (ch === ")") {
+        if (trackJsx) {
+          for (let si = stack.length - 1; si >= 0; si--) {
+            if (stack[si].kind === "paren") { stack.splice(si, 1); break; }
+          }
+        }
+        lastSig = parenStack.length > 0 && parenStack.pop() ? "control)" : ")";
+      } else if (!/\\s/.test(ch)) {
+        lastSig = ch;
+      }
+      i++;
+    }
+    if (trackJsx && top()?.kind === "jsx") flushProse(endIdx);
+  };
+  if (isMarkupSfc) {
+    const lowerExt = String(ext || "").toLowerCase();
+    const isHtmlOnlyExt = lowerExt === ".html" || lowerExt === ".htm" || lowerExt === "";
+    const isVueMarkup = lowerExt === ".vue";
+    const isAstroMarkup = lowerExt === ".astro";
+    const isBraceMarkup = lowerExt === ".svelte" || isAstroMarkup;
+    let i = 0;
+    let proseStart = 0;
+    if (isAstroMarkup) {
+      const fm = splitAstroFrontmatter(s);
+      if (fm) {
+        scanRange(fm.openEnd, fm.closeStart, "", false);
+        i = fm.closeEnd;
+        proseStart = fm.closeEnd;
+      }
+    }
+    const flushProse = (pos) => {
+      if (proseStart !== -1 && pos > proseStart) proseSpans.push([proseStart, pos]);
+      proseStart = -1;
+    };
+    while (i < s.length) {
+      if (s.startsWith("<!--", i)) {
+        flushProse(i);
+        const end = s.indexOf("-->", i + 4);
+        i = end === -1 ? s.length : end + 3;
+        proseStart = i;
+        continue;
+      }
+      if (isVueMarkup && s.startsWith("{{", i)) {
+        const innerEnd = findBalancedBraceEnd(s, i + 1);
+        if (innerEnd !== -1 && s[innerEnd + 1] === "}") {
+          flushProse(i);
+          scanRange(i + 2, innerEnd, "{", false);
+          i = innerEnd + 2;
+          proseStart = i;
+          continue;
+        }
+      }
+      if (isBraceMarkup && s[i] === "{") {
+        const bEnd = findBalancedBraceEnd(s, i);
+        if (bEnd !== -1) {
+          flushProse(i);
+          scanRange(i + 1, bEnd, "{", isAstroMarkup);
+          i = bEnd + 1;
+          proseStart = i;
+          continue;
+        }
+      }
+      if (s[i] === "<" && s[i + 1] === "/") {
+        const cm = /^<\\/[A-Za-z][A-Za-z0-9_.:-]*\\s*>/.exec(s.slice(i, i + 80));
+        if (cm) {
+          flushProse(i);
+          i += cm[0].length;
+          proseStart = i;
+          continue;
+        }
+      }
+      if (s[i] === "<" && /[A-Za-z]/.test(s[i + 1] || "")) {
+        const om = /^<([A-Za-z][A-Za-z0-9_.:-]*)(?=[\\s/>])/.exec(s.slice(i, i + 64));
+        if (om) {
+          const tagName = om[1];
+          const tagLower = tagName.toLowerCase();
+          let j = i + om[0].length;
+          let q = null;
+          let qStart = -1;
+          let inBrackQ = false;
+          let brackDepth = 0;
+          let sawEq = false;
+          let validTag = false;
+          const localSpans = [];
+          const localExprs = [];
+          while (j < s.length) {
+            const c = s[j];
+            if (q) {
+              if (inBrackQ && c === "\\\\" && j + 1 < s.length) { j += 2; continue; }
+              if (isBraceMarkup && !inBrackQ && c === "{") {
+                const bEnd = findBalancedBraceEnd(s, j);
+                if (bEnd !== -1) { j = bEnd + 1; continue; }
+              }
+              if (c === q) {
+                if (!inBrackQ && qStart !== -1) localSpans.push([qStart, j + 1]);
+                q = null;
+                qStart = -1;
+                inBrackQ = false;
+              }
+              j++;
+              continue;
+            }
+            if (c === "[") {
+              brackDepth++;
+              sawEq = false;
+            } else if (c === "]") {
+              brackDepth = Math.max(0, brackDepth - 1);
+              sawEq = false;
+            } else if (c === "=" && brackDepth === 0) {
+              sawEq = true;
+            } else if (c === '"' || c === "'") {
+              if (brackDepth > 0) {
+                q = c;
+                inBrackQ = true;
+                sawEq = false;
+              } else if (!sawEq) {
+                validTag = false;
+                break;
+              } else {
+                q = c;
+                qStart = j;
+                inBrackQ = false;
+                sawEq = false;
+              }
+            } else if (isBraceMarkup && brackDepth === 0 && c === "{") {
+              const bEnd = findBalancedBraceEnd(s, j);
+              if (bEnd !== -1) {
+                localExprs.push([j + 1, bEnd]);
+                sawEq = false;
+                j = bEnd + 1;
+                continue;
+              }
+            } else if (c === "<" && brackDepth === 0) {
+              validTag = false;
+              break;
+            } else if (c === ">" && brackDepth === 0) {
+              validTag = true;
+              break;
+            } else if (!/\\s/.test(c)) {
+              sawEq = false;
+            }
+            j++;
+          }
+          if (validTag) {
+            flushProse(i);
+            for (const sp of localSpans) spans.push(sp);
+            for (const [es, ee] of localExprs) scanRange(es, ee, "{", isAstroMarkup);
+            let p = j - 1;
+            while (p > i && /\\s/.test(s[p])) p--;
+            const selfClose = s[p] === "/";
+            const tagEnd = j + 1;
+            openTags.push({ start: i, end: tagEnd, attrStrSpans: localSpans, exprSpans: localExprs });
+            const isRealStyleTag = isHtmlOnlyExt ? tagLower === "style" : tagName === "style";
+            if (!selfClose && tagLower === "script") {
+              const closeRe = /<\\/script\\s*>/gi;
+              closeRe.lastIndex = tagEnd;
+              const cm = closeRe.exec(s);
+              if (cm) {
+                scanRange(tagEnd, cm.index, "", false);
+                i = cm.index + cm[0].length;
+              } else {
+                i = tagEnd;
+              }
+            } else if (!selfClose && isRealStyleTag) {
+              const isScssTag = /\\blang\\s*=\\s*["']s[ca]ss["']/i.test(s.slice(i, tagEnd));
+              const closeInfo = findStyleTagClose(s, tagEnd, isScssTag, false, !isHtmlOnlyExt);
+              i = closeInfo ? closeInfo.closeEnd : tagEnd;
+            } else {
+              i = tagEnd;
+            }
+            proseStart = i;
+            continue;
+          }
+        }
+      }
+      i++;
+    }
+    if (proseStart !== -1 && s.length > proseStart) flushProse(s.length);
+  } else {
+    scanRange(0, s.length, "", true);
+  }
+  return { strSpans: spans, openTags, proseSpans };
+}
+
+function computeJsStringLiteralSpans(src, isMarkupSfc = false, ext = "") {
+  return computeMarkupRegions(src, isMarkupSfc, ext).strSpans;
+}
+
+function extractStyleRegions(raw, isSvelte = false, isMarkupSfc = false, ext = "") {
+  const BT = String.fromCharCode(96);
   const chars = raw.split("");
   const styleRegions = [];
+  const impRegions = [];
+  const lowerExt = String(ext || "").toLowerCase();
+  const isHtmlOnly = lowerExt === ".html" || lowerExt === ".htm";
+  const isSingleQuotedJsLit = (str) => {
+    const q = str[0];
+    if (q !== '"' && q !== "'") return false;
+    let k = 1;
+    while (k < str.length) {
+      if (str[k] === "\\\\" && k + 1 < str.length) { k += 2; continue; }
+      if (str[k] === q) return k === str.length - 1;
+      k++;
+    }
+    return false;
+  };
 
-  for (const m of raw.matchAll(/<style\\b[^>]*>([\\s\\S]*?)<\\/style>/gi)) {
-    styleRegions.push(stripCssCustomPropDefs(stripTokenBlocks(m[1])));
-    maskRange(chars, m.index, m.index + m[0].length);
+  const rawRegions = computeMarkupRegions(raw, isMarkupSfc, ext);
+  const inRawJsStr = (idx) => rawRegions.strSpans.some(([s0, e0]) => idx >= s0 && idx < e0);
+  const inRawProse = (idx) => rawRegions.proseSpans.some(([s0, e0]) => idx >= s0 && idx < e0);
+  const findOpenStyleTagEnd = (src, tagStart) => {
+    let k = tagStart + 6;
+    let q = null;
+    while (k < src.length) {
+      const c = src[k];
+      if (q) {
+        if (c === q) q = null;
+        k++;
+        continue;
+      }
+      if (c === '"' || c === "'") { q = c; k++; continue; }
+      if (isSvelte && c === "{") {
+        const be = findBalancedBraceEnd(src, k);
+        if (be !== -1) { k = be + 1; continue; }
+      }
+      if (c === ">") {
+        let p = k - 1;
+        while (p > tagStart && /\\s/.test(src[p])) p--;
+        return { tagEnd: k + 1, selfClosing: src[p] === "/" };
+      }
+      if (c === "<") return null;
+      k++;
+    }
+    return null;
+  };
+  const openStyleRe = isHtmlOnly ? /<style(?=[\\s>/])/gi : /<style(?=[\\s>/])/g;
+  let osm;
+  while ((osm = openStyleRe.exec(raw)) !== null) {
+    if (inRawJsStr(osm.index) || inRawProse(osm.index)) {
+      openStyleRe.lastIndex = osm.index + 6;
+      continue;
+    }
+    const openInfo = findOpenStyleTagEnd(raw, osm.index);
+    if (!openInfo) continue;
+    if (openInfo.selfClosing) {
+      maskRange(chars, osm.index, openInfo.tagEnd);
+      openStyleRe.lastIndex = openInfo.tagEnd;
+      continue;
+    }
+    const bodyStart = openInfo.tagEnd;
+    const openTagRaw = raw.slice(osm.index, bodyStart);
+    const isScssTag = /\\blang\\s*=\\s*["']s[ca]ss["']/i.test(openTagRaw);
+    const isJsxTag = /\\bjsx\\b/i.test(openTagRaw);
+    const isJsxStyleExpr = isJsxTag || (!isMarkupSfc && /^\\s*\\{/.test(raw.slice(bodyStart, bodyStart + 64)));
+    const closeInfo = findStyleTagClose(raw, bodyStart, isScssTag, isJsxStyleExpr, !isHtmlOnly);
+    if (!closeInfo) continue;
+    let inner = raw.slice(bodyStart, closeInfo.closeStart);
+    let fromTpl = false;
+    if (isJsxStyleExpr) {
+      const trimmed = inner.trim();
+      if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
+        const unwrapped = trimmed.slice(1, -1).trim();
+        if (unwrapped.startsWith(BT) && findTemplateLiteralEnd(unwrapped, 0) === unwrapped.length - 1) {
+          fromTpl = true;
+          inner = unwrapped.slice(1, -1);
+        } else if (isSingleQuotedJsLit(unwrapped)) {
+          inner = unwrapped.slice(1, -1);
+        } else {
+          inner = extractJsStringLiterals(unwrapped);
+          fromTpl = false;
+        }
+      }
+    }
+    const strippedBlk = stripTokenBlocks(inner, isScssTag || fromTpl, fromTpl);
+    const nonVarBlk = stripCssCustomPropDefs(strippedBlk, false, fromTpl);
+    const maskedBlk = fromTpl
+      ? extractColorsFromTplCss(maskCssNonColorHashes(nonVarBlk, true))
+      : maskCssNonColorHashes(maskCssQuotedStrings(nonVarBlk), false);
+    styleRegions.push(maskedBlk);
+    impRegions.push(fromTpl ? extractImportantFromTplCss(nonVarBlk) : maskCssQuotedStrings(nonVarBlk));
+    maskRange(chars, osm.index, closeInfo.closeEnd);
+    openStyleRe.lastIndex = closeInfo.closeEnd;
   }
 
-  for (const m of raw.matchAll(/(?:styled\\.[a-zA-Z0-9_]+|styled\\([^)]+\\)|css)\\s*\`([\\s\\S]*?)\`/g)) {
-    styleRegions.push(stripCssCustomPropDefs(stripTokenBlocks(m[1])));
-    maskRange(chars, m.index, m.index + m[0].length);
+  const afterStyleTags = chars.join("");
+  const markupRegions = computeMarkupRegions(afterStyleTags, isMarkupSfc, ext);
+  const inJsStr = (idx) => markupRegions.strSpans.some(([s0, e0]) => idx >= s0 && idx < e0);
+  const inProse = (idx) => markupRegions.proseSpans.some(([s0, e0]) => idx >= s0 && idx < e0);
+  const inRealOpenTagAttrPos = (idx) =>
+    markupRegions.openTags.some(
+      (t) =>
+        idx > t.start &&
+        idx < t.end &&
+        !t.attrStrSpans.some(([as, ae]) => idx >= as && idx < ae) &&
+        !t.exprSpans.some(([es, ee]) => idx >= es && idx < ee)
+    );
+  let taggedCursor = 0;
+  for (const m of afterStyleTags.matchAll(/\\b(?:styled(?:\\.[a-zA-Z0-9_]+|\\()|(?:css|createGlobalStyle|keyframes)\\b)/g)) {
+    if (m.index < taggedCursor || inJsStr(m.index) || inProse(m.index)) continue;
+    let pos = m.index + m[0].length;
+    if (m[0] === "styled(") {
+      const pEnd = findBalancedParenEnd(afterStyleTags, pos - 1);
+      if (pEnd === -1) continue;
+      pos = pEnd + 1;
+    }
+    while (true) {
+      const saved = pos;
+      while (pos < afterStyleTags.length && /\\s/.test(afterStyleTags[pos])) pos++;
+      const cm = /^\\.(?:attrs|withConfig)\\b/.exec(afterStyleTags.slice(pos, pos + 20));
+      if (!cm) {
+        pos = saved;
+        break;
+      }
+      pos += cm[0].length;
+      const afterCGen = skipOptionalTsGeneric(afterStyleTags, pos);
+      if (afterCGen === -1) {
+        pos = saved;
+        break;
+      }
+      pos = afterCGen;
+      if (afterStyleTags[pos] !== "(") {
+        pos = saved;
+        break;
+      }
+      const cpEnd = findBalancedParenEnd(afterStyleTags, pos);
+      if (cpEnd === -1) {
+        pos = saved;
+        break;
+      }
+      pos = cpEnd + 1;
+    }
+    const afterGen = skipOptionalTsGeneric(afterStyleTags, pos);
+    if (afterGen === -1 || afterStyleTags[afterGen] !== BT) continue;
+    const btEnd = findTemplateLiteralEnd(afterStyleTags, afterGen);
+    if (btEnd === -1) continue;
+    const innerCss = afterStyleTags.slice(afterGen + 1, btEnd);
+    const strippedTpl = stripTokenBlocks(innerCss, true, true);
+    const nonVarTpl = stripCssCustomPropDefs(strippedTpl, false, true);
+    styleRegions.push(extractColorsFromTplCss(maskCssNonColorHashes(nonVarTpl, true)));
+    impRegions.push(extractImportantFromTplCss(nonVarTpl));
+    maskRange(chars, m.index, btEnd + 1);
+    taggedCursor = btEnd + 1;
   }
 
-  for (const m of raw.matchAll(/\\bstyle\\s*=\\s*\\{\\{/g)) {
-    const firstBrace = raw.indexOf("{", m.index);
-    const endBrace = findBalancedBraceEnd(raw, firstBrace);
-    if (endBrace !== -1) {
-      styleRegions.push(stripCssCustomPropDefs(raw.slice(firstBrace + 2, Math.max(firstBrace + 2, endBrace - 1))));
+  const afterStyled = chars.join("");
+  for (const m of afterStyled.matchAll(/(?<![-\\w])style\\s*=\\s*\\{/g)) {
+    if (inJsStr(m.index) || !inRealOpenTagAttrPos(m.index)) continue;
+    const firstBrace = afterStyled.indexOf("{", m.index);
+    const endBrace = findBalancedBraceEnd(afterStyled, firstBrace);
+    if (firstBrace !== -1 && endBrace !== -1) {
+      const innerRaw = afterStyled.slice(firstBrace + 1, endBrace);
+      const strippedStyle = isSvelte
+        ? stripSvelteCssPropDecls(innerRaw)
+        : lowerExt === ".astro"
+        ? stripCssCustomPropDefs(stripSvelteCssPropDecls(innerRaw), true)
+        : stripCssCustomPropDefs(stripComments(innerRaw, false, true), true);
+      styleRegions.push(maskCssUrls(extractJsStringLiterals(strippedStyle)));
+      impRegions.push(maskCssQuotedStrings(extractJsStringLiterals(strippedStyle)));
       maskRange(chars, m.index, endBrace + 1);
     }
   }
 
+  const findContainingOpenTag = (mStart) =>
+    markupRegions.openTags.find(
+      (t) =>
+        mStart > t.start &&
+        mStart < t.end &&
+        !t.attrStrSpans.some(([as, ae]) => mStart >= as && mStart < ae) &&
+        !t.exprSpans.some(([es, ee]) => mStart >= es && mStart < ee)
+    );
+
+  if (isSvelte) {
+    const afterStyledSvelte = chars.join("");
+    const svelteDirRe = /(?<![-\\w])style:([-\\w]+)(\\|important)?(?:\\s*=\\s*)?/g;
+    let m;
+    while ((m = svelteDirRe.exec(afterStyledSvelte)) !== null) {
+      if (inJsStr(m.index)) continue;
+      const propName = m[1];
+      const hasImpMod = Boolean(m[2]);
+      const hasAssign = m[0].includes("=");
+      const tag = findContainingOpenTag(m.index);
+      if (!tag) {
+        svelteDirRe.lastIndex = m.index + 6;
+        continue;
+      }
+      let endIdx = m.index + m[0].length;
+      let rawVal = "";
+      let isQuoted = false;
+      if (hasAssign) {
+        const valPos = m.index + m[0].length;
+        const nextCh = afterStyledSvelte[valPos];
+        if (nextCh === '"' || nextCh === "'") {
+          const sp = tag.attrStrSpans.find(([as]) => as === valPos);
+          if (!sp) {
+            svelteDirRe.lastIndex = m.index + 6;
+            continue;
+          }
+          isQuoted = true;
+          rawVal = afterStyledSvelte.slice(sp[0] + 1, sp[1] - 1);
+          endIdx = sp[1];
+        } else if (nextCh === "{") {
+          const endBrace = findBalancedBraceEnd(afterStyledSvelte, valPos);
+          if (endBrace === -1) continue;
+          endIdx = endBrace + 1;
+          rawVal = afterStyledSvelte.slice(valPos + 1, endBrace);
+        } else {
+          svelteDirRe.lastIndex = m.index + 6;
+          continue;
+        }
+      }
+      if (!propName.startsWith("--")) {
+        if (!hasAssign) {
+          if (hasImpMod) impRegions.push(propName + ": var(--_) !important;");
+        } else {
+          const strippedDir = !isQuoted
+            ? extractJsStringLiterals(stripComments(rawVal, false, true, true))
+            : rawVal.includes("{")
+              ? extractColorsFromSvelteQuoted(stripSvelteQuotedStyleForColors(rawVal))
+              : maskCssQuotedStrings(stripComments(rawVal, true, false, false));
+          styleRegions.push(propName + ": " + maskCssUrls(strippedDir) + ";");
+          const impDir = !isQuoted
+            ? maskCssQuotedStrings(extractJsStringLiterals(stripComments(rawVal, false, true, true)))
+            : rawVal.includes("{")
+              ? extractImportantFromSvelteQuoted(stripSvelteQuotedStyleForColors(rawVal))
+              : strippedDir;
+          impRegions.push(propName + ": " + impDir + (hasImpMod ? " !important" : "") + ";");
+        }
+      }
+      maskRange(chars, m.index, endIdx);
+      svelteDirRe.lastIndex = endIdx;
+    }
+  }
+
   const afterJsx = chars.join("");
-  for (const m of afterJsx.matchAll(/\\bstyle\\s*=\\s*(["'])([\\s\\S]*?)\\1/g)) {
-    styleRegions.push(stripCssCustomPropDefs(m[2]));
-    maskRange(chars, m.index, m.index + m[0].length);
+  const styleAttrRe = /(?<![-\\w])style\\s*=\\s*(?=["'])/g;
+  let sm;
+  while ((sm = styleAttrRe.exec(afterJsx)) !== null) {
+    const valPos = sm.index + sm[0].length;
+    const tag = findContainingOpenTag(sm.index);
+    const sp = tag ? tag.attrStrSpans.find(([as]) => as === valPos) : null;
+    if (inJsStr(sm.index) || !sp) {
+      styleAttrRe.lastIndex = sm.index + 5;
+      continue;
+    }
+    const matchEnd = sp[1];
+    const attrCss = afterJsx.slice(sp[0] + 1, sp[1] - 1);
+    const isColonBound = sm.index > 0 && afterJsx[sm.index - 1] === ":";
+    const trimmedAttr = attrCss.trim();
+    const isSingleBracedObj =
+      trimmedAttr.startsWith("{") && findBalancedBraceEnd(trimmedAttr, 0) === trimmedAttr.length - 1;
+    const isBoundObj = isColonBound || (!isSvelte && isSingleBracedObj);
+    const strippedAttr = isBoundObj
+      ? stripSvelteCssPropDecls(stripCssCustomPropDefs(stripComments(attrCss, false, true, true), true, true))
+      : attrCss.includes("{")
+        ? stripStaticCssInSvelteQuoted(attrCss)
+        : stripCssCustomPropDefs(maskCssQuotedStrings(stripComments(attrCss, true, false, false)), false, false);
+    const colorAttr = isBoundObj
+      ? extractJsStringLiterals(strippedAttr)
+      : attrCss.includes("{")
+        ? extractColorsFromSvelteQuoted(strippedAttr)
+        : strippedAttr;
+    styleRegions.push(maskCssUrls(colorAttr));
+    if (isBoundObj) {
+      impRegions.push(maskCssQuotedStrings(extractJsStringLiterals(strippedAttr)));
+    } else if (attrCss.includes("{")) {
+      impRegions.push(extractImportantFromSvelteQuoted(strippedAttr));
+    } else {
+      impRegions.push(strippedAttr);
+    }
+    maskRange(chars, sm.index, matchEnd);
+    styleAttrRe.lastIndex = matchEnd;
   }
 
   return {
     styleSurface: styleRegions.join("\\n"),
+    importantSurface: impRegions.join("\\n"),
     remainder: chars.join(""),
   };
 }
 
-function walk(dir, root, out = []) {
+const EXCLUDED_REL_RE =
+  /(\\.test\\.|\\.spec\\.|__tests__\\/|(^|\\/)(?:\\.git|node_modules|dist|build|\\.next|\\.nuxt|\\.svelte-kit|\\.turbo|\\.vite|coverage|draft|audit-output|dsaf-audit-output|playwright-report|test-results|_site|src-tauri|\\.vercel-static|\\.storybook-public|__pycache__|\\.venv|tests?|fixtures|__fixtures__|_audit|_vendor|storybook-static)\\/|\\.min\\.|\\.bundle\\.|(^|\\/)(?:public\\/assets|static\\/chunks|vendor|ios\\/App\\/App\\/public|android\\/app\\/src\\/main\\/assets\\/public)\\/)/i;
+
+const hasSkippedDirSegment = (p) => String(p || "").split(/[\\\\/]+/).filter(Boolean).some((seg) => SKIP.has(seg));
+
+function safeReal(p) {
+  try {
+    return realpathSync(p);
+  } catch {
+    return resolve(p);
+  }
+}
+
+function findNearestRepoRoot(startDir) {
+  let cur = resolve(startDir);
+  while (true) {
+    if (existsSync(join(cur, ".git")) || existsSync(join(cur, "package.json"))) return safeReal(cur);
+    const parent = dirname(cur);
+    if (parent === cur) return null;
+    cur = parent;
+  }
+}
+
+function isRelWithin(relPath) {
+  return relPath === "" || (relPath !== ".." && !relPath.startsWith("../") && !isAbsolute(relPath));
+}
+
+function walk(dir, root, out = [], seenDirs = new Set(), realRootDir = safeReal(root)) {
+  const realDir = safeReal(dir);
+  seenDirs.add(realDir);
   for (const e of readdirSync(dir, { withFileTypes: true })) {
-    if (SKIP.has(e.name) || (e.isDirectory() && e.name.startsWith("."))) continue;
+    if (SKIP.has(e.name)) continue;
     const full = join(dir, e.name);
-    if (e.isDirectory()) walk(full, root, out);
-    else if (EXTS.has(extname(e.name).toLowerCase())) {
+    let st;
+    let realT;
+    if (e.isSymbolicLink()) {
+      try {
+        st = statSync(full);
+        realT = realpathSync(full);
+      } catch {
+        continue;
+      }
+    } else {
+      st = e.isDirectory() ? { isDirectory: () => true, isFile: () => false } : e.isFile() ? { isDirectory: () => false, isFile: () => true } : null;
+      if (!st) {
+        try {
+          st = statSync(full);
+        } catch {
+          continue;
+        }
+      }
+      realT = safeReal(full);
+    }
+    const isDir = st.isDirectory();
+    if (isDir && e.name.startsWith(".")) continue;
+    if (SKIP.has(basename(realT))) continue;
+    const realRel = relative(realRootDir, realT).replace(/\\\\/g, "/");
+    if (isRelWithin(realRel)) {
+      if (isDir) {
+        if (realRel && (hasSkippedDirSegment(realRel) || EXCLUDED_REL_RE.test(realRel + "/"))) continue;
+      } else {
+        const dirPart = dirname(realRel);
+        if (EXCLUDED_REL_RE.test(realRel) || (dirPart !== "." && hasSkippedDirSegment(dirPart))) continue;
+      }
+    } else {
+      const commonSuffix = realRel.replace(/^(?:\\.\\.\\/)+/, "");
+      const extRepo = findNearestRepoRoot(realT);
+      const extRepoRel = extRepo ? relative(extRepo, realT).replace(/\\\\/g, "/") : "";
+      const extCheckRel =
+        extRepo && isRelWithin(extRepoRel) && (extRepoRel === "" || extRepoRel.length < commonSuffix.length)
+          ? extRepoRel
+          : commonSuffix;
+      if (isDir) {
+        if (extCheckRel && (hasSkippedDirSegment(extCheckRel) || EXCLUDED_REL_RE.test(extCheckRel + "/"))) continue;
+      } else {
+        const extDirPart = dirname(extCheckRel);
+        if (EXCLUDED_REL_RE.test(extCheckRel) || (extDirPart !== "." && hasSkippedDirSegment(extDirPart))) {
+          continue;
+        }
+      }
+    }
+    if (isDir) {
+      if (seenDirs.has(realT)) continue;
+      walk(full, root, out, seenDirs, realRootDir);
+    } else if (st.isFile() && EXTS.has(extname(e.name).toLowerCase())) {
       const rel = relative(root, full).replace(/\\\\/g, "/");
-      if (
-        !/(\\.test\\.|\\.spec\\.|__tests__\\/|(^|\\/)(?:tests?|fixtures)\\/|\\.min\\.|\\.bundle\\.|(^|\\/)(?:public\\/assets|static\\/chunks|vendor|ios\\/App\\/App\\/public|android\\/app\\/src\\/main\\/assets\\/public)\\/)/i.test(
-          rel
-        )
-      ) {
+      if (!EXCLUDED_REL_RE.test(rel)) {
         out.push({ rel, full });
       }
     }
@@ -178,11 +4369,188 @@ function walk(dir, root, out = []) {
   return out;
 }
 
-function parseOptionalCap(name) {
-  const val = process.env[name];
-  if (val === undefined || val === "") return null;
-  const n = Number(val);
-  return Number.isFinite(n) ? n : null;
+function stripHtmlSource(rawHtml, isSvelte = false, isVue = false, isAstro = false) {
+  const out = [];
+  let i = 0;
+  const len = rawHtml.length;
+  const isBraceMarkup = isSvelte || isAstro;
+  const isHtmlOnlySrc = !isSvelte && !isVue && !isAstro;
+  if (isAstro) {
+    const fm = splitAstroFrontmatter(rawHtml);
+    if (fm) {
+      out.push(rawHtml.slice(0, fm.openEnd));
+      out.push(stripComments(rawHtml.slice(fm.openEnd, fm.closeStart), false, true, true));
+      out.push(rawHtml.slice(fm.closeStart, fm.closeEnd));
+      i = fm.closeEnd;
+    }
+  }
+  while (i < len) {
+    if (isBraceMarkup && rawHtml[i] === "{") {
+      const bEnd = findBalancedBraceEnd(rawHtml, i);
+      if (bEnd !== -1) {
+        out.push("{" + stripComments(rawHtml.slice(i + 1, bEnd), false, true, true) + "}");
+        i = bEnd + 1;
+        continue;
+      }
+    }
+    if (isVue && rawHtml.startsWith("{{", i)) {
+      const bEnd = findBalancedBraceEnd(rawHtml, i);
+      if (bEnd >= i + 3 && rawHtml[bEnd - 1] === "}") {
+        out.push("{{" + stripComments(rawHtml.slice(i + 2, bEnd - 1), false, true) + "}}");
+        i = bEnd + 1;
+        continue;
+      }
+    }
+    if (rawHtml.startsWith("<!--", i)) {
+      const end = rawHtml.indexOf("-->", i + 4);
+      const stop = end === -1 ? len : end + 3;
+      for (let k = i; k < stop; k++) out.push(rawHtml[k] === "\\n" ? "\\n" : " ");
+      i = stop;
+      continue;
+    }
+    if (rawHtml[i] === "<" && rawHtml[i + 1] === "/") {
+      const closeM = /^<\\/[A-Za-z][A-Za-z0-9_.:-]*\\s*>/.exec(rawHtml.slice(i, i + 80));
+      if (closeM) {
+        out.push(closeM[0]);
+        i += closeM[0].length;
+        continue;
+      }
+      out.push("<");
+      i++;
+      continue;
+    }
+    if (rawHtml[i] === "<" && /[A-Za-z]/.test(rawHtml[i + 1] || "")) {
+      const candOpenM = /^<([A-Za-z][A-Za-z0-9_.:-]*)(?=[\\s/>])/.exec(rawHtml.slice(i, i + 64));
+      if (!candOpenM) {
+        out.push("<");
+        i++;
+        continue;
+      }
+      const isScript = candOpenM[1].toLowerCase() === "script";
+      const isStyleTag = isHtmlOnlySrc ? candOpenM[1].toLowerCase() === "style" : candOpenM[1] === "style";
+      let j = i + candOpenM[0].length;
+      let q = null;
+      let inBrackQ = false;
+      let brackDepth = 0;
+      let sawEq = false;
+      let validTag = false;
+      const tagParts = [candOpenM[0]];
+      let segStart = j;
+      while (j < len) {
+        const c = rawHtml[j];
+        if (q) {
+          if (inBrackQ && c === "\\\\" && j + 1 < len) { j += 2; continue; }
+          if (isBraceMarkup && !inBrackQ && c === "{") {
+            const bEnd = findBalancedBraceEnd(rawHtml, j);
+            if (bEnd !== -1) {
+              tagParts.push(rawHtml.slice(segStart, j));
+              tagParts.push("{" + stripComments(rawHtml.slice(j + 1, bEnd), false, true, true) + "}");
+              j = bEnd + 1;
+              segStart = j;
+              continue;
+            }
+          }
+          if (c === q) {
+            q = null;
+            inBrackQ = false;
+          }
+        } else if (c === "[") {
+          brackDepth++;
+          sawEq = false;
+        } else if (c === "]") {
+          brackDepth = Math.max(0, brackDepth - 1);
+          sawEq = false;
+        } else if (c === "=" && brackDepth === 0) {
+          sawEq = true;
+        } else if (c === '"' || c === "'") {
+          if (brackDepth > 0) {
+            q = c;
+            inBrackQ = true;
+            sawEq = false;
+          } else if (!sawEq) {
+            validTag = false;
+            break;
+          } else {
+            q = c;
+            inBrackQ = false;
+            sawEq = false;
+          }
+        } else if (isBraceMarkup && brackDepth === 0 && c === "{") {
+          const bEnd = findBalancedBraceEnd(rawHtml, j);
+          if (bEnd !== -1) {
+            tagParts.push(rawHtml.slice(segStart, j));
+            tagParts.push("{" + stripComments(rawHtml.slice(j + 1, bEnd), false, true, true) + "}");
+            sawEq = false;
+            j = bEnd + 1;
+            segStart = j;
+            continue;
+          }
+        } else if (c === "<" && brackDepth === 0) {
+          validTag = false;
+          break;
+        } else if (c === ">" && brackDepth === 0) {
+          validTag = true;
+          j++;
+          break;
+        } else if (!/\\s/.test(c)) {
+          sawEq = false;
+        }
+        j++;
+      }
+      if (!validTag) {
+        out.push("<");
+        i++;
+        continue;
+      }
+      tagParts.push(rawHtml.slice(segStart, j));
+      const openTag = tagParts.join("");
+      const isSelfClosing = /\\/\\s*>$/.test(openTag);
+      out.push(openTag);
+      i = j;
+      if (!isSelfClosing && (isScript || isStyleTag)) {
+        let bodyEnd = len;
+        let closeText = "";
+        let nextPos = len;
+        if (isScript) {
+          const closeRe = /<\\/script\\s*>/gi;
+          closeRe.lastIndex = i;
+          const cm = closeRe.exec(rawHtml);
+          if (cm) {
+            bodyEnd = cm.index;
+            closeText = cm[0];
+            nextPos = cm.index + cm[0].length;
+          }
+        } else {
+          const isScssTag = /\\blang\\s*=\\s*["']s[ca]ss["']/i.test(openTag);
+          const closeInfo = findStyleTagClose(rawHtml, i, isScssTag, false, !isHtmlOnlySrc);
+          if (closeInfo) {
+            bodyEnd = closeInfo.closeStart;
+            closeText = closeInfo.closeText;
+            nextPos = closeInfo.closeEnd;
+          }
+        }
+        const body = rawHtml.slice(i, bodyEnd);
+        if (isScript) {
+          const attrs = openTag.replace(/^<script\\b/i, "").replace(/>$/, "");
+          if (/\\btype\\s*=\\s*["'](?:application\\/(?:ld\\+)?json|importmap)["']/i.test(attrs)) {
+            out.push(body);
+          } else {
+            out.push(stripComments(body, false, true));
+          }
+        } else {
+          out.push(body);
+        }
+        if (closeText) {
+          out.push(closeText);
+        }
+        i = nextPos;
+      }
+      continue;
+    }
+    out.push(rawHtml[i]);
+    i++;
+  }
+  return out.join("");
 }
 
 const root = resolve(process.argv[2] || ".");
@@ -191,11 +4559,22 @@ if (!existsSync(root)) {
   process.exit(2);
 }
 
-const maxColors = Number(process.env.DSAF_MAX_HARDCODED_COLORS ?? 0);
-const maxImportant = Number(process.env.DSAF_MAX_IMPORTANT ?? 0);
-const maxTwArbitrary = Number(process.env.DSAF_MAX_TW_ARBITRARY ?? 0);
-const maxSvgColors = parseOptionalCap("DSAF_MAX_SVG_COLORS");
-const maxSwatchColors = parseOptionalCap("DSAF_MAX_SWATCH_COLORS");
+function parseNumCap(name, fallback = null) {
+  const raw = process.env[name];
+  if (raw === undefined || String(raw).trim() === "") return fallback;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 0) {
+    console.error("Invalid numeric cap for " + name + ": " + raw);
+    process.exit(2);
+  }
+  return n;
+}
+
+const maxColors = parseNumCap("DSAF_MAX_HARDCODED_COLORS", 0);
+const maxImportant = parseNumCap("DSAF_MAX_IMPORTANT", 0);
+const maxTwArbitrary = parseNumCap("DSAF_MAX_TW_ARBITRARY", 0);
+const maxSvgColors = parseNumCap("DSAF_MAX_SVG_COLORS", null);
+const maxSwatchColors = parseNumCap("DSAF_MAX_SWATCH_COLORS", null);
 
 let styleColors = 0;
 let important = 0;
@@ -203,45 +4582,263 @@ let twArbitrary = 0;
 let svgColors = 0;
 let swatchColors = 0;
 const findings = [];
-const targets = statSync(root).isFile() ? [{ rel: basename(root), full: root }] : walk(root, root);
+
+let rootLst = null;
+try {
+  rootLst = lstatSync(root);
+} catch (err) {
+  if (err?.code === "ENOENT") {
+    console.error("Error: target path not found: " + root);
+    process.exit(2);
+  }
+  throw err;
+}
+let targets = [];
+if (rootLst.isSymbolicLink() && !existsSync(root)) {
+  targets = [];
+} else {
+  const realRoot = safeReal(root);
+  const realCwd = safeReal(process.cwd());
+  const rawArgRel = relative(realCwd, realRoot).replace(/\\\\/g, "/");
+  const insideCwd = isRelWithin(rawArgRel);
+  const rootSt = statSync(root);
+  if (rootSt.isFile()) {
+    const bName = basename(root);
+    let skipFile = !EXTS.has(extname(bName).toLowerCase());
+    if (!skipFile) {
+      if (insideCwd && rawArgRel) {
+        const dPart = dirname(rawArgRel);
+        skipFile = EXCLUDED_REL_RE.test(rawArgRel) || (dPart !== "." && hasSkippedDirSegment(dPart));
+      } else {
+        const repoR = findNearestRepoRoot(dirname(realRoot));
+        const relR = repoR ? relative(repoR, realRoot).replace(/\\\\/g, "/") : "";
+        if (repoR && relR && isRelWithin(relR)) {
+          const dPart = dirname(relR);
+          skipFile = EXCLUDED_REL_RE.test(relR) || (dPart !== "." && hasSkippedDirSegment(dPart));
+        } else {
+          const parentB = basename(dirname(realRoot));
+          skipFile = EXCLUDED_REL_RE.test(bName) || SKIP.has(parentB) || EXCLUDED_REL_RE.test(parentB + "/");
+        }
+      }
+    }
+    if (!skipFile) {
+      targets = [{ rel: bName, full: root }];
+    }
+  } else if (rootSt.isDirectory()) {
+    let skipDir = false;
+    if (insideCwd) {
+      skipDir = Boolean(rawArgRel) && (hasSkippedDirSegment(rawArgRel) || EXCLUDED_REL_RE.test(rawArgRel + "/"));
+    } else {
+      const repoR = findNearestRepoRoot(realRoot);
+      const relR = repoR ? relative(repoR, realRoot).replace(/\\\\/g, "/") : "";
+      if (repoR && relR && isRelWithin(relR)) {
+        skipDir = hasSkippedDirSegment(relR) || EXCLUDED_REL_RE.test(relR + "/");
+      } else {
+        const bReal = basename(realRoot);
+        skipDir = SKIP.has(bReal) || (!repoR && EXCLUDED_REL_RE.test(bReal + "/"));
+      }
+    }
+    if (!skipDir) {
+      targets = walk(root, root);
+    }
+  }
+}
 
 for (const { rel, full } of targets) {
-  const raw = readFileSync(full, "utf8");
+  const raw = readFileSync(full, "utf8").replace(/\\r\\n?/g, "\\n");
   if (raw.length > 100_000 && raw.split("\\n").length < 5) continue;
-  const isStyle = rel.endsWith(".css") || rel.endsWith(".scss");
+  const lowerRel = rel.toLowerCase();
+  const fileExt = extname(lowerRel);
+  const isStyle = lowerRel.endsWith(".css") || lowerRel.endsWith(".scss");
 
   let sHits = 0;
   let iHits = 0;
   let svgHits = 0;
   let swHits = 0;
 
-  if (isStyle) {
-    const surface = stripTokenBlocks(raw);
-    const nonVars = stripCssCustomPropDefs(surface);
-    sHits = (nonVars.match(HEX_RE) || []).length;
-    iHits = (surface.match(/!important\\b/g) || []).length;
-  } else {
-    const { styleSurface, remainder } = extractStyleRegions(raw);
-    const nonTwStyle = styleSurface.replace(/-\\[#[^\\]\\s]+\\]/g, "");
-    sHits = (nonTwStyle.match(HEX_RE) || []).length;
-    iHits = (raw.replace(/\\/\\*[\\s\\S]*?\\*\\//g, "").match(/!important\\b/g) || []).length;
+function extractTailwindClassAnalysis(remainder, styleSurface, isMarkupSfc = false, ext = "") {
+  const s = String(remainder || "");
+  const regions = computeMarkupRegions(s, isMarkupSfc, ext);
+  const inProse = (idx) => regions.proseSpans.some(([s0, e0]) => idx >= s0 && idx < e0);
+  const inJsStr = (idx) => regions.strSpans.some(([s0, e0]) => idx >= s0 && idx < e0);
+  const lowerExt = String(ext || "").toLowerCase();
+  const isSvelte = lowerExt === ".svelte";
+  const isAstro = lowerExt === ".astro";
+  const twParts = [];
+  const maskRanges = [];
+  const coveredRanges = [];
 
-    const noTwRemainder = remainder.replace(/-\\[#[^\\]\\s]+\\]/g, "");
+  for (const m of maskCssQuotedStrings(styleSurface).matchAll(/@apply\\b[^;{}]+/g)) {
+    twParts.push(m[0]);
+  }
+
+  for (const t of regions.openTags) {
+    const tagSlice = s.slice(t.start, t.end);
+    const inTop = (absIdx) =>
+      !t.attrStrSpans.some(([as, ae]) => absIdx >= as && absIdx < ae) &&
+      !t.exprSpans.some(([es, ee]) => absIdx >= es && absIdx < ee);
+
+    for (const m of tagSlice.matchAll(/(?<=[\\s}"'\\/])(className|class|:class|v-bind:class|class:list)\\s*=\\s*/g)) {
+      const absIdx = t.start + m.index;
+      if (!inTop(absIdx)) continue;
+      const attrName = m[1];
+      const valPos = absIdx + m[0].length;
+      const sp = t.attrStrSpans.find(([as]) => as === valPos);
+      if (sp) {
+        maskRanges.push([sp[0] + 1, sp[1] - 1]);
+        coveredRanges.push([sp[0], sp[1]]);
+        const inner = s.slice(sp[0] + 1, sp[1] - 1);
+        if (attrName === ":class" || attrName === "v-bind:class") {
+          twParts.push(extractJsStringLiterals(inner));
+        } else if ((isSvelte || isAstro) && inner.includes("{")) {
+          let p = 0;
+          let last = 0;
+          while (p < inner.length) {
+            if (inner[p] === "{") {
+              const eb = findBalancedBraceEnd(inner, p);
+              if (eb !== -1) {
+                twParts.push(inner.slice(last, p));
+                twParts.push(extractJsStringLiterals(inner.slice(p + 1, eb)));
+                p = eb + 1;
+                last = p;
+                continue;
+              }
+            }
+            p++;
+          }
+          twParts.push(inner.slice(last));
+        } else {
+          twParts.push(inner);
+        }
+        continue;
+      }
+      const ex = t.exprSpans.find(([es]) => es === valPos + 1);
+      if (ex) {
+        maskRanges.push([ex[0], ex[1]]);
+        coveredRanges.push([ex[0], ex[1]]);
+        twParts.push(extractJsStringLiterals(s.slice(ex[0], ex[1])));
+      }
+    }
+
+    if (isSvelte) {
+      for (const m of tagSlice.matchAll(/(?<=[\\s}"'\\/])class:/g)) {
+        const absIdx = t.start + m.index;
+        if (!inTop(absIdx)) continue;
+        let p = m.index + m[0].length;
+        let bd = 0;
+        let q = null;
+        while (p < tagSlice.length) {
+          const ch = tagSlice[p];
+          if (q) {
+            if (ch === "\\\\" && p + 1 < tagSlice.length) { p += 2; continue; }
+            if (ch === q) q = null;
+            p++;
+            continue;
+          }
+          if (ch === '"' || ch === "'") { q = ch; p++; continue; }
+          if (ch === "[") { bd++; p++; continue; }
+          if (ch === "]") { bd = Math.max(0, bd - 1); p++; continue; }
+          if (bd === 0 && (/\\s/.test(ch) || ch === "=" || ch === ">" || (ch === "/" && tagSlice[p + 1] === ">"))) break;
+          p++;
+        }
+        const clsName = tagSlice.slice(m.index + m[0].length, p);
+        if (clsName && clsName !== "list") {
+          twParts.push(clsName);
+          maskRanges.push([absIdx + 6, absIdx + 6 + clsName.length]);
+        }
+      }
+    }
+  }
+
+  for (const m of s.matchAll(/(?<![a-zA-Z0-9_$.])(?:cn|clsx|classNames|classnames|cx|twMerge|twJoin|cva|tv)\\b/g)) {
+    if (inProse(m.index) || inJsStr(m.index)) continue;
+    if (coveredRanges.some(([cs, ce]) => m.index >= cs && m.index < ce)) continue;
+    let pos = m.index + m[0].length;
+    while (pos < s.length && /\\s/.test(s[pos])) pos++;
+    pos = skipOptionalTsGeneric(s, pos);
+    if (pos === -1) continue;
+    while (pos < s.length && /\\s/.test(s[pos])) pos++;
+    if (s[pos] !== "(") continue;
+    const openP = pos;
+    const closeP = findBalancedParenEnd(s, openP);
+    if (closeP !== -1) {
+      coveredRanges.push([openP, closeP + 1]);
+      maskRanges.push([openP + 1, closeP]);
+      twParts.push(extractJsStringLiterals(s.slice(openP + 1, closeP)));
+    }
+  }
+
+  const stripTwContentVal = (str) =>
+    String(str || "").replace(/(?<=^|[\\s"'\`:])!?content-\\[(?:'[^']*'|"[^"]*"|[^\\]]*)\\]/g, (seg) =>
+      seg.replace(/[^\\n]/g, " ")
+    );
+  const twSurface = stripTwContentVal(twParts.join("\\n"));
+  const maskTwInRemainder = (enabled) => {
+    if (!enabled || maskRanges.length === 0) return s;
+    const out = s.split("");
+    for (const [rs, re] of maskRanges) {
+      const seg = s.slice(rs, re);
+      for (const tm of seg.matchAll(TW_ARB_RE)) {
+        const gStart = rs + tm.index;
+        maskRange(out, gStart, gStart + tm[0].length);
+      }
+    }
+    return out.join("");
+  };
+  return { twSurface, maskTwInRemainder };
+}
+
+if (isStyle) {
+    const surface = stripTokenBlocks(raw, lowerRel.endsWith(".scss"));
+    const nonVars = stripCssCustomPropDefs(surface, false);
+    const nonVarsNoQ = maskCssQuotedStrings(nonVars);
+    const applyParts = [];
+    for (const m of nonVarsNoQ.matchAll(/@apply\\b[^;{}]+/g)) applyParts.push(m[0]);
+    const nonTwCss = ${checkTailwind}
+      ? nonVarsNoQ.replace(/@apply\\b[^;{}]+/g, (seg) => seg.replace(TW_ARB_RE, (t) => t.replace(/[^\\n]/g, " ")))
+      : nonVarsNoQ;
+    sHits = (maskCssNonColorHashes(nonTwCss).match(HEX_RE) || []).length;
+    iHits = (nonVarsNoQ.match(/!\\s*important\\b/gi) || []).length;
+    var twHits = ${checkTailwind} ? (applyParts.join("\\n").match(TW_ARB_RE) || []).length : 0;
+  } else {
+    const isMarkupSfc =
+      lowerRel.endsWith(".html") ||
+      lowerRel.endsWith(".htm") ||
+      lowerRel.endsWith(".vue") ||
+      lowerRel.endsWith(".svelte") ||
+      lowerRel.endsWith(".astro");
+    const cleanRaw = isMarkupSfc
+      ? stripHtmlSource(raw, lowerRel.endsWith(".svelte"), lowerRel.endsWith(".vue"), lowerRel.endsWith(".astro"))
+      : stripComments(raw, false, true);
+    const { styleSurface, importantSurface, remainder } = extractStyleRegions(cleanRaw, lowerRel.endsWith(".svelte"), isMarkupSfc, fileExt);
+    const nonTwStyle = ${checkTailwind}
+      ? styleSurface.replace(/@apply\\b[^;{}]+/g, (seg) => seg.replace(TW_ARB_RE, (t) => t.replace(/[^\\n]/g, " ")))
+      : styleSurface;
+    sHits = (nonTwStyle.match(HEX_RE) || []).length;
+    iHits = (importantSurface.match(/!\\s*important\\b/gi) || []).length;
+
+    const twAnalysis = ${checkTailwind}
+      ? extractTailwindClassAnalysis(remainder, styleSurface, isMarkupSfc, fileExt)
+      : { twSurface: "", maskTwInRemainder: () => remainder };
+    const noTwRemainder = twAnalysis.maskTwInRemainder(${checkTailwind});
     const remChars = noTwRemainder.split("");
-    for (const m of noTwRemainder.matchAll(SVG_BLOCK_RE)) {
-      svgHits += (m[0].match(HEX_RE) || []).length;
-      maskRange(remChars, m.index, m.index + m[0].length);
+    for (const r of findSvgBlockRanges(noTwRemainder, isMarkupSfc, fileExt)) {
+      const seg = noTwRemainder.slice(r.start, r.end);
+      svgHits += (seg.match(HEX_RE) || []).length;
+      maskRange(remChars, r.start, r.end);
     }
     const afterSvgBlocks = remChars.join("");
+    const remJsStrSpans = computeJsStringLiteralSpans(afterSvgBlocks, isMarkupSfc, fileExt);
+    const inRemJsStr = (idx) => remJsStrSpans.some(([s0, e0]) => idx >= s0 && idx < e0);
     for (const m of afterSvgBlocks.matchAll(SVG_PROP_HEX_RE)) {
+      if (inRemJsStr(m.index)) continue;
       svgHits += 1;
       maskRange(remChars, m.index, m.index + m[0].length);
     }
     const afterSvg = remChars.join("");
     swHits = (afterSvg.match(QUOTED_HEX_RE) || []).length;
+    var twHits = ${checkTailwind} ? (twAnalysis.twSurface.match(TW_ARB_RE) || []).length : 0;
   }
-
-  const twHits = ${checkTailwind} ? (raw.match(TW_ARB_RE) || []).length : 0;
 
   styleColors += sHits;
   important += iHits;
@@ -249,7 +4846,13 @@ for (const { rel, full } of targets) {
   svgColors += svgHits;
   swatchColors += swHits;
 
-  if (sHits || iHits || twHits) {
+  if (
+    sHits ||
+    iHits ||
+    twHits ||
+    (maxSvgColors !== null && svgHits > 0) ||
+    (maxSwatchColors !== null && swHits > 0)
+  ) {
     findings.push({
       file: rel,
       styleColors: sHits,
@@ -295,7 +4898,10 @@ on:
   push:
     branches: [main]
 
-  jobs:
+permissions:
+  contents: read
+
+jobs:
   design-discipline:
     runs-on: ubuntu-latest
     steps:
@@ -308,7 +4914,7 @@ on:
           DSAF_MAX_HARDCODED_COLORS: "0"
           DSAF_MAX_IMPORTANT: "0"
           DSAF_MAX_TW_ARBITRARY: "0"
-        run: node .dsaf-guardrails/check-design-discipline.mjs src
+        run: node .dsaf-guardrails/check-design-discipline.mjs .
       # Optional native GitHub Code Scanning SARIF & unused waiver audit:
       # - name: Run DSAF SARIF token & hook audit
       #   run: |
@@ -339,13 +4945,16 @@ function buildAgentsRules(stack, mode) {
 }
 
 export function generateGuardrails({ outDir, stack = "tailwind", mode = "C" }) {
-  const absOut = resolve(outDir);
-  mkdirSync(absOut, { recursive: true });
+  const absOut = assertWritableOutputDir(outDir, "--out");
   const files = [
     { name: "check-design-discipline.mjs", content: buildDisciplineChecker(stack) },
     { name: "dsaf-regression-gate.yml", content: buildWorkflowYml(mode) },
     { name: "AGENTS-dsaf-rules.md", content: buildAgentsRules(stack, mode) },
   ];
+  for (const f of files) {
+    assertWritableOutputFile(join(absOut, f.name), f.name, { rootDir: absOut });
+  }
+  mkdirSync(absOut, { recursive: true });
   for (const f of files) {
     writeFileSync(join(absOut, f.name), f.content, "utf8");
   }
@@ -441,6 +5050,1635 @@ export const Logo = () => (
     const twRun = runGate(checker, appDir);
     assert.equal(twRun.status, 1, "Generated discipline checker must fail on bg-[#ff00aa] p-[13px]");
     assert.match(twRun.stdout, /styleColors=0 \(max 0\).*twArbitrary=2 \(max 0\)/);
+    rmSync(twFile);
+
+    // 6. Round 1 regressions: valid top-level YAML jobs:, descendant theme rules & single-line custom prop + hex caught
+    assert.match(ymlSrc, /^jobs:\n  design-discipline:/m, "Workflow YAML must have top-level jobs: key");
+    assert.doesNotMatch(ymlSrc, /^[ \t]+jobs:/m);
+    const themeDescCss = join(appDir, "theme-desc.css");
+    writeFileSync(themeDescCss, `[data-theme="dark"] .card { background: #ff00aa !important; }\n`);
+    assert.equal(runGate(checker, themeDescCss).status, 1, "Descendant dark theme rules must not bypass checker");
+    const singleLineJsx = join(appDir, "SingleLineJsx.tsx");
+    writeFileSync(singleLineJsx, `export const X = () => <div style={{ "--gap": "8px", backgroundColor: "#ff00aa" }} />;\n`);
+    assert.equal(runGate(checker, singleLineJsx).status, 1, "Single-line JSX style with --var + hex must fail");
+    const spacedJsx = join(appDir, "SpacedJsx.tsx");
+    writeFileSync(spacedJsx, `export const Y = () => <div style={ { backgroundColor: "#ff00aa" } } />;\n`);
+    assert.equal(runGate(checker, spacedJsx).status, 1, "Spaced style={ { ... } } must fail");
+    const commentSafeJsx = join(appDir, "CommentSafe.tsx");
+    writeFileSync(commentSafeJsx, `// color: #ff00aa !important\n/* bg-[#ff00aa] !important */\nexport const Z = () => <div>{String.raw\`ok\`}</div>;\n`);
+    assert.equal(runGate(checker, commentSafeJsx).status, 0, "Comments with !important or tw arbitrary must be ignored");
+    assert.match(strictSvgRun.stdout, /Logo\.tsx:.*svg=2/, "Strict SVG cap must include file breakdown");
+    const badCapRun = runGate(checker, join(appDir, "tokens.css"), { DSAF_MAX_HARDCODED_COLORS: "notanumber" });
+    assert.equal(badCapRun.status, 2, "Invalid numeric env cap must exit 2 instead of silently turning into NaN");
+
+    // 7. Round 2 regressions: JSX apostrophes + HTML <!-- --> comments stripped, excluded single-file & uppercase .CSS
+    const apostropheJsx = join(appDir, "Apostrophe.tsx");
+    writeFileSync(apostropheJsx, `export const A = () => <div><p>Don't use hardcoded colors</p>\n{/* Legacy: bg-[#ff00aa] !important */}</div>;\n`);
+    assert.equal(runGate(checker, apostropheJsx).status, 0, "Apostrophe in JSX text must not disable comment stripping");
+    const htmlCmt = join(appDir, "HtmlComment.html");
+    writeFileSync(htmlCmt, `<div><!-- <span style="color: #ff00aa">old</span> bg-[#ff00aa] !important --></div>\n`);
+    assert.equal(runGate(checker, htmlCmt).status, 0, "HTML <!-- ... --> comments must be stripped cleanly");
+    const testSingle = join(appDir, "Btn.test.tsx");
+    writeFileSync(testSingle, `export const t = <div className="bg-[#ff00aa]" />;\n`);
+    assert.equal(runGate(checker, testSingle).status, 0, "Single-file .test.tsx must obey exclusions");
+    assert.equal(runGate(checker, join(outDir, "AGENTS-dsaf-rules.md")).status, 0, "Non-UI .md target must skip cleanly");
+    const upperCss = join(appDir, "Theme.CSS");
+    writeFileSync(upperCss, `:root { --ok: #ffffff; }\n.ok { color: var(--ok); }\n`);
+    assert.equal(runGate(checker, upperCss).status, 0, "Uppercase .CSS extension must use stylesheet path");
+
+    // 8. Round 3 regressions: no-semi var brace retention, quoted } in :root, #add-btn / url(#fade) IDs,
+    // regex backtick before comment, single-file inside ancestor /test/ directory
+    const r3NoSemi = join(appDir, "no-semi.css");
+    writeFileSync(r3NoSemi, `.card { --gap: 8px }\n.bad { background: #ff00aa; }\n`);
+    assert.equal(runGate(checker, r3NoSemi).status, 1, "Custom prop without trailing semicolon must not swallow next rule's hex");
+    const r3CleanCss = join(appDir, "r3-clean.css");
+    writeFileSync(
+      r3CleanCss,
+      `:root { --icon: "}"; --brand: #1d4ed8; }\n#add-btn { display: flex; }\n.mask { clip-path: url("#fade-mask"); }\n`
+    );
+    assert.equal(runGate(checker, r3CleanCss).status, 0, "Quoted } in :root, #add-btn selector, and url(#fade-mask) must pass");
+    const r3RegexCmt = join(appDir, "RegexBacktick.tsx");
+    writeFileSync(r3RegexCmt, "const RE = /`/;\n/* legacy: bg-[#ff00aa] !important */\nexport const X = () => <div />;\n");
+    assert.equal(runGate(checker, r3RegexCmt).status, 0, "Regex backtick literal must not disable block comment stripping");
+    const ancestorTestApp = join(scratch, "test/app");
+    mkdirSync(join(ancestorTestApp, "src"), { recursive: true });
+    writeFileSync(join(ancestorTestApp, "src/badge.css"), `.badge { background: #ff00aa; }\n`);
+    let ancestorExit = 0;
+    try {
+      execFileSync(process.execPath, [checker, "src/badge.css"], { cwd: ancestorTestApp, stdio: "ignore" });
+    } catch (e) {
+      ancestorExit = e.status ?? 1;
+    }
+    assert.equal(ancestorExit, 1, "Single file inside ancestor /test/ directory must still be checked relative to CWD");
+
+    // 9. Round 4 regressions: BEM --modifier:pseudo selector, JSX style={{ ... }} nested conditional brace, SCSS // comments
+    const r4Bem = join(appDir, "r4-bem.css");
+    writeFileSync(
+      r4Bem,
+      [
+        ".btn--primary:hover { background: #ff00aa; }",
+        ".other { color: #123456; }",
+      ].join("\n")
+    );
+    assert.equal(runGate(checker, r4Bem).status, 1, "BEM --modifier:hover selector must not swallow CSS rule blocks");
+
+    const r4Jsx = join(appDir, "R4Card.tsx");
+    writeFileSync(
+      r4Jsx,
+      'export const R4Card = ({ active }: { active: boolean }) => <div style={{ color: "#ff00aa", ...(active ? { opacity: 1 } : {}) }} />;\n'
+    );
+    assert.equal(runGate(checker, r4Jsx).status, 1, "JSX style={{ ... }} conditional brace must not mask hex literal");
+
+    const r4Scss = join(appDir, "r4-clean.scss");
+    writeFileSync(
+      r4Scss,
+      [
+        ".card {",
+        "  // Legacy fallback was #ff00aa !important",
+        "  background: url(//cdn.example.com/a.svg);",
+        "  color: var(--ink);",
+        "}",
+      ].join("\n")
+    );
+    assert.equal(runGate(checker, r4Scss).status, 0, "SCSS // comments must be stripped cleanly without flagging hex or !important");
+
+    // 10. Round 5 regressions: @container style(--var) / @supports(--var), SCSS #{...} interpolation, template ${ /* ... */ } comments
+    const r5ContainerCss = join(appDir, "r5-container.css");
+    writeFileSync(
+      r5ContainerCss,
+      [
+        "@container style(--theme: dark) { .badge { background: #ff00aa; } }",
+        "@supports ( --foo: 0 ) { .card { border-color: #123456; } }",
+      ].join("\n")
+    );
+    assert.equal(runGate(checker, r5ContainerCss).status, 1, "@container style(--var) and @supports(--var) must not swallow CSS rules");
+
+    const r5ScssInterp = join(appDir, "r5-interp.scss");
+    writeFileSync(r5ScssInterp, ".card { background: linear-gradient(#ff00aa, #{$end-color}); }\n");
+    assert.equal(runGate(checker, r5ScssInterp).status, 1, "SCSS #{} interpolation must not mask preceding hex colors");
+
+    const r5TplTsx = join(appDir, "R5Tpl.tsx");
+    writeFileSync(
+      r5TplTsx,
+      [
+        "export const R5Tpl = ({ active }: { active: boolean }) => (",
+        '  <div className={`card ${',
+        '    /* legacy: bg-[#ff00aa] !important */',
+        '    active ? "is-active" : ""',
+        "  }`} />",
+        ");",
+      ].join("\n")
+    );
+    assert.equal(runGate(checker, r5TplTsx).status, 0, "Comments inside TSX template ${...} must be stripped cleanly");
+
+    // 11. Round 6 regressions: styled.button<Props> with nested backticks + ${...} interp + /* !important */ comment exclusion,
+    // JSX style prop with backtick apostrophe, Users' settings, postfix x++ / 2, control-paren if (a) /`/ , JSX / <Link to={`/x`}>
+    const r6Styled = join(appDir, "R6Styled.tsx");
+    writeFileSync(
+      r6Styled,
+      [
+        "interface Props { active?: boolean; }",
+        "export const Btn = styled.button<Props>`",
+        "  /* !important must be ignored inside CSS comment */",
+        "  color: ${(p) => `${p.active ? 'var(--accent)' : 'var(--ink)'}`};",
+        "  background: linear-gradient(#ff00aa, ${(p) => p.active ? 'var(--bg)' : 'var(--card)'});",
+        "`;",
+      ].join("\n")
+    );
+    const r6StyledRun = runGate(checker, r6Styled);
+    assert.equal(r6StyledRun.status, 1, "styled.button<Props> gradient #ff00aa must fail");
+    assert.match(r6StyledRun.stdout, /styleColors=1\s+important=0\b/, "/* !important */ in styled template must yield 0 important hits while finding gradient #ff00aa");
+
+    const r6JsxProp = join(appDir, "R6JsxProp.tsx");
+    writeFileSync(
+      r6JsxProp,
+      `export const C = ({ name }: { name: string }) => <div style={{ "--label": \`\${name}'s card\`, backgroundColor: "#ff00aa" }} />;\n`
+    );
+    assert.equal(runGate(checker, r6JsxProp).status, 1, "Template apostrophe in --label must not mask backgroundColor #ff00aa");
+
+    const r6CleanLex = join(appDir, "R6CleanLex.tsx");
+    writeFileSync(
+      r6CleanLex,
+      [
+        "export function View({ users, n }: { users: number; n: number }) {",
+        "  const ratio = n++ / 2;",
+        "  const hit = ifCond(n);",
+        "  if (n > 0) /`/.test('a');",
+        "  return (",
+        "    <div>",
+        "      <p>Users' settings</p>",
+        "      <div>{ratio} / <Link to={`/x`}>X</Link> {/* bg-[#ff00aa] !important */}</div>",
+        "      // legacy bg-[#ff00aa] !important",
+        "    </div>",
+        "  );",
+        "}",
+        "/* bg-[#ff00aa] !important */",
+        "function ifCond(v: number) { return v; }",
+      ].join("\n")
+    );
+    assert.equal(runGate(checker, r6CleanLex).status, 0, "Users', postfix ++ division, control-paren regex, and JSX / <Link> must strip comments cleanly");
+
+    // 12. Round 7 regressions: quoted --var in content, interpSpan before &:hover, /}}/ & nested `a}b` brace balance,
+    // nested rules inside [data-theme="dark"], @apply tw in <style> without custom-prop leak, HTML multiline class= + <!-- regex,
+    // styled.button.attrs() / styled().withConfig(), comments & single quotes inside HTML style="..."
+    const r7QuotedVarCss = join(appDir, "r7-quoted-var.css");
+    writeFileSync(
+      r7QuotedVarCss,
+      [
+        '.note::after { content: "--status: ok"; color: #ff00aa; }',
+        '[data-theme="dark"] { --bg: #0b111b; .card { background: #ff00aa !important; } }',
+      ].join("\n")
+    );
+    const r7QuotedRun = runGate(checker, r7QuotedVarCss);
+    assert.equal(r7QuotedRun.status, 1);
+    assert.match(r7QuotedRun.stdout, /styleColors=2\s+important=1\b/, "Quoted --var and nested rule in [data-theme=dark] must both emit real drift");
+
+    const r7StyledInterp = join(appDir, "R7StyledInterp.tsx");
+    writeFileSync(
+      r7StyledInterp,
+      [
+        "export const S1 = styled.div.attrs({ type: 'button' })<Props>`",
+        "  ${(p) => p.ok ? 'color: #ff00aa;' : ''}",
+        "  &:hover { opacity: 0.9; }",
+        "`;",
+        "export const S2 = styled(Card).withConfig({ shouldForwardProp: () => true })`color: #123456;`;",
+        "export const S3 = () => <div style={{ color: '#ff00aa', ok: /}}/.test('}}'), label: `a}b` }} />;",
+      ].join("\n")
+    );
+    const r7StyledRun = runGate(checker, r7StyledInterp);
+    assert.equal(r7StyledRun.status, 1);
+    assert.match(r7StyledRun.stdout, /styleColors=3\b/, "All 3 styled/attrs/withConfig/brace-edge hexes must be detected");
+
+    const r7Html = join(appDir, "R7Edge.html");
+    writeFileSync(
+      r7Html,
+      [
+        '<style>.a { --tok: bg-[#123456]; @apply bg-[#ff00aa]; }</style>',
+        '<div style="font-family: \'Inter\', sans-serif; color: /* #111 */ #ff00aa;">x</div>',
+        '<button class="\n  p-4\n">x</button><!-- bg-[#ff00aa] -->',
+        '<script>const re = /^<!--/.test(s) && /<!--.*?-->/g.test(s); if (ok) { /* bg-[#ff00aa] */ }</script>',
+      ].join("\n")
+    );
+    const r7HtmlRun = runGate(checker, r7Html);
+    assert.equal(r7HtmlRun.status, 1);
+    assert.match(r7HtmlRun.stdout, /styleColors=1.*twArbitrary=1/, "HTML style comment & quote, custom prop TW suppression, multiline attr, and <!-- regex must parse accurately");
+
+    // 13. Round 8 regressions: .css @apply twArbitrary, !important/-spacing TW arbitrary, masked comment before style={{}},
+    // array custom prop value in JSX, .html <script> // comments, backticks in styled ${...}, JSX / <a href="/img">
+    const r8CssTw = join(appDir, "r8-apply-tw.css");
+    writeFileSync(r8CssTw, ".btn { @apply bg-[#ff00aa] hover:!text-[#123456] -m-[13px]; }\n");
+    const r8CssTwRun = runGate(checker, r8CssTw);
+    assert.equal(r8CssTwRun.status, 1);
+    assert.match(r8CssTwRun.stdout, /styleColors=0.*twArbitrary=3\b/, "@apply arbitrary TW hex and negative spacing in .css must count under twArbitrary");
+
+    const r8Tsx = join(appDir, "R8Edge.tsx");
+    writeFileSync(
+      r8Tsx,
+      [
+        'export const SafeDiv = ({ a, i }: { a: number; i: number }) => (',
+        '  <div style={{ "--accent": ["#111111", "#222222"][i] }}>',
+        '    <div>{a} / <a href="/img/hero.png">Hero</a> {/* bg-[#ff00aa] !important */}</div>',
+        '  </div>',
+        ');',
+        'export const StyledSafe = styled.div`background: ${(p) => `a // b`}; color: var(--fg);`;',
+        'export const StyledComment = styled.div`/* style={{ color: \'#ff00aa\' }} */ color: var(--fg);`;',
+      ].join("\n")
+    );
+    assert.equal(runGate(checker, r8Tsx).status, 0, "Array custom prop, JSX / <a href=\"/img\">, styled backtick //, and masked comment must yield 0 hits");
+
+    const r8TsxBadTw = join(appDir, "R8BadTw.tsx");
+    writeFileSync(r8TsxBadTw, 'export const T = () => <div className="!bg-[#ff00aa] -mt-[7px] -space-x-[9px]" />;\n');
+    const r8TsxBadRun = runGate(checker, r8TsxBadTw);
+    assert.equal(r8TsxBadRun.status, 1);
+    assert.match(r8TsxBadRun.stdout, /styleColors=0.*twArbitrary=3.*swatchColors=0/);
+
+    const r8Html = join(appDir, "R8Script.html");
+    writeFileSync(r8Html, '<script>// const hex = "#ff00aa";\n</script><div class="p-4">ok</div>\n');
+    assert.equal(runGate(checker, r8Html).status, 0, "HTML <script> // line comments must be stripped cleanly");
+
+    // 14. Round 9 regressions (R9-A3-02, R9-A3-06, R9-A3-07, R9-A3-08): single-pass HTML <script> comment split,
+    // extended TW arbitrary color prefixes (border-t/shadow/divide), backtick apostrophe in styled custom prop, data-style exclusion
+    const r9Html1 = join(appDir, "R9HtmlScript1.html");
+    writeFileSync(r9Html1, '<script>\n// TODO: check /* legacy\nconst x = 1;\n</script>\n<div style="color: #ff00aa" class="bg-[#ff00aa]">Real</div>\n');
+    const r9Html1Run = runGate(checker, r9Html1);
+    assert.equal(r9Html1Run.status, 1);
+    assert.match(r9Html1Run.stdout, /styleColors=1.*twArbitrary=1/, "// /* inside <script> must not swallow rest of HTML file");
+
+    const r9Html2 = join(appDir, "R9HtmlScript2.html");
+    writeFileSync(r9Html2, '<script>\n// <!-- legacy note\nconst x = 1;\n</script>\n<div style="color: #ff00aa">Real</div>\n');
+    assert.equal(runGate(checker, r9Html2).status, 1, "// <!-- inside <script> must not swallow rest of HTML file");
+
+    const r9Html3 = join(appDir, "R9HtmlScript3.html");
+    writeFileSync(r9Html3, '<script>\n// Use `var(--ink)\nconst x = 1;\n</script>\n<!-- <div style="color: #ff00aa">commented out</div> -->\n');
+    assert.equal(runGate(checker, r9Html3).status, 0, "// ` inside <script> must not leave trailing HTML comments unstripped");
+
+    const r9TwExt = join(appDir, "R9TwExt.tsx");
+    writeFileSync(r9TwExt, 'export const X = () => <div className="border-t-[#ff00aa] shadow-[#123456] divide-[#abcdef]" />;\n');
+    const r9TwExtRun = runGate(checker, r9TwExt);
+    assert.equal(r9TwExtRun.status, 1);
+    assert.match(r9TwExtRun.stdout, /twArbitrary=3\b/);
+
+    const r9StyledBt = join(appDir, "R9StyledBacktick.tsx");
+    writeFileSync(r9StyledBt, "export const Card = styled.div`\n  --label: ${(p) => `${p.name}'s card`};\n  background: #ff00aa;\n`;\n");
+    assert.equal(runGate(checker, r9StyledBt).status, 1, "Backtick apostrophe inside styled custom property must not swallow background: #ff00aa");
+
+    const r9DataStyle = join(appDir, "R9DataStyle.tsx");
+    writeFileSync(r9DataStyle, 'export const Ok = () => <div data-style="color: #ff00aa">ok</div>;\n');
+    assert.equal(runGate(checker, r9DataStyle).status, 0, "data-style attribute must not be treated as inline style");
+
+    // 15. Round 10 regressions (R10-A3-02, R10-A3-03, R10-A3-04): HTML single-pass without CSS strip on prose (images/*, <!-- in attr, /* <!-- */ in <style>, </script >),
+    // nested backticks in styled stripTokenBlocks + maskCssNonColorHashes, nested css`--var` & Vue :style="{ '--var': ... }"
+    const r10HtmlGlob = join(appDir, "R10HtmlGlob.html");
+    writeFileSync(
+      r10HtmlGlob,
+      '<p>Allow <code>images/*</code> uploads</p>\n<style>.card { background: #ff00aa !important; }</style>\n<div style="color: #123456" class="bg-[#ff00aa]">Real</div>\n'
+    );
+    const r10HtmlGlobRun = runGate(checker, r10HtmlGlob);
+    assert.equal(r10HtmlGlobRun.status, 1);
+    assert.match(r10HtmlGlobRun.stdout, /styleColors=2\s+important=1\s+twArbitrary=1/, "HTML text images/* must not erase trailing styles");
+
+    const r10HtmlStyleCmt = join(appDir, "R10HtmlStyleComment.html");
+    writeFileSync(r10HtmlStyleCmt, '<style>/* <!-- */ .card { background: #ff00aa; }</style>\n<!-- footer -->\n');
+    const r10HtmlStyleCmtRun = runGate(checker, r10HtmlStyleCmt);
+    assert.equal(r10HtmlStyleCmtRun.status, 1);
+    assert.match(r10HtmlStyleCmtRun.stdout, /styleColors=1\b/, "<!-- inside <style> block comment must not eat through footer HTML comment");
+
+    const r10HtmlSpacedScript = join(appDir, "R10HtmlSpacedScript.html");
+    writeFileSync(r10HtmlSpacedScript, '<script>\n// /* unclosed\nconst x = 1;\n</script >\n<div style="color: #ff00aa">Real</div>\n');
+    assert.equal(runGate(checker, r10HtmlSpacedScript).status, 1, "</script > with trailing space must close cleanly");
+
+    const r10HtmlAttrComment = join(appDir, "R10HtmlAttrComment.html");
+    writeFileSync(r10HtmlAttrComment, '<div data-note="<!--"></div><div style="color:#ff00aa" class="bg-[#ff00aa]">Real</div><!-- end -->\n');
+    const r10HtmlAttrRun = runGate(checker, r10HtmlAttrComment);
+    assert.equal(r10HtmlAttrRun.status, 1);
+    assert.match(r10HtmlAttrRun.stdout, /styleColors=1.*twArbitrary=1/);
+
+    const r10StyledNested = join(appDir, "R10StyledNested.tsx");
+    writeFileSync(
+      r10StyledNested,
+      [
+        "export const A = styled.div`",
+        "  :root { --label: ${(p) => `${p.name}'s`}; }",
+        "  [data-theme=\"dark\"] { --bg: ${(p) => `${p.name}'s`}; }",
+        "  @supports (color: oklch(0 0 0)) { background: #ff00aa !important; }",
+        "  color: #123456;",
+        "`;",
+        "export const B = styled.div`",
+        "  ${(p) => `a}b color: #ff00aa`}",
+        "  &:hover { opacity: 0.9; }",
+        "`;",
+        "export const C = styled.div`",
+        "  ${(p) => p.dark && css`",
+        "    --accent: #1d4ed8;",
+        "  `}",
+        "  border-color: #ff00aa;",
+        "`;",
+      ].join("\n") + "\n"
+    );
+    const r10StyledRun = runGate(checker, r10StyledNested);
+    assert.equal(r10StyledRun.status, 1);
+    assert.match(r10StyledRun.stdout, /styleColors=4\s+important=1\b/, "Styled backticks in :root/[data-theme], maskCssNonColorHashes, and nested css`--accent` must resolve accurately");
+
+    const r10VueCustom = join(appDir, "R10VueCustom.vue");
+    writeFileSync(r10VueCustom, '<template><div :style="{ \'--accent\': \'#1d4ed8\' }">hi</div></template>\n');
+    assert.equal(runGate(checker, r10VueCustom).status, 0, "Vue :style custom property '--accent' must not trigger styleColors");
+
+    // 16. Round 11 regressions (R11-A3-03, R11-A3-05, R11-A3-06, R11-A3-07, R11-A3-08):
+    const r11Vue = join(appDir, "R11Upload.vue");
+    writeFileSync(
+      r11Vue,
+      '<template>\n  <p>Allowed types: image/*</p>\n  <div style="color: #ff00aa" class="bg-[#123456]">Real</div>\n</template>\n<style>.card { background: #abcdef !important; }</style>\n'
+    );
+    const r11VueRun = runGate(checker, r11Vue);
+    assert.equal(r11VueRun.status, 1);
+    assert.match(r11VueRun.stdout, /styleColors=2\s+important=1\s+twArbitrary=1/, "Vue prose image/* must not erase template/style violations");
+
+    const r11Svelte = join(appDir, "R11Upload.svelte");
+    writeFileSync(
+      r11Svelte,
+      '<script>let accept = "image/*";</script>\n<p>Upload image/* files</p>\n<div style="color: #ff00aa" class="bg-[#123456]">Real</div>\n<style>.card { background: #abcdef !important; }</style>\n'
+    );
+    const r11SvelteRun = runGate(checker, r11Svelte);
+    assert.equal(r11SvelteRun.status, 1);
+    assert.match(r11SvelteRun.stdout, /styleColors=2\s+important=1\s+twArbitrary=1/, "Svelte image/* must not erase template/style violations");
+
+    const r11Tsx = join(appDir, "R11Upload.tsx");
+    writeFileSync(
+      r11Tsx,
+      'export const Upload = () => (\n  <div>\n    <p>Allowed types: image/*</p>\n    <div style={{ color: "#ff00aa" }} className="bg-[#123456]">Real</div>\n  </div>\n);\n'
+    );
+    const r11TsxRun = runGate(checker, r11Tsx);
+    assert.equal(r11TsxRun.status, 1);
+    assert.match(r11TsxRun.stdout, /styleColors=1\s+important=0\s+twArbitrary=1/, "TSX image/* without closing */ must not erase following JSX");
+
+    const r11NestedCss = join(appDir, "R11NestedCss.tsx");
+    writeFileSync(
+      r11NestedCss,
+      [
+        "export const Card = styled.div`",
+        "  ${(p) => p.dark && css`",
+        "    /* legacy #ff00aa !important */",
+        "    // line #123456 !important",
+        "    #bad { color: var(--fg); }",
+        "    background: var(--bg);",
+        "  `}",
+        "  ${(p) => p.alt && css<{ onClick?: () => void }>`",
+        "    /* #abcdef !important */",
+        "    #alt { color: var(--fg); }",
+        "  `}",
+        "`;",
+      ].join("\n") + "\n"
+    );
+    assert.equal(runGate(checker, r11NestedCss).status, 0, "Nested css`...` comments and #id selectors must be cleanly masked");
+
+    const r11CondStyle = join(appDir, "R11CondStyle.tsx");
+    writeFileSync(r11CondStyle, 'export const T = ({ active }: { active: boolean }) => (<div style={active ? { backgroundColor: "#ff00aa" } : undefined} />);\n');
+    const r11CondRun = runGate(checker, r11CondStyle);
+    assert.equal(r11CondRun.status, 1);
+    assert.match(r11CondRun.stdout, /styleColors=1\b.*swatchColors=0/, "Conditional single-brace JSX style={} must extract styleColors");
+
+    const r11Ternary = join(appDir, "R11TernaryDark.tsx");
+    writeFileSync(r11Ternary, 'export const T = ({ dark }: { dark: boolean }) => (<div style={{ backgroundColor: dark ? "--dark" : "#ff00aa" }} />);\n');
+    const r11TernaryRun = runGate(checker, r11Ternary);
+    assert.equal(r11TernaryRun.status, 1);
+    assert.match(r11TernaryRun.stdout, /styleColors=1\b/, "Ternary branch '--dark' must not mask false branch '#ff00aa'");
+
+    const r11SpacedStyle = join(appDir, "R11SpacedStyle.html");
+    writeFileSync(r11SpacedStyle, "<style>.card { background: #ff00aa; }</style >\n");
+    const r11SpacedRun = runGate(checker, r11SpacedStyle);
+    assert.equal(r11SpacedRun.status, 1);
+    assert.match(r11SpacedRun.stdout, /styleColors=1\b/, "Closing </style > with whitespace must still extract style");
+
+    // 17. Round 12 regressions (R12-A3-03, R12-A3-06, R12-A3-07, R12-A3-08, R12-A3-09):
+    const r12UploadWithCmt = join(appDir, "UploadWithComment.tsx");
+    writeFileSync(
+      r12UploadWithCmt,
+      'export const Upload = () => (\n  <div>\n    <p>Allowed types: image/*</p>\n    <div style={{ color: "#ff00aa" }} className="bg-[#123456]">Real</div>\n    {/* footer note */}\n  </div>\n);\n'
+    );
+    const r12UploadRun = runGate(checker, r12UploadWithCmt);
+    assert.equal(r12UploadRun.status, 1);
+    assert.match(r12UploadRun.stdout, /styleColors=1\b.*twArbitrary=1\b/, "JSX image/* before later */ comment must not erase style or Tailwind defects");
+
+    const r12StyledBrace = join(appDir, "StyledRegexBrace.tsx");
+    writeFileSync(
+      r12StyledBrace,
+      'export const Card = styled.div<{ v: string }>`\n  ${(p) => (/}/.test(p.v) ? "color: #ff00aa;" : "")}\n  &:hover { opacity: 0.9; }\n`;\n'
+    );
+    const r12BraceRun = runGate(checker, r12StyledBrace);
+    assert.equal(r12BraceRun.status, 1);
+    assert.match(r12BraceRun.stdout, /styleColors=1\b/, "Regex /}/ inside styled interpolation must not prematurely pop expr frame");
+
+    const r12StyledBt = join(appDir, "StyledRegexBacktick.tsx");
+    writeFileSync(
+      r12StyledBt,
+      'export const Card = styled.div<{ v: string }>`\n  color: ${(p) => (/`/.test(p.v) ? "var(--a)" : "var(--b)")};\n  /* #ff00aa !important */\n`;\n'
+    );
+    assert.equal(runGate(checker, r12StyledBt).status, 0, "Regex /`/ inside styled interpolation must not open opaque template mode");
+
+    const r12NestedGen = join(appDir, "NestedCssGeneric.tsx");
+    writeFileSync(
+      r12NestedGen,
+      'export const Card = styled.div`\n  ${(p) => p.alt && css<{ onClick?: () => void }>`\n    :root { --tok: #111111; }\n    --accent: #1d4ed8;\n    color: var(--fg);\n  `}\n  ${(p) => p.next && css<Record<string, boolean>>`\n    :root { --tok2: #222222; }\n    --accent2: #16a34a;\n    color: var(--fg);\n  `}\n`;\n'
+    );
+    assert.equal(runGate(checker, r12NestedGen).status, 0, "Nested css<...> with => and nested <> generics must strip :root and custom props cleanly");
+
+    const r12SvelteCmt1 = join(appDir, "SvelteStyleWithComment.svelte");
+    writeFileSync(r12SvelteCmt1, '<div style={/* #ff00aa */ "color: #123456"}>hi</div>\n');
+    const r12SvelteRun1 = runGate(checker, r12SvelteCmt1);
+    assert.equal(r12SvelteRun1.status, 1);
+    assert.match(r12SvelteRun1.stdout, /styleColors=1\b/, "Svelte style={/*...*/ ...} must not lose closing } via */ -> regex confusion");
+
+    const r12SvelteCmt2 = join(appDir, "SvelteMultilineCmt.svelte");
+    writeFileSync(r12SvelteCmt2, '<div style={\n  /* legacy #ff00aa */\n  "color: var(--fg)"\n}>hi</div>\n');
+    assert.equal(runGate(checker, r12SvelteCmt2).status, 0, "Comments inside Svelte style={...} must be stripped cleanly");
+
+    const r12ScssInterp = join(appDir, "ScssRootRgbaInterp.scss");
+    writeFileSync(r12ScssInterp, ":root {\n  --brand-soft: #{rgba(#1d4ed8, 0.5)};\n  --ink: #111111;\n}\n.card { color: var(--ink); }\n");
+    assert.equal(runGate(checker, r12ScssInterp).status, 0, "SCSS #{...} interpolation inside :root token block must remain stripped");
+
+    // 18. Round 13 regressions (R13-A3-03..06):
+    const r13JsxRegexStyle = join(appDir, "R13JsxRegexStyle.tsx");
+    writeFileSync(
+      r13JsxRegexStyle,
+      [
+        'export const C1 = ({ s }: any) => <div style={{ "--a": /"/.test(s) ? "1" : "2", backgroundColor: "#ff00aa" }} />;',
+        'export const C2 = styled.div`\n  --x: ${(p: any) => (/`/.test(p.v) ? "1" : "2")};\n  background: #ff00aa;\n`;',
+        'export const C3 = ({ s }: any) => <div style={{ opacity: /`/.test(s) ? 1 : 0.5, "--accent": "#1d4ed8" }} />;',
+        'export const C4 = styled.div`\n  --x: ${(p: any) => (/}/.test(p.v)) ? "#1d4ed8" : "#16a34a"};\n`;',
+      ].join("\n") + "\n"
+    );
+    const r13JsxRun = runGate(checker, r13JsxRegexStyle);
+    assert.equal(r13JsxRun.status, 1);
+    assert.match(r13JsxRun.stdout, /styleColors=2\b/, "Top-level and vTpl regex literals inside stripCssCustomPropDefs must isolate #ff00aa without flagging custom props");
+
+    const r13ChainedParen = join(appDir, "R13ChainedParen.tsx");
+    writeFileSync(
+      r13ChainedParen,
+      [
+        'export const B1 = styled.div.withConfig({ shouldForwardProp: (p) => !/[\'"]/.test(p) })`background: #ff00aa;`;',
+        'export const B2 = styled.div.attrs(() => ({ re: /)/ }))`background: #ff00aa;`;',
+        'export const B3 = styled.div.attrs((p: any) => ({ title: `${p.ok ? `)` : `x`}` }))`background: #ff00aa;`;',
+      ].join("\n") + "\n"
+    );
+    const r13ParenRun = runGate(checker, r13ChainedParen);
+    assert.equal(r13ParenRun.status, 1);
+    assert.match(r13ParenRun.stdout, /styleColors=3\b/, "Chained .withConfig/.attrs regex and nested template backticks must still extract styled CSS blocks");
+
+    const r13SvelteOk = join(appDir, "R13SvelteCustomOk.svelte");
+    writeFileSync(
+      r13SvelteOk,
+      '<div style={`--accent: #1d4ed8; color: var(--accent);`}>hi</div>\n<div style={"--accent2: #16a34a; color: var(--accent2);"}>ok</div>\n'
+    );
+    assert.equal(runGate(checker, r13SvelteOk).status, 0, "Svelte style={...} CSS custom properties must be exempt");
+
+    const r13SvelteBad = join(appDir, "R13SvelteCustomBad.svelte");
+    writeFileSync(r13SvelteBad, '<div style={`--accent: #1d4ed8; color: #ff00aa;`}>hi</div>\n');
+    const r13SvelteBadRun = runGate(checker, r13SvelteBad);
+    assert.equal(r13SvelteBadRun.status, 1);
+    assert.match(r13SvelteBadRun.stdout, /styleColors=1\b/, "Svelte style={...} must still flag non-var hardcoded colors after custom props");
+
+    const r13MultilineWildcard = join(appDir, "R13MultilineWildcard.tsx");
+    writeFileSync(
+      r13MultilineWildcard,
+      [
+        'export const Cron = () => (',
+        '  <div>',
+        '    <p>',
+        '      Allowed: image/*',
+        '    </p>',
+        '    <div style={{ color: "#ff00aa" }} className="bg-[#123456]">Real</div>',
+        '    <span>Every */5 min</span>',
+        '  </div>',
+        ');',
+      ].join("\n") + "\n"
+    );
+    const r13CronRun = runGate(checker, r13MultilineWildcard);
+    assert.equal(r13CronRun.status, 1);
+    assert.match(r13CronRun.stdout, /styleColors=1\b.*twArbitrary=1\b/, "Multiline JSX image/* before later */5 must not swallow violations");
+
+    const r13UsersPoss = join(appDir, "R13UsersPossessive.tsx");
+    writeFileSync(r13UsersPoss, "export const U = () => <div><span>Users'</span>{/* bg-[#ff00aa] !important */}</div>;\n");
+    assert.equal(runGate(checker, r13UsersPoss).status, 0, "Users' immediately before </tag> must not break comment stripping");
+
+    // Round 14 regressions (R14-A3-02, R14-A3-05, R14-A3-06, R14-A3-07):
+    const r14StyledInterp = join(appDir, "R14StyledInterp.tsx");
+    writeFileSync(
+      r14StyledInterp,
+      'export const Card = styled.div`\n  [data-theme="dark"] ${Child} {\n    background: #ff00aa !important;\n  }\n  transition: opacity ${active && css`& > .dot { color: #123456; }`};\n`;\n'
+    );
+    const r14StyledRun = runGate(checker, r14StyledInterp);
+    assert.equal(r14StyledRun.status, 1, "Dark-theme descendant rule with ${Child} interpolation must not be stripped as token def");
+    assert.match(r14StyledRun.stdout, /styleColors=2\b.*important=1\b/, "Both descendant and nested css template hardcoded hexes must be flagged");
+
+    const r14SvelteArrow = join(appDir, "R14SvelteArrow.svelte");
+    writeFileSync(
+      r14SvelteArrow,
+      '<button on:click={() => count++} data-note="<!--">Click</button>\n<div style="color: #ff00aa" class="bg-[#123456]">Real</div>\n<!-- footer -->\n'
+    );
+    const r14SvelteArrowRun = runGate(checker, r14SvelteArrow);
+    assert.equal(r14SvelteArrowRun.status, 1);
+    assert.match(r14SvelteArrowRun.stdout, /styleColors=1\b.*twArbitrary=1\b/, "Svelte on:click={() => ...} before data-note='<!--' must not trigger comment swallowing");
+
+    const r14MultilineProse = join(appDir, "R14MultilineProse.tsx");
+    writeFileSync(
+      r14MultilineProse,
+      [
+        'export const Cron2 = () => (',
+        '  <div>',
+        '    <p>',
+        '      Allowed: image/*',
+        '      for profile avatars',
+        '    </p>',
+        '    <div style={{ color: "#ff00aa" }} className="bg-[#123456]">Real</div>',
+        '    <span>Every */5 min</span>',
+        '  </div>',
+        ');',
+      ].join("\n") + "\n"
+    );
+    const r14ProseRun = runGate(checker, r14MultilineProse);
+    assert.equal(r14ProseRun.status, 1);
+    assert.match(r14ProseRun.stdout, /styleColors=1\b.*twArbitrary=1\b/, "Multiline image/* with extra text before </p> must not swallow later code");
+
+    const r14SveltePropsOk = join(appDir, "R14SveltePropsOk.svelte");
+    writeFileSync(
+      r14SveltePropsOk,
+      [
+        `<div style={\`--note: "a;#111111"; color: var(--fg);\`}>hi</div>`,
+        `<div style={\`--label: \${ok ? \`\${x ? \`}\` : \`a\`}\` : "#111111"}; color: var(--fg);\`}>hi2</div>`,
+      ].join("\n") + "\n"
+    );
+    assert.equal(runGate(checker, r14SveltePropsOk).status, 0, "Quoted semicolons and nested ${...} templates inside Svelte CSS custom props must remain exempt");
+
+    // Round 15 regressions (R15-A3-02, R15-A3-03, R15-A3-06, R15-A3-07, R15-A3-08, R15-A3-09):
+    const r15SvelteQuotedProp = join(appDir, "R15SvelteQuotedProp.svelte");
+    writeFileSync(
+      r15SvelteQuotedProp,
+      [
+        `<div style={\`content: "--note: ok"; color: #ff00aa;\`}>hi</div>`,
+        `<div style={'content: "--note: ok"; color: #ff00aa;'}>hi2</div>`,
+        `<div style={"content: '--note: ok'; color: #ff00aa;"}>hi3</div>`,
+      ].join("\n") + "\n"
+    );
+    const r15QuotedPropRun = runGate(checker, r15SvelteQuotedProp);
+    assert.equal(r15QuotedPropRun.status, 1);
+    assert.match(r15QuotedPropRun.stdout, /styleColors=3\b/, "Quoted --note: inside Svelte style={...} must not swallow trailing hex colors");
+
+    const r15SvelteCommentOk = join(appDir, "R15SvelteCommentOk.svelte");
+    writeFileSync(
+      r15SvelteCommentOk,
+      [
+        `<div style={\`/* #ff00aa !important */ color: var(--fg);\`}>hi</div>`,
+        `<div style={"/* #ff00aa !important */ color: var(--fg);"}>hi2</div>`,
+      ].join("\n") + "\n"
+    );
+    assert.equal(runGate(checker, r15SvelteCommentOk).status, 0, "CSS /* ... */ comments inside Svelte style strings/templates must be stripped");
+
+    const r15ScssAtRules = join(appDir, "R15ScssAtRules.scss");
+    writeFileSync(
+      r15ScssAtRules,
+      [
+        "@mixin badge($bg: #ff00aa) { background: $bg; }",
+        "@each $c in #ff00aa, #123456 { .c { color: $c; } }",
+        "@if $bg == #ff00aa { .c { color: var(--fg); } }",
+        "@function darken-brand($c: #ff00aa) { @return $c; }",
+      ].join("\n") + "\n"
+    );
+    const r15ScssAtRun = runGate(checker, r15ScssAtRules);
+    assert.equal(r15ScssAtRun.status, 1);
+    assert.match(r15ScssAtRun.stdout, /styleColors=5\b/, "SCSS @mixin/@each/@if/@function headers must preserve hardcoded hex colors");
+
+    const r15VueOk = join(appDir, "R15VueStyleOk.vue");
+    writeFileSync(
+      r15VueOk,
+      [
+        "<template>",
+        '  <div :style="`--accent: #1d4ed8; color: var(--accent)`">a</div>',
+        `  <div :style="isDark ? '--accent: #1d4ed8' : '--accent: #16a34a'">b</div>`,
+        `  <div :style="[{ '--a': '#1d4ed8' }, '--b: #16a34a']">c</div>`,
+        "</template>",
+      ].join("\n") + "\n"
+    );
+    assert.equal(runGate(checker, r15VueOk).status, 0, "Vue :style string/template/array CSS custom props must remain exempt");
+
+    const r15SvelteDirBad = join(appDir, "R15SvelteDirBad.svelte");
+    writeFileSync(
+      r15SvelteDirBad,
+      '<div style:color="#ff00aa">a</div>\n<div style:background-color={active ? "#123456" : "var(--bg)"}>b</div>\n'
+    );
+    const r15SvelteDirRun = runGate(checker, r15SvelteDirBad, { DSAF_MAX_SWATCH_COLORS: "0" });
+    assert.equal(r15SvelteDirRun.status, 1);
+    assert.match(r15SvelteDirRun.stdout, /styleColors=2\b/, "Svelte style:prop hex colors must flag styleColors rather than swatchColors");
+
+    const r15SvelteVarDirOk = join(appDir, "R15SvelteVarDirOk.svelte");
+    writeFileSync(r15SvelteVarDirOk, '<div style:--accent="#1d4ed8">hi</div>\n');
+    assert.equal(runGate(checker, r15SvelteVarDirOk, { DSAF_MAX_SWATCH_COLORS: "0" }).status, 0, "Svelte style:--var directives must be exempt under strict swatch cap");
+
+    const r15MultilineCont = join(appDir, "R15MultilineCont.css");
+    writeFileSync(r15MultilineCont, '@theme {\n  --a: "x \\\n} y";\n  background: #111111;\n}\n:root {\n  --b: "x \\\n} y";\n  --c: #111111;\n}\n.ok { color: var(--a); }\n');
+    assert.equal(runGate(checker, r15MultilineCont).status, 0, "CSS string line-continuation \\\\ + \\n inside @theme/:root must keep string open");
+
+    // Round 16 regressions (R16-A3-02..08 + R16-A2-01/12):
+    const r16CrlfCss1 = join(appDir, "R16Crlf1.css");
+    writeFileSync(r16CrlfCss1, '@theme {\r\n  --a: "x \\\r\n} y";\r\n  background: #111111;\r\n}\r\n:root {\r\n  --b: "x \\\r\n} y";\r\n  --c: #111111;\r\n}\r\n.ok { color: var(--a); }\r\n');
+    assert.equal(runGate(checker, r16CrlfCss1).status, 0, "CRLF CSS \\\\\\r\\n string continuation in @theme/:root must keep string open");
+
+    const r16CrlfCss2 = join(appDir, "R16Crlf2.css");
+    writeFileSync(r16CrlfCss2, '.card {\r\n  content: "hello \\\r\n  /*";\r\n  color: #ff00aa;\r\n}\r\n/* end */\r\n');
+    assert.match(runGate(checker, r16CrlfCss2).stdout, /styleColors=1\b/, "CRLF CSS \\\\\\r\\n before /* must keep string open");
+
+    const r16CrlfTsx = join(appDir, "R16CrlfTsx.tsx");
+    writeFileSync(
+      r16CrlfTsx,
+      'export const X = () => {\r\n  const msgs = ["line1 \\\r\n  /*"];\r\n  return <div style={{ color: "#ff00aa" }} className="bg-[#123456]" />;\r\n  /* end */\r\n};\r\n'
+    );
+    assert.match(runGate(checker, r16CrlfTsx).stdout, /styleColors=1\b.*twArbitrary=1\b/, "CRLF TSX \\\\\\r\\n must not swallow trailing JSX");
+
+    const r16SvelteHtml = join(appDir, "R16SvelteExpr.svelte");
+    writeFileSync(r16SvelteHtml, '<div>{isCmt ? "<!--" : "ok"}</div>\n<div style="color: #ff00aa" class="bg-[#123456]">Real</div>\n<!-- footer -->\n');
+    assert.match(runGate(checker, r16SvelteHtml).stdout, /styleColors=1\b.*twArbitrary=1\b/);
+
+    const r16VueHtml = join(appDir, "R16VueExpr.vue");
+    writeFileSync(r16VueHtml, '<template>\n  <div>{{ isCmt ? "<!--" : "ok" }}</div>\n  <div style="color: #ff00aa" class="bg-[#123456]">Real</div>\n  <!-- footer -->\n</template>\n');
+    assert.match(runGate(checker, r16VueHtml).stdout, /styleColors=1\b.*twArbitrary=1\b/);
+
+    const r16SvelteOk = join(appDir, "R16SvelteExprOk.svelte");
+    writeFileSync(r16SvelteOk, '<div>{/* legacy: bg-[#ff00aa] !important */ label}</div>\n{#if a<b} Don\'t {/if}\n<!-- old: <div style="color: #ff00aa" class="bg-[#123456]">stale</div> -->\n');
+    assert.equal(runGate(checker, r16SvelteOk).status, 0);
+
+    const r16VueOk = join(appDir, "R16VueExprOk.vue");
+    writeFileSync(r16VueOk, '<template>\n  <div>{{ /* legacy: bg-[#ff00aa] !important */ label }}</div>\n  <p>{{ a<b ? \'yes\' : \'no\' }} Don\'t</p>\n  <!-- old: <div style="color: #ff00aa" class="bg-[#123456]">stale</div> -->\n</template>\n');
+    assert.equal(runGate(checker, r16VueOk).status, 0);
+
+    const r16Globstar = join(appDir, "R16Globstar.tsx");
+    writeFileSync(r16Globstar, 'export const Docs = () => (\n  <div>\n    <p>Watch files in src/**</p>\n    <div style={{ color: "#ff00aa" }} className="bg-[#123456]">Real</div>\n    {/* footer */}\n  </div>\n);\n');
+    assert.match(runGate(checker, r16Globstar).stdout, /styleColors=1\b.*twArbitrary=1\b/);
+
+    const r16ScssInc = join(appDir, "R16Include.scss");
+    writeFileSync(r16ScssInc, "@include button-variant(#ff00aa) {\n  color: var(--fg);\n}\n");
+    assert.match(runGate(checker, r16ScssInc).stdout, /styleColors=1\b/);
+
+    const r16Container = join(appDir, "R16Container.css");
+    writeFileSync(r16Container, "@container style(color: #ff00aa) {\n  .card { opacity: 1; }\n}\n@property --brand-glow { syntax: \"<color>\"; inherits: false; initial-value: #1d4ed8; }\n");
+    assert.match(runGate(checker, r16Container).stdout, /styleColors=1\b/, "@container style(#hex) flagged while @property initial-value exempt");
+
+    const r16RegexLt = join(appDir, "R16RegexLt.tsx");
+    writeFileSync(
+      r16RegexLt,
+      [
+        "const re1 = /`</g;\n/* legacy bg-[#ff00aa] !important */",
+        "const re2 = /'</g; /* legacy bg-[#ff00aa] !important */",
+        'export const X = ({ s }: any) => <div data-open={/<!--/.test(s)} style={{ color: "#ff00aa" }} data-close={/-->/.test(s)} />;',
+      ].join("\n") + "\n"
+    );
+    assert.match(runGate(checker, r16RegexLt).stdout, /styleColors=1\s+important=0\s+twArbitrary=0/);
+
+    const r16SvelteEscOk = join(appDir, "R16SvelteEscOk.svelte");
+    writeFileSync(
+      r16SvelteEscOk,
+      [
+        '<div style={"--note: \\"a; #111111\\"; --accent: #1d4ed8; color: var(--accent);"}>hi</div>',
+        '<div style={`--a: 1 /* ${note}; #111111 */; color: var(--fg);`}>hi2</div>',
+      ].join("\n") + "\n"
+    );
+    assert.equal(runGate(checker, r16SvelteEscOk).status, 0);
+
+    const r16SvelteEscBad = join(appDir, "R16SvelteEscBad.svelte");
+    writeFileSync(r16SvelteEscBad, '<div style={"content: \'Don\\\\\'t --note: ok\'; color: #ff00aa;"}>hi</div>\n');
+    assert.match(runGate(checker, r16SvelteEscBad).stdout, /styleColors=1\b/);
+
+    const r16UrlParens = join(appDir, "R16UrlParens.css");
+    writeFileSync(r16UrlParens, '.icon { background: url("sprite(2x).svg#add"); }\n');
+    assert.equal(runGate(checker, r16UrlParens).status, 0);
+
+    // Round 17 regressions (HIGH-1..4, MEDIUM-1..3):
+    const r17ImpTsx = join(appDir, "R17ImpBool.tsx");
+    writeFileSync(
+      r17ImpTsx,
+      [
+        "export const X1 = ({ important }: { important: boolean }) => <div>{!important && <span>ok</span>}</div>;",
+        "export const X2 = ({ important }: { important: boolean }) => <div style={{ opacity: !important ? 0.5 : 1 }} />;",
+      ].join("\n") + "\n"
+    );
+    assert.equal(runGate(checker, r17ImpTsx).status, 0, "TSX !important boolean negations must not trigger important=1");
+
+    const r17ImpVue = join(appDir, "R17ImpBool.vue");
+    writeFileSync(r17ImpVue, '<template><div v-if="!important">ok</div></template>\n');
+    assert.equal(runGate(checker, r17ImpVue).status, 0, "Vue v-if=\"!important\" must not trigger important=1");
+
+    const r17ImpCssReal = join(appDir, "R17ImpStyleReal.tsx");
+    writeFileSync(
+      r17ImpCssReal,
+      'export const Imp = ({ active }: any) => <div style={{ color: active ? "red !important" : "blue" }} />;\n'
+    );
+    assert.match(runGate(checker, r17ImpCssReal).stdout, /important=1\b/, "Genuine CSS !important inside JSX style string must still fail");
+
+    const r17DanglingHdr = join(appDir, "R17DanglingHdr.css");
+    writeFileSync(
+      r17DanglingHdr,
+      [
+        ":root { --a: #111111; }",
+        "@container style(color: #ff00aa) { .card { opacity: 1; } }",
+        '@property --c { syntax: "<color>"; inherits: false; initial-value: #1d4ed8; }',
+        "@container style(color: #ff00aa) { .a { opacity: 1; } }",
+      ].join("\n") + "\n"
+    );
+    assert.match(runGate(checker, r17DanglingHdr).stdout, /styleColors=2\b/, "Dangling :root/@property headers must not mask following @container rules");
+
+    const r17DanglingScss = join(appDir, "R17DanglingScss.scss");
+    writeFileSync(
+      r17DanglingScss,
+      [
+        ":root { --a: #111111; }",
+        "@include badge(#ff00aa) { color: var(--a); }",
+        "@mixin pill($c: #ff00aa) { color: $c; }",
+      ].join("\n") + "\n"
+    );
+    assert.match(runGate(checker, r17DanglingScss).stdout, /styleColors=2\b/, "Dangling :root header must not mask following SCSS @include/@mixin");
+
+    const r17EscCss1 = join(appDir, "R17Esc1.css");
+    writeFileSync(r17EscCss1, ".before\\:content-\\[\\'\\*\\'\\] { color: #ff00aa; }\n.next { color: var(--fg); }\n");
+    assert.match(runGate(checker, r17EscCss1).stdout, /styleColors=1\b/, "Escaped \\' inside selector must not swallow following #ff00aa");
+
+    const r17EscCss2 = join(appDir, "R17Esc2.css");
+    writeFileSync(r17EscCss2, ":root {\n  --a: #111111;\n  & .before\\:content-\\[\\'\\*\\'\\] { color: #ff00aa; }\n}\n");
+    assert.match(runGate(checker, r17EscCss2).stdout, /styleColors=1\b/, "Escaped \\' inside nested :root rule must preserve rule opening");
+
+    const r17EscCss3 = join(appDir, "R17Esc3.css");
+    writeFileSync(r17EscCss3, ".before\\:content-\\[\\'\\*\\'\\] { /* legacy #ff00aa !important */ color: var(--fg); }\n");
+    assert.equal(runGate(checker, r17EscCss3).status, 0, "Escaped \\' inside selector must allow block comment stripping");
+
+    const r17StyledGlobals = join(appDir, "R17StyledGlobals.tsx");
+    writeFileSync(
+      r17StyledGlobals,
+      [
+        'import { createGlobalStyle, keyframes } from "styled-components";',
+        "export const G = createGlobalStyle`body { color: #ff00aa; }`;",
+        "export const K = keyframes`from { color: #ff00aa; } to { color: #123456; }`;",
+      ].join("\n") + "\n"
+    );
+    assert.match(runGate(checker, r17StyledGlobals).stdout, /styleColors=3\b/, "createGlobalStyle and keyframes templates must be scanned");
+
+    const r17UnquotedUrlScss = join(appDir, "R17UnquotedUrl.scss");
+    writeFileSync(
+      r17UnquotedUrlScss,
+      [
+        ".h1 { background: url(data:image/png;base64,abc//def); color: #ff00aa; }",
+        ".h2 { background: url(https://cdn.example.com/a//b.svg); color: #ff00aa; }",
+        ".h3 { background: url(     //cdn.example.com/a.png); color: #ff00aa; }",
+      ].join("\n") + "\n"
+    );
+    assert.match(runGate(checker, r17UnquotedUrlScss).stdout, /styleColors=3\b/, "Unquoted url(...//...) in SCSS must preserve trailing hex");
+
+    const r17UnquotedUrlTsx = join(appDir, "R17UnquotedUrl.tsx");
+    writeFileSync(
+      r17UnquotedUrlTsx,
+      'export const Hero = styled.div`background: url(https://cdn.example.com/a//b.svg); color: #ff00aa;`;\n'
+    );
+    assert.match(runGate(checker, r17UnquotedUrlTsx).stdout, /styleColors=1\b/, "Unquoted url(...//...) in styled template must preserve trailing hex");
+
+    const r17SvelteAttrCmt = join(appDir, "R17SvelteAttrCmt.svelte");
+    writeFileSync(r17SvelteAttrCmt, '<div class={/* bg-[#ff00aa] !important */ "p-4"}>hi</div>\n');
+    assert.equal(runGate(checker, r17SvelteAttrCmt).status, 0, "JS comments inside Svelte attribute {expr} must be stripped");
+
+    const r17TsxSafe = join(appDir, "R17TsxSafe.tsx");
+    writeFileSync(
+      r17TsxSafe,
+      [
+        'export const Nav1 = ({ a }: any) => <div>{a} / <Link onClick={() => go()} to="/s/b">X</Link> {/* bg-[#ff00aa] !important */}</div>;',
+        'export const Nav2 = ({ a }: any) => <div>{a} / <Link to={"/ui/v1"}>X</Link> {/* bg-[#ff00aa] !important */}</div>;',
+        "export const Docs = () => <div><p>The '90s era</p>{/* bg-[#ff00aa] !important */}</div>;",
+      ].join("\n") + "\n"
+    );
+    assert.equal(runGate(checker, r17TsxSafe).status, 0, "JSX arrow props, braced URL props, and '90s apostrophes must preserve {/* ... */} comment stripping");
+
+    const r17CodeWildcard = join(appDir, "R17CodeWildcard.tsx");
+    writeFileSync(
+      r17CodeWildcard,
+      'export const Docs = () => (\n  <div>\n    <p>Pattern: <code>/*</code></p>\n    <div style={{ color: "#ff00aa" }} />\n    {/* end */}\n  </div>\n);\n'
+    );
+    assert.match(runGate(checker, r17CodeWildcard).stdout, /styleColors=1\b/, "Prose <code>/*</code> must not eat through trailing styleColors");
+
+    // Round 18 regressions (A3 #1,#2,#3,#4,#7,#8,#9,#10,#11,#12,#13 + A4 #1):
+    const r18SvgRegex = join(appDir, "R18SvgRegex.tsx");
+    writeFileSync(
+      r18SvgRegex,
+      'export const Icon = ({ x }: any) => <svg onClick={() => /"/.test(x)} viewBox="0 0 24 24"><path data-raw="</svg>" fill={x ? "#ff00aa" : "#123456"} /></svg>;\n'
+    );
+    assert.match(runGate(checker, r18SvgRegex).stdout, /svgColors=2,\s*swatchColors=0/, "SVG JSX regex quote and attr </svg> must keep svg=2, swatch=0");
+
+    const r18UrlComment = join(appDir, "R18UrlCmt.css");
+    writeFileSync(r18UrlComment, '.card { background: url(/* #ff00aa !important */ "https://example.com/a.png"); color: var(--fg); }\n');
+    assert.equal(runGate(checker, r18UrlComment).status, 0, "CSS url(/* !important */ ...) must strip comment cleanly");
+
+    const r18ImpCustom = join(appDir, "R18ImpCustom.vue");
+    writeFileSync(r18ImpCustom, '<template><div :style="/* old: \'color: #ff00aa !important\' */ { color: \'var(--fg)\' }">hi</div></template>\n');
+    assert.equal(runGate(checker, r18ImpCustom).status, 0, "Vue :style comment must strip !important");
+
+    const r18SvelteLineCmt = join(appDir, "R18SvelteLineCmt.svelte");
+    writeFileSync(r18SvelteLineCmt, '<div style="color: {// \'red !important\'\n active ? \'var(--a)\' : \'var(--b)\'}">hi</div>\n');
+    assert.equal(runGate(checker, r18SvelteLineCmt).status, 0, "Svelte style={...} // comment must strip !important");
+
+    const r18TsxVar = join(appDir, "R18TsxVar.tsx");
+    writeFileSync(r18TsxVar, 'export const X = () => <div style={{ "--note": "avoid !important", color: "var(--fg)" }} />;\n');
+    assert.equal(runGate(checker, r18TsxVar).status, 0, "TSX --custom-prop string with !important must be ignored");
+
+    const r18ExportDefRe = join(appDir, "R18ExpDef.tsx");
+    writeFileSync(r18ExportDefRe, 'export default /`/;\n// <div className="bg-[#ff00aa]" style={{ color: "red !important" }} />\nexport const X = () => <div className="p-4" />;\n');
+    assert.equal(runGate(checker, r18ExportDefRe).status, 0, "export default /`/ must be scanned as regex literal");
+
+    const r18JsxWildFn = join(appDir, "R18JsxWildFn.tsx");
+    writeFileSync(r18JsxWildFn, 'export const W = () => (\n  <p>\n    Use /* for globs\n    <br />\n    <div style={{ color: "#ff00aa" }} />\n    Every */5 min\n  </p>\n);\n');
+    assert.match(runGate(checker, r18JsxWildFn).stdout, /styleColors=1\b/, "JSX prose /* with <br /> before */5 must preserve interior styleColors");
+
+    const r18JsCommentTags = join(appDir, "R18JsCommentTags.tsx");
+    writeFileSync(r18JsCommentTags, '/* </div> <div style={{ color: "#ff00aa" }} className="bg-[#123456]" /> */\nexport const Ok = () => <div className="p-4" />;\n');
+    assert.equal(runGate(checker, r18JsCommentTags).status, 0, "Top-level JS /* </div> ... */ comment must remain stripped");
+
+    const r18StyleCmtClose = join(appDir, "R18StyleCmtClose.html");
+    writeFileSync(r18StyleCmtClose, "<style>\n  /* </style> */\n  .card { color: #ff00aa !important; }\n</style>\n");
+    assert.match(runGate(checker, r18StyleCmtClose).stdout, /styleColors=1\s+important=1\b/, "/* </style> */ inside <style> must not truncate style extraction");
+
+    const r18CssUrlStr = join(appDir, "R18CssUrlStr.css");
+    writeFileSync(r18CssUrlStr, '.card { content: "url(#foo"; color: #ff00aa; }\n.btn { padding: calc(8px + 4px); }\n');
+    assert.match(runGate(checker, r18CssUrlStr).stdout, /styleColors=1\b/, "Quoted url(#foo must not swallow color: #ff00aa");
+
+    const r18ColonSlash = join(appDir, "R18ColonSlash.scss");
+    writeFileSync(r18ColonSlash, ".card {\n  color:// #ff00aa !important\n  var(--fg);\n}\n");
+    assert.equal(runGate(checker, r18ColonSlash).status, 0, "SCSS property colon followed by // comment must strip line comment");
+
+    const r18Apos90 = join(appDir, "R18Apos90.tsx");
+    writeFileSync(r18Apos90, "export const Docs = () => <div><p>The '90s-style Chillin' vibe</p> {/* bg-[#ff00aa] !important */}</div>;\n");
+    assert.equal(runGate(checker, r18Apos90).status, 0, "'90s-style and n' apostrophes must preserve JSX comment stripping");
+
+    const r18EscTpl = join(appDir, "R18EscTpl.tsx");
+    writeFileSync(r18EscTpl, 'import styled from "styled-components";\nexport const C = styled.div<{ important: boolean }>`content: "\\${foo"; color: ${(p) => (!p.important ? "var(--a)" : "var(--b)")}; border-color: ${(p) => (!important ? "#ff00aa" : "#123456")};`;\n');
+    assert.match(runGate(checker, r18EscTpl).stdout, /styleColors=2\s+important=0\b/, "Escaped \\${ inside styled template must not expose JS !important");
+
+    const r18StrStyled = join(appDir, "R18StrStyled.tsx");
+    writeFileSync(r18StrStyled, 'export const Example = () => <pre>{"const B = styled.div`color: #ff00aa !important;`;"}</pre>;\n');
+    assert.equal(runGate(checker, r18StrStyled).status, 0, "styled.* inside JS string literal must be ignored");
+
+    const r18SkipDir = join(scratch, "r18-skip-root");
+    mkdirSync(join(r18SkipDir, "playwright-report"), { recursive: true });
+    mkdirSync(join(r18SkipDir, "src"), { recursive: true });
+    writeFileSync(join(r18SkipDir, "playwright-report/index.html"), '<style>.x { color: #ff00aa !important; }</style>\n');
+    writeFileSync(join(r18SkipDir, "src/App.tsx"), 'export const App = () => <div className="p-4" />;\n');
+    assert.equal(runGate(checker, r18SkipDir).status, 0, "playwright-report must be excluded by zero-arg check-design-discipline");
+
+    // Round 19 regressions (R19-A3-01..08, R19-A3-11, R19-A4-MED-1):
+    const r19ScssUrl = join(appDir, "R19ScssUrl.vue");
+    writeFileSync(r19ScssUrl, '<template><div /></template>\n<style lang="scss">.a { background: url(https://cdn.example.com/a.svg); color: #ff00aa !important; }</style>\n');
+    assert.match(runGate(checker, r19ScssUrl).stdout, /styleColors=1\s+important=1\b/, "R19 #1: single-line <style lang=scss> with https:// must preserve styleColors & important");
+
+    const r19TplQuote = join(appDir, "R19TplQuote.tsx");
+    writeFileSync(r19TplQuote, 'const x = `a"b`; export const C = styled.div`color: #ff00aa !important;`; const y = "z";\n');
+    assert.match(runGate(checker, r19TplQuote).stdout, /styleColors=1\s+important=1\b/, "R19 #2: odd quote inside backtick template must not mask styled.div");
+
+    const r19StrStyle = join(appDir, "R19StrStyle.tsx");
+    writeFileSync(r19StrStyle, 'export const Ex = () => <pre>{\'\\x3cdiv style="color: #ff00aa !important" />\'}</pre>;\nexport const Ex2 = () => <pre>{"<div style={{ color: \'#ff00aa\' }} />"}</pre>;\n');
+    assert.equal(runGate(checker, r19StrStyle).status, 0, "R19 #3: style attrs inside JS string literals must be ignored");
+
+    const r19TsGen = join(appDir, "R19TsGen.tsx");
+    writeFileSync(r19TsGen, 'export const f = <T extends Foo>(x: T) => <div>ok</div>;\n/* </div> <div style={{ color: "#ff00aa" }} /> */\n');
+    assert.equal(runGate(checker, r19TsGen).status, 0, "R19 #4: TSX <T extends Foo> generic must not look like open <t> JSX tag");
+
+    const r19JsClip = join(appDir, "R19JsClip.tsx");
+    writeFileSync(r19JsClip, 'export const X = () => <div style={{ clipPath: "url(#fade)" }} />;\n');
+    assert.equal(runGate(checker, r19JsClip).status, 0, "R19 #5: url(#fade) inside JS style string must be masked");
+
+    const r19SvComment = join(appDir, "R19SvComment.svelte");
+    writeFileSync(r19SvComment, "<div style=\"color: {// legacy #ff00aa\n active ? 'var(--a)' : 'var(--b)'}\">hi</div>\n");
+    assert.equal(runGate(checker, r19SvComment).status, 0, "R19 #6: Svelte quoted style JS // comment hex must be stripped");
+
+    const r19Def90 = join(appDir, "R19Def90.tsx");
+    writeFileSync(r19Def90, "export default '90s'; /* bg-[#ff00aa] !important */\nexport const X = () => <div><p>Rock 'n' Roll</p> {/* bg-[#ff00aa] !important */}</div>;\n");
+    assert.equal(runGate(checker, r19Def90).status, 0, "R19 #7: export default '90s' and standalone 'n' in Rock 'n' Roll must strip comments");
+
+    const r19UrlPad = join(appDir, "R19UrlPad.scss");
+    writeFileSync(r19UrlPad, '.card { background: url(/* note */ //cdn.example.com/a.svg); color: #ff00aa; }\n.pad { background: url(             /* #ff00aa !important */ "https://example.com/a.png"); color: var(--fg); }\n');
+    assert.match(runGate(checker, r19UrlPad).stdout, /styleColors=1\s+important=0\b/, "R19 #8: url(/* note */ //...) and 13-space padded url(/* ... */) must work");
+
+    const r19TplEsc = join(appDir, "R19TplEsc.tsx");
+    writeFileSync(r19TplEsc, "export const X = () => <div style={{ fontFamily: `Don\\'t /* !important */` }} />;\n");
+    assert.equal(runGate(checker, r19TplEsc).status, 0, "R19 #11: escaped apostrophe inside template literal must preserve backslash before CSS comment strip");
+
+    mkdirSync(join(r18SkipDir, ".vercel-static"), { recursive: true });
+    mkdirSync(join(r18SkipDir, ".storybook-public"), { recursive: true });
+    writeFileSync(join(r18SkipDir, ".vercel-static/built.html"), '<style>.x { color: #ff00aa !important; }</style>\n');
+    writeFileSync(join(r18SkipDir, ".storybook-public/built.html"), '<style>.x { color: #ff00aa !important; }</style>\n');
+    assert.match(execFileSync(process.execPath, [checker, ".vercel-static/built.html"], { cwd: r18SkipDir, encoding: "utf8" }), /styleColors=0/);
+    assert.match(execFileSync(process.execPath, [checker, ".storybook-public/built.html"], { cwd: r18SkipDir, encoding: "utf8" }), /styleColors=0/);
+
+    // Round 20 regressions (R20-A3-H1,M2,M3,M4,M5,M6,M7,L9,L10 & A4-M1,L5):
+    const r20H1Tsx = join(appDir, "R20H1.tsx");
+    writeFileSync(r20H1Tsx, 'export const C = () => <div><span>Users\'</span><div style={{ color: "#ff00aa !important" }} /><span>Don\'t</span></div>;\n');
+    assert.match(runGate(checker, r20H1Tsx).stdout, /styleColors=1\s+important=1\b/, "R20 H1: JSX Users'/Don't must not swallow style");
+
+    const r20H1Html = join(appDir, "r20h1.html");
+    writeFileSync(r20H1Html, '<p>Users\'</p><div style="color: #ff00aa !important">Real</div><p>Don\'t</p>\n');
+    assert.match(runGate(checker, r20H1Html).stdout, /styleColors=1\s+important=1\b/, "R20 H1: HTML Users'/Don't must not swallow style");
+
+    const r20H1Bt = join(appDir, "r20bt.html");
+    writeFileSync(r20H1Bt, '<p>Press ` key</p><div style="color: #ff00aa !important">Real</div><p>or ` key</p>\n');
+    assert.match(runGate(checker, r20H1Bt).stdout, /styleColors=1\s+important=1\b/, "R20 H1: HTML backticks must not swallow style");
+
+    const r20M2Tsx = join(appDir, "R20M2.tsx");
+    writeFileSync(
+      r20M2Tsx,
+      [
+        "export const X = () => <div><p>Back in '90s</p> {/* bg-[#ff00aa] !important */}<p>Best of '90s</p> {/* bg-[#ff00aa] !important */}<p>Era = '90s</p> {/* bg-[#ff00aa] !important */}</div>;",
+        "type Era<T> = T extends '90s' ? 1 : 2; /* bg-[#ff00aa] !important */",
+        "import '90s'; /* bg-[#ff00aa] !important */",
+      ].join("\n") + "\n"
+    );
+    assert.equal(runGate(checker, r20M2Tsx).status, 0, "R20 M2: '90s in JSX prose and extends/import must strip comments cleanly");
+
+    const r20M3Tsx = join(appDir, "R20M3.tsx");
+    writeFileSync(r20M3Tsx, 'const x = obj.in! / 2; const s = "/ "; // bg-[#ff00aa] !important\n');
+    assert.equal(runGate(checker, r20M3Tsx).status, 0, "R20 M3: obj.in! / 2 must not open bogus regex literal");
+
+    const r20M4Tsx = join(appDir, "R20M4.tsx");
+    writeFileSync(r20M4Tsx, 'const a = getUrl( // legacy bg-[#ff00aa] !important\n  "ok"\n);\n');
+    assert.equal(runGate(checker, r20M4Tsx).status, 0, "R20 M4: getUrl( must not disable line comment stripping");
+
+    const r20M5Sv = join(appDir, "R20M5.svelte");
+    writeFileSync(
+      r20M5Sv,
+      '<div style="{baseStyle}; --accent: #1d4ed8; color: var(--accent);">hi</div>\n<div style="font-family: \'Font {variant}\'; /* !important #ff00aa */ color: var(--fg);">hi</div>\n'
+    );
+    assert.equal(runGate(checker, r20M5Sv).status, 0, "R20 M5: Svelte quoted style leading {expr} custom prop & continuous cssQuote across {expr} must pass");
+
+    const r20M6Dir = join(scratch, "r20-m6");
+    mkdirSync(r20M6Dir, { recursive: true });
+    writeFileSync(r20M6Dir + "/A.tsx", "export const X = () => <div style={{ fontFamily: `Don\\'t /* #ff00aa !important */` }} />;\n");
+    writeFileSync(r20M6Dir + "/B.css", '.tip::after { content: "!important"; }\n');
+    writeFileSync(r20M6Dir + "/C.tsx", 'export const B = styled.div`content: "!important";`;\n');
+    assert.equal(runGate(checker, r20M6Dir).status, 0, "R20 M6: JSX style CSS comment and CSS/styled content '!important' must pass");
+
+    const r20M7Tsx = join(appDir, "R20M7.tsx");
+    writeFileSync(r20M7Tsx, 'const f: <T>(x: T) => void = (x) => {};\n/* </div> <div style={{ color: "#ff00aa" }} /> */\n');
+    assert.equal(runGate(checker, r20M7Tsx).status, 0, "R20 M7: TS generic <T>(x: T) => void must not open <t> JSX tag");
+
+    const r20L9Tsx = join(appDir, "R20L9.tsx");
+    writeFileSync(r20L9Tsx, 'export const a = "<svg>";\nexport const PALETTE = ["#ff00aa"];\nexport const b = "</svg>";\n');
+    assert.match(runGate(checker, r20L9Tsx).stdout, /svgColors=0,\s*swatchColors=1/, "R20 L9: string '<svg>' must not reclassify swatch array");
+
+    assert.equal(execFileSync(process.execPath, [checker, join(r18SkipDir, ".vercel-static")], { cwd: scratch, encoding: "utf8" }).includes("styleColors=0"), true);
+    assert.match(
+      execFileSync(process.execPath, [checker, join(r18SkipDir, ".vercel-static/built.html")], { cwd: tmpdir(), encoding: "utf8" }),
+      /styleColors=0/
+    );
+    mkdirSync(join(r18SkipDir, "dist"), { recursive: true });
+    writeFileSync(join(r18SkipDir, "dist/bundle.css"), ".x { color: #ff00aa !important; }\n");
+    assert.match(execFileSync(process.execPath, [checker, join(r18SkipDir, "dist")], { cwd: scratch, encoding: "utf8" }), /styleColors=0/);
+    assert.match(execFileSync(process.execPath, [checker, join(r18SkipDir, "dist/bundle.css")], { cwd: scratch, encoding: "utf8" }), /styleColors=0/);
+    assert.equal(readFileSync(checker, "utf8").includes("parseOptionalCap"), false, "R20 A4-L5: dead parseOptionalCap must be removed");
+
+    // Round 21 regressions (R21-A3-H1, R21-A4-M2, R21-A3-M1..M5, R21-A3-L1..L3):
+    const r21BuildRoot = join(scratch, "build/my-app");
+    mkdirSync(join(r21BuildRoot, "src"), { recursive: true });
+    writeFileSync(join(r21BuildRoot, "src/Bad.css"), ".bad { color: #ff00aa !important; }\n");
+    const r21DotRun = spawnSync(process.execPath, [checker, "."], { cwd: r21BuildRoot, encoding: "utf8" });
+    assert.equal(r21DotRun.status, 1, "R21 H1: repo checked out under build/ must still scan '.'");
+    assert.match(r21DotRun.stdout, /styleColors=1.*important=1/);
+    const r21FileRun = spawnSync(process.execPath, [checker, "src/Bad.css"], { cwd: r21BuildRoot, encoding: "utf8" });
+    assert.equal(r21FileRun.status, 1, "R21 H1: file under build/my-app/src must scan");
+
+    const r21SymDir = join(scratch, "r21-sym-app");
+    const r21ExtDs = join(scratch, "r21-ext-ds");
+    mkdirSync(join(r21SymDir, "src"), { recursive: true });
+    mkdirSync(join(r21SymDir, "dist"), { recursive: true });
+    mkdirSync(r21ExtDs, { recursive: true });
+    writeFileSync(join(r21SymDir, "dist/bundle.css"), ".x { color: #ff00aa !important; }\n");
+    symlinkSync(join(r21SymDir, "dist/bundle.css"), join(r21SymDir, "src/alias-dist.css"));
+    symlinkSync(join(r21SymDir, "missing.css"), join(r21SymDir, "src/broken.css"));
+    assert.equal(runGate(checker, r21SymDir).status, 0, "R21 A4-M2: symlink into dist & broken symlink must not fail or crash");
+    writeFileSync(join(r21ExtDs, "Ext.css"), ".ext { color: #ff00aa; }\n");
+    symlinkSync(r21ExtDs, join(r21SymDir, "src/linked-ds"));
+    const r21ExtRun = runGate(checker, r21SymDir);
+    assert.equal(r21ExtRun.status, 1, "R21 A4-M2: symlinked component dir must be traversed");
+    assert.match(r21ExtRun.stdout, /styleColors=1\b/);
+
+    const r21BangFn = join(appDir, "R21M1Fn.tsx");
+    writeFileSync(r21BangFn, 'if (check(x)) !/`/.test(s);\nexport const Card = styled.div`color: #ff00aa !important;`;\n');
+    assert.equal(runGate(checker, r21BangFn).status, 1, "R21 M1: if (check(x)) !/`/ must not swallow trailing styled-components");
+    const r21BangOk = join(appDir, "R21M1Ok.tsx");
+    writeFileSync(r21BangOk, 'if (check(x)) !/`/.test(s);\n/* bg-[#ff00aa] !important */\nexport const Ok = () => <div />;\n');
+    assert.equal(runGate(checker, r21BangOk).status, 0, "R21 M1: if (check(x)) !/`/ must keep block comment stripped");
+
+    const r21M2Dir = join(scratch, "r21-m2-jsx");
+    mkdirSync(r21M2Dir, { recursive: true });
+    writeFileSync(
+      join(r21M2Dir, "Generics.tsx"),
+      [
+        "type Factory = { <T>(x: T): void };",
+        "type F = (<T>(x: T) => void);",
+        "export default <T>(x: T) => x;",
+        '/* </div> <div style={{ color: "#ff00aa" }} /> */',
+        'export const Doc = () => <div data-doc=\'style="color: #ff00aa"\' data-a="<svg>" data-p="#123456" data-b="</svg>" />;',
+      ].join("\n")
+    );
+    const r21M2Run = runGate(checker, r21M2Dir);
+    assert.equal(r21M2Run.status, 0, "R21 M2: TS generics and JSX attribute strings must pass");
+    assert.match(r21M2Run.stdout, /svgColors=0\b/);
+    const r21M2TxtFn = join(appDir, "R21M2Txt.tsx");
+    writeFileSync(r21M2TxtFn, 'export const Txt = () => <div>(click): Use /* glob <span style={{ color: "#ff00aa" }} /> */5</div>;\n');
+    const r21M2TxtRun = runGate(checker, r21M2TxtFn);
+    assert.equal(r21M2TxtRun.status, 1, "R21 M2: real <div> with (click): JSX text must preserve child style={{}} check");
+    assert.match(r21M2TxtRun.stdout, /styleColors=1\b/);
+
+    const r21M3 = join(appDir, "R21M3.tsx");
+    writeFileSync(r21M3, "const x = /* some descriptive comment */ '90s' /* bg-[#ff00aa] !important */;\n");
+    assert.equal(runGate(checker, r21M3).status, 0, "R21 M3: comment before '90s must not disable isJsValCtx");
+
+    const r21M4 = join(appDir, "R21M4.tsx");
+    writeFileSync(r21M4, 'const endpoint = helper.url( // legacy bg-[#ff00aa]\n  "/api"\n);\n');
+    assert.equal(runGate(checker, r21M4).status, 0, "R21 M4: helper.url( line comment in TSX must strip cleanly");
+
+    const r21M5 = join(appDir, "R21M5.svelte");
+    writeFileSync(r21M5, "<div style=\"--note: {ok ? 'a !important' : 'b'}; color: var(--fg);\">hi</div>\n");
+    assert.equal(runGate(checker, r21M5).status, 0, "R21 M5: Svelte style --note: {expr} must not leak !important");
+
+    const r21L1 = join(appDir, "R21L1.svelte");
+    writeFileSync(r21L1, '<script>\nconst a = "<svg>";\nconst PALETTE = ["#ff00aa"];\nconst b = "</svg>";\n</script>\n');
+    assert.match(runGate(checker, r21L1).stdout, /svgColors=0,\s*swatchColors=1/, "R21 L1: SFC <script> '<svg>' string must not reclassify swatchColors");
+
+    const r21L2Dir = join(scratch, "r21-l2");
+    mkdirSync(r21L2Dir, { recursive: true });
+    writeFileSync(join(r21L2Dir, "VueRx.vue"), '<template><div :style="{ opacity: /#ff00aa/.test(s) ? 1 : 0 }" /></template>\n');
+    writeFileSync(join(r21L2Dir, "JsxImp.tsx"), 'export const Q = () => <div style={{ content: \'"!important"\' }} />;\n');
+    assert.equal(runGate(checker, r21L2Dir).status, 0, "R21 L2: Vue :style regex & JSX style quoted content !important must pass");
+
+    const guardSelfPath = fileURLToPath(import.meta.url);
+    assert.equal(spawnSync(process.execPath, [guardSelfPath, "--unknown-flag"], { encoding: "utf8" }).status, 2);
+    assert.equal(spawnSync(process.execPath, [guardSelfPath, "--out", scratch, "--stack", "bogus"], { encoding: "utf8" }).status, 2);
+    assert.equal(spawnSync(process.execPath, [guardSelfPath, "--out", scratch, "--mode", "Z"], { encoding: "utf8" }).status, 2);
+    assert.equal(spawnSync(process.execPath, [guardSelfPath, "--out", "   "], { encoding: "utf8" }).status, 2);
+
+    // Round 22 regressions (R22-A3-M1..M4, R22-A3-L2):
+    // 1. Multiline JSX string attribute + unclosed apostrophe guard
+    const r22JsxMulti = join(scratch, "r22-jsx-multi");
+    mkdirSync(r22JsxMulti, { recursive: true });
+    writeFileSync(
+      join(r22JsxMulti, "MultiAttr.tsx"),
+      [
+        'export const Doc = () => <div data-doc="\n  <span style={{ color: \'#ff00aa\' }} />\n" />;',
+        'export const MultiTw = () => <button className="\n  p-[13px]\n">Hi</button>;',
+      ].join("\n")
+    );
+    const r22JsxMultiRun = runGate(checker, r22JsxMulti);
+    assert.equal(r22JsxMultiRun.status, 1, "R22 M1: multiline JSX attribute must scan tw-[13px] and suppress style inside data-doc");
+    assert.match(r22JsxMultiRun.stdout, /styleColors=0.*twArbitrary=1/);
+
+    // 2. isTsNonNullBang backward template literal & regex literal skipping
+    const r22BangTpl = join(appDir, "R22BangTpl.tsx");
+    writeFileSync(
+      r22BangTpl,
+      [
+        'if (s === `)`) !/`/.test(s);',
+        'if (/[)]/.test(s)) !/`/.test(s);',
+        '/* bg-[#ff00aa] !important */',
+        'export const Ok = () => <div />;',
+      ].join("\n")
+    );
+    assert.equal(runGate(checker, r22BangTpl).status, 0, "R22 M2: template/regex ')' inside if(...) must not break !/`/ detection");
+
+    // 3. isMarkupSfc HTML/Vue/Svelte attribute isolation & </script  > whitespace close tag
+    const r22HtmlAttr = join(scratch, "r22-html-attr");
+    mkdirSync(r22HtmlAttr, { recursive: true });
+    writeFileSync(
+      join(r22HtmlAttr, "Doc.html"),
+      '<div data-doc=\'style="color: #ff00aa"\' data-a="<svg>" data-p="#123456" data-b="</svg>">hi</div>\n<script>\nconst a = "<svg>";\nconst PALETTE = ["#ffffff"];\nconst b = "</svg>";\n</script  >\n'
+    );
+    const r22HtmlRun = runGate(checker, r22HtmlAttr);
+    assert.equal(r22HtmlRun.status, 0, "R22 M3: HTML data-* style/svg strings & </script  > must pass cleanly");
+    assert.match(r22HtmlRun.stdout, /styleColors=0.*svgColors=0,\s*swatchColors=2/);
+
+    // 4. styled-components custom prop interpolation & quoted content in ${...} must not leak !important
+    const r22StyledImp = join(appDir, "R22StyledImp.tsx");
+    writeFileSync(
+      r22StyledImp,
+      [
+        'const A = styled.div`--note: ${(p) => p.ok ? "avoid !important" : "ok"};`;',
+        'const B = styled.div`content: ${(p) => \'"!important"\'};`;',
+      ].join("\n")
+    );
+    assert.equal(runGate(checker, r22StyledImp).status, 0, "R22 M4: styled-components --note & quoted !important in ${...} must pass");
+
+    // 5. External nested symlink into dist/sub must be skipped cleanly via full path segments
+    symlinkSync(join(r21SymDir, "dist"), join(r21ExtDs, "sub-link"));
+    mkdirSync(join(r21SymDir, "dist/sub"), { recursive: true });
+    writeFileSync(join(r21SymDir, "dist/sub/Leak.css"), ".leak { color: #ff00aa !important; }\n");
+    const r22SymExt = join(scratch, "r22-sym-ext");
+    mkdirSync(join(r22SymExt, "src"), { recursive: true });
+    symlinkSync(join(r21SymDir, "dist/sub"), join(r22SymExt, "src/linked-dist-sub"));
+    assert.equal(runGate(checker, r22SymExt).status, 0, "R22 L2: external symlink to ../dist/sub must be skipped cleanly");
+
+    // 6. Round 23 regressions (#29-#33, #35-#37, #46):
+    // (#29) escaped quote inside <style>, (#30) Svelte/Vue child exprs, (#31) JSX prose '=',
+    // (#32/#35) <Select<Option>> multiline attr & \s regex escape, (#33) symlink to repo root under build/,
+    // (#36) backward /* ) */ in isTsNonNullBang, (#37) tests/ directory CLI target exclusion, (#46) non-dir --out exit 2
+    const r23StyleEsc = join(appDir, "R23StyleEsc.html");
+    writeFileSync(r23StyleEsc, "<style>.foo\\'bar { color: #ff00aa !important; }</style>\n");
+    const r23StyleRun = runGate(checker, r23StyleEsc);
+    assert.equal(r23StyleRun.status, 1);
+    assert.match(r23StyleRun.stdout, /styleColors=1.*important=1/);
+
+    const r23SvelteExpr = join(appDir, "R23Svelte.svelte");
+    const r23VueExpr = join(appDir, "R23Vue.vue");
+    writeFileSync(r23SvelteExpr, '<pre>{\'<div style="color: #ff00aa !important" />\'}</pre>\n');
+    writeFileSync(r23VueExpr, '<template><pre>{{ \'<div style="color: #ff00aa !important" />\' }}</pre></template>\n');
+    assert.equal(runGate(checker, r23SvelteExpr).status, 0);
+    assert.equal(runGate(checker, r23VueExpr).status, 0);
+
+    const r23ProseEq = join(appDir, "R23ProseEq.tsx");
+    writeFileSync(r23ProseEq, "export const Doc = () => (\n  <div>\n    <p>Syntax: key = 'value</p>\n    {/* bg-[#ff00aa] !important */}\n  </div>\n);\n");
+    assert.equal(runGate(checker, r23ProseEq).status, 0);
+
+    const r23GenericAttr = join(appDir, "R23Generic.tsx");
+    writeFileSync(r23GenericAttr, 'export const T = () => (\n  <Select<Option>\n    data-doc="\n      <span style={{ color: \'#ff00aa\' }} />\n    "\n  />\n);\n');
+    assert.equal(runGate(checker, r23GenericAttr).status, 0);
+    assert.doesNotMatch(checkerSrc, /\/:\|\^s\*\$/);
+    assert.match(checkerSrc, /\/:\|\^\\s\*\$/);
+
+    const r23BuildExt = join(scratch, "build/ext-repo");
+    mkdirSync(join(r23BuildExt, "src"), { recursive: true });
+    writeFileSync(join(r23BuildExt, "package.json"), "{}");
+    writeFileSync(join(r23BuildExt, "src/Bad.css"), ".bad { color: #ff00aa; }\n");
+    const r23MainApp = join(scratch, "deep/nested/main-app");
+    mkdirSync(join(r23MainApp, "src"), { recursive: true });
+    symlinkSync(r23BuildExt, join(r23MainApp, "src/linked-ext"));
+    assert.equal(runGate(checker, r23MainApp).status, 1);
+
+    const r23BangComment = join(appDir, "R23BangComment.tsx");
+    writeFileSync(r23BangComment, "if (x /* ) */) !/`/.test(s);\n/* bg-[#ff00aa] !important */\nexport const Ok = () => <div />;\n");
+    assert.equal(runGate(checker, r23BangComment).status, 0);
+
+    const r23TestsDir = join(scratch, "r23-tests-dir/tests");
+    mkdirSync(r23TestsDir, { recursive: true });
+    writeFileSync(join(r23TestsDir, "bad.css"), ".bad { color: #ff00aa; }\n");
+    assert.equal(runGate(checker, r23TestsDir).status, 0);
+
+    const ggSelfPath = fileURLToPath(import.meta.url);
+    assert.equal(spawnSync(process.execPath, [ggSelfPath, "--out", r23StyleEsc], { encoding: "utf8" }).status, 2);
+
+    // 7. Round 24 regressions (A3-M1..M4, A3-L5..L7 + node --check on emitted checker)
+    assert.equal(spawnSync(process.execPath, ["--check", checker], { encoding: "utf8" }).status, 0, "Generated checker must pass node --check");
+
+    const r24SafeDir = join(scratch, "r24-safe");
+    mkdirSync(r24SafeDir, { recursive: true });
+    writeFileSync(
+      join(r24SafeDir, "StyleInStr.tsx"),
+      [
+        'export const doc = "<style>.a { color: #ff00aa !important; }</style>";',
+        'export const svgDoc = \'<path fill="#ff00aa" />\';',
+        'export const rxAttr = <Comp fn={() => /<a>/.test(x)} alt=\'Keep\nline\' />;',
+        'export const parenBang = (() => { if (a ? (b) : c /* ) */) !/foo/.test(x); return foo(1)! / 2; })();',
+        'export const decade = <p>In the 90s\' era</p>;',
+        '/* bg-[#ff00aa] !important */',
+      ].join("\n") + "\n"
+    );
+    writeFileSync(
+      join(r24SafeDir, "DocHtml.html"),
+      '<div data-doc="<style>.x { color: #ff00aa !important; }</style>" data-s=\'fill="#ff00aa"\'>90s\' scene</div>\n<!-- bg-[#ff00aa] !important -->\n'
+    );
+    const r24SafeRun = runGate(checker, r24SafeDir);
+    assert.equal(r24SafeRun.status, 0, `R24 safe samples must pass: ${r24SafeRun.stdout}`);
+
+    const r24QuoteStyle = join(appDir, "R24QuoteStyle.svelte");
+    writeFileSync(r24QuoteStyle, '<style data-note=">" lang="scss">\n.bad { color: #ff00aa !important; }\n</style>\n');
+    const r24QsRun = runGate(checker, r24QuoteStyle);
+    assert.equal(r24QsRun.status, 1);
+    assert.match(r24QsRun.stdout, /styleColors=1.*important=1/);
+
+    const r24FixStandaloneDir = join(scratch, "r24-standalone-root/fixtures");
+    mkdirSync(r24FixStandaloneDir, { recursive: true });
+    const r24FixFile = join(r24FixStandaloneDir, "StandaloneBad.css");
+    writeFileSync(r24FixFile, ".bad { color: #ff00aa !important; }\n");
+    assert.equal(runGate(checker, r24FixFile).status, 0, "R24 A3-L6: standalone file inside excluded fixtures/ parent dir must be skipped");
+
+    // 8. Round 25 regressions (A3-M1..M2, A3-L1..L2, A4-H1/L1 + node --check across all stacks)
+    for (const stName of ["css", "tailwind", "react"]) {
+      const stDir = join(scratch, `r25-stack-${stName}`);
+      generateGuardrails({ outDir: stDir, stack: stName, mode: "C" });
+      assert.equal(
+        spawnSync(process.execPath, ["--check", join(stDir, "check-design-discipline.mjs")], { encoding: "utf8" }).status,
+        0,
+        `Emitted checker for stack=${stName} must pass node --check`
+      );
+    }
+    const r25SelfCloseHtml = join(appDir, "R25SelfClose.html");
+    writeFileSync(
+      r25SelfCloseHtml,
+      '<script src="a.js" />\n<style />\n<style>\n.bad { color: #ff00aa !important; }\n</style>\n'
+    );
+    const r25SelfCloseRun = runGate(checker, r25SelfCloseHtml);
+    assert.equal(r25SelfCloseRun.status, 1, "R25 A3-M1: self-closing <script /> / <style /> must not swallow following <style> block");
+    assert.match(r25SelfCloseRun.stdout, /styleColors=1.*important=1/);
+
+    const r25JsRegexDir = join(scratch, "r25-js-regex");
+    mkdirSync(r25JsRegexDir, { recursive: true });
+    writeFileSync(
+      join(r25JsRegexDir, "RegexStyle.tsx"),
+      'export const hasStyle = (s: string) => /<style>[\\s\\S]*<\\/style>/i.test(s);\nexport const ok = "<style>.a { color: #ff00aa !important; }</style>";\nexport const El = () => <div />;\n'
+    );
+    assert.equal(runGate(checker, r25JsRegexDir).status, 0, "R25 A3-M2: /<style>...<\\/style>/ regex literal must not suppress TSX style scanning or trigger false positives");
+
+    const r25StyleJsxOk = join(appDir, "R25StyleJsxOk.tsx");
+    writeFileSync(
+      r25StyleJsxOk,
+      'export function Page() {\n  return (\n    <div>\n      <style jsx global>{`\n        :root { --brand: #ff00aa; }\n      `}</style>\n    </div>\n  );\n}\n'
+    );
+    assert.equal(runGate(checker, r25StyleJsxOk).status, 0, "R25 A3-L1: <style jsx> :root tokens must pass cleanly");
+
+    const r25StyleJsxBad = join(appDir, "R25StyleJsxBad.tsx");
+    writeFileSync(
+      r25StyleJsxBad,
+      'export function BadPage() {\n  return (\n    <div>\n      <style jsx>{`\n        :root { --brand: #112233; }\n        .bad { color: #ff00aa !important; }\n      `}</style>\n    </div>\n  );\n}\n'
+    );
+    const r25JsxBadRun = runGate(checker, r25StyleJsxBad);
+    assert.equal(r25JsxBadRun.status, 1, "R25 A3-L1: <style jsx> feature hex and !important must fail");
+    assert.match(r25JsxBadRun.stdout, /styleColors=1.*important=1/);
+
+    const r25Apostrophe = join(r25JsRegexDir, "Apostrophe.tsx");
+    writeFileSync(
+      r25Apostrophe,
+      "export const UsersGuide = () => (\n  <div>\n    <p>Users'-guide and \"Users'\" tip</p>\n    {/* bg-[#ff00aa] !important */}\n  </div>\n);\n"
+    );
+    assert.equal(runGate(checker, r25JsRegexDir).status, 0, "R25 A3-L2: Users'-guide and quoted Users' must not swallow following JSX comment");
+
+    const r25LiveTargetDir = join(scratch, "r25-real-dir");
+    mkdirSync(r25LiveTargetDir, { recursive: true });
+    const r25OutSym = join(scratch, "r25-out-sym");
+    symlinkSync(r25LiveTargetDir, r25OutSym);
+    assert.equal(spawnSync(process.execPath, [ggSelfPath, "--out", r25OutSym], { encoding: "utf8" }).status, 2);
+
+    const r25PartialDir = join(scratch, "r25-partial-dir");
+    const r25SecretFile = join(scratch, "r25-secret.mjs");
+    mkdirSync(r25PartialDir, { recursive: true });
+    writeFileSync(r25SecretFile, "// untouched\n");
+    symlinkSync(r25SecretFile, join(r25PartialDir, "check-design-discipline.mjs"));
+    assert.equal(spawnSync(process.execPath, [ggSelfPath, "--out", r25PartialDir], { encoding: "utf8" }).status, 2);
+    assert.equal(readFileSync(r25SecretFile, "utf8"), "// untouched\n");
+
+    const r25CliSym = join(scratch, "r25-gg-sym.mjs");
+    symlinkSync(ggSelfPath, r25CliSym);
+    assert.equal(spawnSync(process.execPath, [r25CliSym, "--help"], { encoding: "utf8" }).status, 0);
+
+    // 9. Round 26 regressions (A3-H1..H3, A3-M4..M8, A3-L11..L13)
+    const r26SvelteArbBad = join(appDir, "R26SvelteArbBad.svelte");
+    writeFileSync(
+      r26SvelteArbBad,
+      '<div class:[&>svg]:outline-none={a} data-note="<!--" />\n<div style="color: #ff00aa" class="bg-[#123456]">Real</div>\n<!-- footer -->\n'
+    );
+    const r26ArbBadRun = runGate(checker, r26SvelteArbBad);
+    assert.equal(r26ArbBadRun.status, 1, "R26 A3-H1: Svelte [&>svg] must not let data-note='<!--' swallow trailing violations");
+    assert.match(r26ArbBadRun.stdout, /styleColors=1.*twArbitrary=1/);
+
+    const r26SvelteArbOk = join(appDir, "R26SvelteArbOk.svelte");
+    writeFileSync(r26SvelteArbOk, '<div class:[&>svg]:outline-none={a} data-doc=\'style="color: #ff00aa"\' />\n');
+    assert.equal(runGate(checker, r26SvelteArbOk).status, 0, "R26 A3-H1: Svelte [&>svg] + data-doc style string must pass");
+
+    const r26StyleJsxInterp = join(appDir, "R26StyleJsxInterp.tsx");
+    writeFileSync(
+      r26StyleJsxInterp,
+      'export const P = ({ c }: any) => <div><style jsx>{`.a { color: ${c ? "#ff00aa" : "#123456"}; }`}</style></div>;\nexport const Q = ({ d }: any) => <div><style jsx>{`${d ? ".a { color: #ff00aa !important; }" : ""}`}</style></div>;\n'
+    );
+    const r26StyleJsxInterpRun = runGate(checker, r26StyleJsxInterp);
+    assert.equal(r26StyleJsxInterpRun.status, 1, "R26 A3-H2: <style jsx> ${...} interpolations must be scanned");
+    assert.match(r26StyleJsxInterpRun.stdout, /styleColors=3.*important=1/);
+
+    const r26HtmlLtApos = join(appDir, "R26HtmlLtApos.html");
+    writeFileSync(
+      r26HtmlLtApos,
+      '<p>When a<b it\'s broken</p>\n<!-- <div style="color: #ff00aa !important" class="bg-[#123456]">comment</div> -->\n'
+    );
+    assert.equal(runGate(checker, r26HtmlLtApos).status, 0, "R26 A3-H3: a<b + apostrophe must not disable HTML comment stripping");
+
+    const r26JsxWildcard = join(appDir, "R26JsxWildcard.tsx");
+    writeFileSync(r26JsxWildcard, 'export const D = () => <div><p>Glob:/*</p><div style={{ color: "#ff00aa" }} />{/* end */}</div>;\n');
+    const r26JsxWildcardRun = runGate(checker, r26JsxWildcard);
+    assert.equal(r26JsxWildcardRun.status, 1, "R26 A3-M4: JSX prose Glob:/* must not pair with {/* end */}");
+    assert.match(r26JsxWildcardRun.stdout, /styleColors=1\b/);
+
+    const r26ProseDir = join(scratch, "r26-prose-dir");
+    mkdirSync(r26ProseDir, { recursive: true });
+    writeFileSync(
+      join(r26ProseDir, "Doc.tsx"),
+      'export const Doc = () => <p>Avoid style="color: #ff00aa !important"</p>;\nexport const Doc2 = () => <p>Avoid styled.div`color: #ff00aa !important`</p>;\nexport const Pos = () => <div><p>Users\' guide and \'Save\'</p>{/* bg-[#ff00aa] !important */}</div>;\nexport const Cmp = ({ mode }: any) => <div style={{ color: mode === "!important" ? "var(--a)" : "var(--b)" }} />;\nexport const Pas = () => <Style><svg><path fill="#ff00aa" /></svg></Style>;\n'
+    );
+    writeFileSync(join(r26ProseDir, "Doc.html"), '<p>Avoid style="color: #ff00aa !important" and styled.div`color: #ff00aa`</p>\n');
+    writeFileSync(
+      join(r26ProseDir, "Container.css"),
+      "@container style(--theme: #ff00aa) { .a { color: var(--fg); } }\n.card { --legacy: #ff00aa !important; color: var(--legacy); }\n"
+    );
+    writeFileSync(
+      join(r26ProseDir, "Directive.svelte"),
+      '<div style:background={/#ff00aa/.test(s) ? "var(--a)" : "var(--b)"} />\n'
+    );
+    const r26ProseRun = runGate(checker, r26ProseDir);
+    assert.equal(r26ProseRun.status, 0, `R26 M5/M6/M7/M8/L11/L12 clean cases must pass: ${r26ProseRun.stdout}`);
+    assert.match(r26ProseRun.stdout, /styleColors=0.*important=0.*twArbitrary=0.*svgColors=1\b/);
+
+    const r26SvelteImpMod = join(appDir, "R26SvelteImpMod.svelte");
+    writeFileSync(r26SvelteImpMod, '<div style:color|important="var(--fg)" />\n');
+    const r26SvelteImpRun = runGate(checker, r26SvelteImpMod);
+    assert.equal(r26SvelteImpRun.status, 1, "R26 A3-L11: Svelte style:color|important must count as !important");
+    assert.match(r26SvelteImpRun.stdout, /important=1\b/);
+
+    const r26JsxStyleBtClose = join(appDir, "R26JsxStyleBtClose.tsx");
+    writeFileSync(
+      r26JsxStyleBtClose,
+      'export const P = ({ x }: any) => <div><style jsx>{`${x ? `</style>` : `.a { color: #ff00aa; }`}`}</style></div>;\n'
+    );
+    const r26BtCloseRun = runGate(checker, r26JsxStyleBtClose);
+    assert.equal(r26BtCloseRun.status, 1, "R26 A3-L13: nested backtick </style> inside <style jsx> must not close early");
+    assert.match(r26BtCloseRun.stdout, /styleColors=1\b/);
+
+    // Round 27 regressions (A3-H1..H6, A3-M7..M11)
+    const r27AstroBad = join(appDir, "R27Case1.astro");
+    writeFileSync(r27AstroBad, "---\nconst cls = 'p-4';\n---\n<style>\n.card { color: #ff00aa !important; }\n</style>\n<div class=\"bg-[#ff00aa]\">Hi</div>\n");
+    const r27AstroRun = runGate(checker, r27AstroBad);
+    assert.equal(r27AstroRun.status, 1, "R27 A3-H1: .astro files must be scanned");
+    assert.match(r27AstroRun.stdout, /styleColors=1.*important=1.*twArbitrary=1/);
+
+    const r27HtmBad = join(appDir, "R27Case.htm");
+    writeFileSync(r27HtmBad, '<div style="color: #ff00aa" class="bg-[#123456]">Hi</div>\n');
+    assert.equal(runGate(checker, r27HtmBad).status, 1, "R27 A3-H1: .htm files must be scanned");
+
+    const r27TwDir = join(scratch, "r27-tw-false-pos");
+    mkdirSync(r27TwDir, { recursive: true });
+    writeFileSync(
+      join(r27TwDir, "TwSafe.tsx"),
+      [
+        'export const Doc = () => <p>Avoid bg-[#ff00aa] and p-[13px] in components.</p>;',
+        'export const MSG = "Never write bg-[#ff00aa] or p-[13px]";',
+        'export const check = (c: string) => c === "bg-[#ff00aa]";',
+        'export const AttrDoc = () => <div data-example="bg-[#ff00aa]" title="p-[13px]">ok</div>;',
+      ].join("\n") + "\n"
+    );
+    writeFileSync(join(r27TwDir, "TwSafe.html"), '<p>Do not use bg-[#ff00aa] or p-[13px]</p>\n');
+    writeFileSync(join(r27TwDir, "TwSafe.css"), '.tip::after { content: "Avoid bg-[#ff00aa] #123456"; }\n');
+    const r27TwSafeRun = runGate(checker, r27TwDir);
+    assert.equal(r27TwSafeRun.status, 0, `R27 A3-H2/M10: non-class TW & quoted CSS content must pass: ${r27TwSafeRun.stdout}`);
+    assert.match(r27TwSafeRun.stdout, /styleColors=0.*important=0.*twArbitrary=0/);
+
+    const r27TwCva = join(appDir, "R27TwCva.tsx");
+    writeFileSync(r27TwCva, 'const v = cva("px-2", { variants: { tone: { bad: "bg-[#ff00aa] p-[13px]" } } });\n');
+    const r27TwCvaRun = runGate(checker, r27TwCva);
+    assert.equal(r27TwCvaRun.status, 1);
+    assert.match(r27TwCvaRun.stdout, /twArbitrary=2\b/);
+
+    const r27AttrSlashTsx = join(appDir, "R27Slash.tsx");
+    writeFileSync(r27AttrSlashTsx, 'export const C = () => <input pattern="\\" style={{ color: "#ff00aa" }} />;\n');
+    assert.match(runGate(checker, r27AttrSlashTsx).stdout, /styleColors=1\b/, "R27 A3-H3: TSX attr quote must not escape with \\");
+    const r27AttrSlashHtml = join(appDir, "R27Slash.html");
+    writeFileSync(r27AttrSlashHtml, '<div data-win="\\" style="color: #ff00aa"></div>\n');
+    assert.match(runGate(checker, r27AttrSlashHtml).stdout, /styleColors=1\b/, "R27 A3-H3: HTML attr quote must not escape with \\");
+
+    const r27RootDeclCss = join(appDir, "R27RootDecls.css");
+    writeFileSync(r27RootDeclCss, "body.dark { background: #ff00aa !important; }\n:root { color: #123456 !important; }\n");
+    const r27RootDeclRun = runGate(checker, r27RootDeclCss);
+    assert.equal(r27RootDeclRun.status, 1);
+    assert.match(r27RootDeclRun.stdout, /styleColors=2.*important=2/, "R27 A3-H4: non-custom-prop decls in body.dark/:root must fail");
+
+    const r27HtmlOp = join(appDir, "R27HtmlOp.tsx");
+    writeFileSync(r27HtmlOp, 'export function f(a: number, b: number) { if (a <!-- b) { return 1; } return <div style={{ color: "#ff00aa" }} />; }\n');
+    assert.match(runGate(checker, r27HtmlOp).stdout, /styleColors=1\b/, "R27 A3-H5: a <!-- b in JS must not open HTML comment");
+
+    const r27WildcardJsx = join(appDir, "R27Wildcard.tsx");
+    writeFileSync(r27WildcardJsx, 'export const Docs = () => <div><p>Glob: /* <span style={{ color: "#ff00aa" }}>bad</span> */ </p></div>;\n');
+    assert.match(runGate(checker, r27WildcardJsx).stdout, /styleColors=1\b/, "R27 A3-H6: space after */ in open JSX must not delete real JSX child");
+
+    const r27ProseQuotesOk = join(appDir, "R27ProseQuotesOk.tsx");
+    writeFileSync(
+      r27ProseQuotesOk,
+      [
+        'export const Help = () => <div><p>Press ` key</p>{/* bg-[#ff00aa] !important */}</div>;',
+        'export const Q = () => { const a = <p>Say "hi</p>; // <div style={{ color: "#ff00aa" }} />\nreturn a; };',
+        'export const D = () => <div><p>f\'(x) and 12\'</p>{/* bg-[#ff00aa] !important */}</div>;',
+      ].join("\n") + "\n"
+    );
+    assert.equal(runGate(checker, r27ProseQuotesOk).status, 0, "R27 A3-M7: backtick, double quote, and prime apostrophe in JSX prose must pass");
+
+    const r27UnclosedTpl = join(appDir, "R27UnclosedTpl.tsx");
+    writeFileSync(r27UnclosedTpl, 'export const B = styled.div`color: ${unclosed; background: #ff00aa;`;\nexport const C = () => <div style={{ color: "#123456" }} />;\n');
+    assert.match(runGate(checker, r27UnclosedTpl).stdout, /styleColors=2\b/, "R27 A3-M8: unclosed ${ in styled.div must not swallow subsequent JSX style");
+
+    const r27UnclosedAttrHtml = join(appDir, "R27UnclosedAttr.html");
+    writeFileSync(r27UnclosedAttrHtml, '<div style="color: #ff00aa>\n<div style="color: #123456">Real</div>\n');
+    assert.match(runGate(checker, r27UnclosedAttrHtml).stdout, /styleColors=1\b/, "R27 A3-M8: unclosed HTML style quote must not swallow next line element");
+
+    const r27BareStyleJsx = join(appDir, "R27BareStyle.tsx");
+    writeFileSync(
+      r27BareStyleJsx,
+      [
+        'export const P = ({ x }: any) => <style>{`${x ? `</style>` : `.a { color: #ff00aa !important; }`}`}</style>;',
+        'export const Q = () => <style>{`@property --c { syntax: "<color>"; inherits: false; initial-value: #1d4ed8; }`}</style>;',
+        'export const R = ({ cond, p }: any) => <style jsx>{cond ? `.a { color: ${p.color || "#123456"}; }` : ""}</style>;',
+      ].join("\n") + "\n"
+    );
+    const r27BareStyleRun = runGate(checker, r27BareStyleJsx);
+    assert.equal(r27BareStyleRun.status, 1);
+    assert.match(r27BareStyleRun.stdout, /styleColors=2.*important=1/, "R27 A3-M9: bare <style>{...}</style>, @property exemption, and conditional fallback hex");
+
+    const r27StyledContentOk = join(appDir, "R27StyledContentOk.tsx");
+    writeFileSync(r27StyledContentOk, 'export const Tip = styled.div`&::after { content: "#ff00aa"; }`;\n');
+    assert.equal(runGate(checker, r27StyledContentOk).status, 0, "R27 A3-M10: quoted CSS content '#hex' inside styled.div must pass");
+
+    const r27SvelteExprOk = join(appDir, "R27SvelteExprOk.svelte");
+    writeFileSync(
+      r27SvelteExprOk,
+      '<div style="color: {mode === \'#ff00aa\' ? \'var(--a)\' : \'var(--b)\'}">hi</div>\n<div style="color: {/#ff00aa/.test(s) ? \'var(--a)\' : \'var(--b)\'}">hi</div>\n'
+    );
+    assert.equal(runGate(checker, r27SvelteExprOk).status, 0, "R27 A3-M11: Svelte quoted style comparison & regex must not flag styleColors");
+
+    const r28ProseOk = join(appDir, "R28H1ProseOk.tsx");
+    writeFileSync(
+      r28ProseOk,
+      [
+        'export const A = () => { const a = <p>a = "hi</p>; // <div style={{ color: "#ff00aa" }} />\nreturn a; };',
+        'export const B = () => <div><p>x < 2 ? "yes" : "no"</p>{/* bg-[#ff00aa] !important */}</div>;',
+      ].join("\n") + "\n"
+    );
+    assert.equal(runGate(checker, r28ProseOk).status, 0, "R28 A3-H1: JSX prose quotes with = or < must not leak outside closing tag");
+
+    const r28TplCss = join(appDir, "R28H2TplCss.tsx");
+    writeFileSync(
+      r28TplCss,
+      [
+        "import styled from 'styled-components';",
+        'export const Box = styled.div`&::after { content: "${x ? "#ff00aa" : "#112233"}"; } color: ${p => p.c || "#123456"};`;',
+        'export const S1 = ({ ok }: any) => <style>{`&::after { content: "${ok ? "#ff00aa" : "#112233"}"; } .a { color: ${ok ? "#abcdef" : "var(--fg)"}; }`}</style>;',
+        'export const S2 = () => <style>{`${":root { --brand: #ff00aa; } .x { content: \'#112233\'; color: #223344; }"}`}</style>;',
+      ].join("\n") + "\n"
+    );
+    const r28TplCssRun = runGate(checker, r28TplCss);
+    assert.equal(r28TplCssRun.status, 1);
+    assert.match(r28TplCssRun.stdout, /styleColors=3\b/, "R28 A3-H2: extractColorsFromTplCss must catch unquoted/nested interpolations while masking quoted CSS content");
+
+    const r28AstroJsx = join(appDir, "R28H3Astro.astro");
+    writeFileSync(
+      r28AstroJsx,
+      '---\n---\n<div title={a < b && <span>Say \'hi</span>}><div style="color: #ff00aa">x</div></div>\n'
+    );
+    const r28AstroJsxRun = runGate(checker, r28AstroJsx);
+    assert.equal(r28AstroJsxRun.status, 1);
+    assert.match(r28AstroJsxRun.stdout, /styleColors=1\b/, "R28 A3-H3: Astro expression JSX prose apostrophe must not swallow later style");
+
+    const r28BackslashTpl = join(appDir, "R28M4Escape.tsx");
+    writeFileSync(
+      r28BackslashTpl,
+      'export const A = () => <div><span>{`win\\\\`}</span><div style={{ color: "#ff00aa" }} /></div>;\nexport const B = () => <div><span>{"\\\\"}</span><div style={{ color: "#123456" }} /></div>;\n'
+    );
+    const r28BackslashRun = runGate(checker, r28BackslashTpl);
+    assert.equal(r28BackslashRun.status, 1);
+    assert.match(r28BackslashRun.stdout, /styleColors=2\b/, "R28 A3-M4: escaped trailing backslashes in JS quotes/templates must close cleanly");
+
+    const r28TwDedup = join(appDir, "R28M5TwDedup.tsx");
+    writeFileSync(
+      r28TwDedup,
+      'export const D = ({ ok }: any) => <div className={`p-4 ${ok ? "bg-[#ff00aa]" : "p-[13px]"}`} />;\n'
+    );
+    const r28TwDedupRun = runGate(checker, r28TwDedup);
+    assert.equal(r28TwDedupRun.status, 1);
+    assert.match(r28TwDedupRun.stdout, /twArbitrary=2\b/, "R28 A3-M5: template-wrapped Tailwind arbitrary classes must not double-count");
+    assert.match(r28TwDedupRun.stdout, /styleColors=0\b/, "R28 A3-M5: template-wrapped Tailwind arbitrary colors must not trigger styleColors");
+
+    const r28SvelteAttr = join(appDir, "R28M6SvelteAttr.svelte");
+    writeFileSync(
+      r28SvelteAttr,
+      '<div class="p-4 {ok ? "bg-[#ff00aa]" : ""}" style="color: #123456">hi</div>\n'
+    );
+    const r28SvelteAttrRun = runGate(checker, r28SvelteAttr);
+    assert.equal(r28SvelteAttrRun.status, 1);
+    assert.match(r28SvelteAttrRun.stdout, /styleColors=1\b/, "R28 A3-M6: Svelte {...} with double quotes inside quoted attr must preserve style check");
+    assert.match(r28SvelteAttrRun.stdout, /twArbitrary=1\b/, "R28 A3-M6: Svelte {...} inside quoted attr still catches Tailwind arbitrary color");
+
+    const r28GenericArrow = join(appDir, "R28M7GenericArrow.tsx");
+    writeFileSync(
+      r28GenericArrow,
+      'export const fn = <T,>(x: T): string => String(x);\nexport const fn2 = <T extends { a: string }>(x: T): string => x.a;\nexport const C = () => <div style={{ color: "#ff00aa" }} />;\n'
+    );
+    const r28GenericArrowRun = runGate(checker, r28GenericArrow);
+    assert.equal(r28GenericArrowRun.status, 1);
+    assert.match(r28GenericArrowRun.stdout, /styleColors=1\b/, "R28 A3-M7: generic arrow functions <T>(x): Type => must not swallow JSX");
+
+    const r28SvgBackslash = join(appDir, "R28L8SvgAttr.html");
+    writeFileSync(
+      r28SvgBackslash,
+      '<svg data-path="C:\\"><rect fill="#ff00aa" /></svg>\n<div data-path="C:\\" style="color: #123456">hi</div>\n'
+    );
+    const r28SvgBackslashRun = runGate(checker, r28SvgBackslash);
+    assert.equal(r28SvgBackslashRun.status, 1);
+    assert.match(r28SvgBackslashRun.stdout, /styleColors=1\b/, "R28 A3-L8: backslash at end of HTML quoted attribute must not escape closing quote");
+
+    const r28AstroRegex = join(appDir, "R28L9AstroRegex.astro");
+    writeFileSync(
+      r28AstroRegex,
+      '---\nconst re = /^---$/m;\nconst n = 1 / 2;\n---\n<div style="color: #ff00aa">hi</div>\n'
+    );
+    const r28AstroRegexRun = runGate(checker, r28AstroRegex);
+    assert.equal(r28AstroRegexRun.status, 1);
+    assert.match(r28AstroRegexRun.stdout, /styleColors=1\b/, "R28 A3-L9: Astro frontmatter regex matching --- must not close frontmatter early");
+
+    // Round 29 regressions (A3-H1, A3-H2, A3-M4, A3-M5, A3-M6, A3-M7, A3-L9, A3-L10, !important parity)
+    const r29H1a = join(appDir, "R29H1a.tsx");
+    writeFileSync(r29H1a, 'export const R1 = () => (<p>Option A // Option B <span style={{ color: "#ff00aa" }} className="bg-[#123456]">bad</span></p>);\n');
+    assert.match(runGate(checker, r29H1a).stdout, /styleColors=1.*twArbitrary=1/, "R29 A3-H1: // in open JSX text must not strip trailing JSX");
+
+    const r29H1b = join(appDir, "R29H1b.tsx");
+    writeFileSync(
+      r29H1b,
+      'export const R2 = () => (\n  <div>\n    <p>Visit //server/share</p>\n    <div style={{ color: "#ff00aa" }} className="bg-[#123456]" />\n  </div>\n);\n/* <div style={{ color: "#abcdef" }} /> */\n'
+    );
+    assert.match(runGate(checker, r29H1b).stdout, /styleColors=1.*twArbitrary=1/, "R29 A3-H1: //server/share in open JSX must preserve </p> balance");
+
+    const r29H1c = join(appDir, "R29H1c.tsx");
+    writeFileSync(r29H1c, 'export const R3 = () => (<p>foo/*bar <span style={{ color: "#ff00aa" }} /> baz*/</p>);\n');
+    assert.match(runGate(checker, r29H1c).stdout, /styleColors=1\b/, "R29 A3-H1: /*word inside open JSX must stay literal");
+
+    const r29H2 = join(appDir, "r29-theme-kf.css");
+    writeFileSync(r29H2, "@theme {\n  --animate-wiggle: wiggle 1s ease;\n  @keyframes wiggle {\n    0% { color: #ff00aa; }\n    100% { color: #123456; }\n  }\n}\n");
+    assert.equal(runGate(checker, r29H2).status, 0, "R29 A3-H2: nested @keyframes inside @theme must stay in full-skip token mode");
+
+    const r29M4 = join(appDir, "R29M4.tsx");
+    writeFileSync(r29M4, 'export const Card = ({ a }: { a: number }) => (<div><Button disabled={a > 0}\n/* <span style={{ color: "#ff00aa" }} /> */\nclassName="p-4" /></div>);\n');
+    assert.equal(runGate(checker, r29M4).status, 0, "R29 A3-M4: > inside prop expr must not turn open tag prop comment into JSX children");
+
+    const r29M5 = join(appDir, "R29M5.svelte");
+    writeFileSync(r29M5, '<div class:[&>svg]:bg-[#ff00aa]={active} class:group-hover/btn:bg-[#123456]={active} />\n');
+    assert.match(runGate(checker, r29M5).stdout, /twArbitrary=2\b/, "R29 A3-M5: Svelte class: directive with [&>svg] and /name modifiers must be caught");
+
+    const r29M6 = join(appDir, "R29M6.svelte");
+    writeFileSync(r29M6, '<div style:color="/* #ff00aa */ {active ? \'var(--a)\' : \'var(--b)\'}" />\n');
+    assert.equal(runGate(checker, r29M6).status, 0, "R29 A3-M6: comment inside quoted interpolated Svelte style:color must be stripped");
+
+    const r29M7a = join(appDir, "R29M7a.astro");
+    writeFileSync(r29M7a, '---\n---\n<div style={`--accent: #1d4ed8; color: var(--accent);`}>hi</div>\n');
+    assert.equal(runGate(checker, r29M7a).status, 0, "R29 A3-M7: Astro style={`--accent: #...`} custom property must be skipped");
+
+    const r29M7b = join(appDir, "R29M7b.tsx");
+    writeFileSync(r29M7b, 'export const C = () => <div style={{ ["--accent"]: "#1d4ed8" } as React.CSSProperties} />;\n');
+    assert.equal(runGate(checker, r29M7b).status, 0, "R29 A3-M7: TSX computed style property [\"--accent\"] must be skipped");
+
+    const r29L9 = join(appDir, "R29L9.tsx");
+    writeFileSync(r29L9, 'const btn = cva<Variants>("p-4", { variants: { tone: { bad: "bg-[#ff00aa]" } } });\n');
+    assert.match(runGate(checker, r29L9).stdout, /twArbitrary=1\b/, "R29 A3-L9: generic cva<T>(...) must be scanned for Tailwind arbitrary classes");
+
+    const r29L10 = join(appDir, "R29L10.tsx");
+    writeFileSync(r29L10, 'export const Icon = ({ ok }: any) => (<svg\n  data-note="line1\n  />"\n  viewBox="0 0 24 24"\n><path fill={ok ? "#ff00aa" : "#123456"} /></svg>);\n');
+    const r29L10Run = runGate(checker, r29L10);
+    assert.equal(r29L10Run.status, 0);
+    assert.match(r29L10Run.stdout, /svgColors=2, swatchColors=0/, "R29 A3-L10: multiline <svg attr=\"...\\n/>\"> must stay svgColors");
+
+    const r29Imp = join(appDir, "r29-imp.css");
+    writeFileSync(r29Imp, ".a { color: var(--fg) ! important; background: var(--bg) !IMPORTANT; }\n");
+    assert.match(runGate(checker, r29Imp).stdout, /important=2\b/, "R29 parity: ! important whitespace and case variants caught");
+
+    // Round 30 regressions (A3-H1 >4KB JSX cursor, A3-H2 Svelte attr backticks, A3-H3 TS generic vs later </Tag>, A3-M5 a<b escape, A3-M6 Svelte quoted style: inner ", A3-L8 adjacent className)
+    const r30H1Big = join(appDir, "R30H1Big.tsx");
+    writeFileSync(
+      r30H1Big,
+      `export const Page = () => (\n  <div>\n    ${"<section><span>item</span></section>\n    ".repeat(140)}Route A // Route B <div style={{ color: "#ff00aa" }} className="bg-[#123456]" />\n    <p>foo /* bar <span style={{ color: "#654321" }} /> baz */</p>\n  </div>\n);\n`
+    );
+    assert.match(runGate(checker, r30H1Big).stdout, /styleColors=2.*twArbitrary=1/, "R30 A3-H1: >4KB component must preserve enclosing JSX context");
+
+    const r30H2Svelte = join(appDir, "R30H2.svelte");
+    writeFileSync(
+      r30H2Svelte,
+      "<div class={`bg-[#ff00aa] // note`} />\n<div style={`color: #123456 // note`} />\n"
+    );
+    assert.match(runGate(checker, r30H2Svelte).stdout, /styleColors=1.*twArbitrary=1/, "R30 A3-H2: Svelte attr {} backtick tracking with // must keep violations");
+
+    const r30H3Generic = join(appDir, "R30H3.tsx");
+    writeFileSync(
+      r30H3Generic,
+      'const identity = <Item>(x: Item): Item => x;\nexport const badge = cva("bg-[#ff00aa]");\nexport const Card = styled.div`color: #123456;`;\nexport const View = () => <Item><span>hi</span></Item>;\n'
+    );
+    assert.match(runGate(checker, r30H3Generic).stdout, /styleColors=1.*twArbitrary=1/, "R30 A3-H3: TS generic <Item>(x: Item): Item => must not swallow intermediate styled/cva before </Item>");
+
+    const r30M5Comp = join(appDir, "R30M5.tsx");
+    writeFileSync(
+      r30M5Comp,
+      'const ok = a<b;\nconst q = "12\\""; /* export const Card = styled.div`color: #ff00aa;`; */\n'
+    );
+    assert.equal(runGate(checker, r30M5Comp).status, 0, "R30 A3-M5: a<b comparison must not disable escaped quotes and leak comments");
+
+    const r30M6SvelteQuote = join(appDir, "R30M6.svelte");
+    writeFileSync(
+      r30M6SvelteQuote,
+      '<div style:color="/* #123456 */ {active ? "#ff00aa" : "var(--fg)"}" />\n'
+    );
+    const r30M6Run = runGate(checker, r30M6SvelteQuote);
+    assert.match(r30M6Run.stdout, /styleColors=1\b/, "R30 A3-M6: Svelte quoted style: with inner double quotes must catch #ff00aa and strip comment");
+
+    const r30L8AdjClass = join(appDir, "R30L8.tsx");
+    writeFileSync(
+      r30L8AdjClass,
+      'export const A = (props: any) => <div {...props}className="bg-[#ff00aa]" />;\nexport const B = () => <div id="x"className="p-[13px]" />;\n'
+    );
+    assert.match(runGate(checker, r30L8AdjClass).stdout, /twArbitrary=2\b/, "R30 A3-L8: className immediately after } or \" must still be scanned");
 
     console.log(`GENERATE_GUARDRAILS_SELF_TEST_PASSED (v${GENERATOR_VERSION} style/SVG/swatch separation + single-file + Tailwind + 3-tier + SARIF)`);
     return 0;
@@ -450,29 +6688,50 @@ export const Logo = () => (
 }
 
 function main() {
-  const { values } = parseArgs({
-    options: {
-      out: { type: "string" },
-      stack: { type: "string", default: "tailwind" },
-      mode: { type: "string", default: "C" },
-      "self-test": { type: "boolean", default: false },
-      help: { type: "boolean", short: "h", default: false },
-    },
-  });
+  let values;
+  try {
+    ({ values } = parseArgs({
+      options: {
+        out: { type: "string" },
+        stack: { type: "string", default: "tailwind" },
+        mode: { type: "string", default: "C" },
+        "self-test": { type: "boolean", default: false },
+        help: { type: "boolean", short: "h", default: false },
+      },
+    }));
+  } catch (err) {
+    console.error(`ERROR: ${err instanceof Error ? err.message : String(err)}`);
+    process.exit(2);
+  }
 
   if (values.help) {
-    console.log("Usage: node skill/scripts/generate-guardrails.mjs --out <dir> [--stack css|tailwind|react] [--mode S|C|P] [--self-test]");
+    console.log("Usage: node skill/scripts/generate-guardrails.mjs --out <dir> [--stack css|tailwind|react] [--mode S|C|P] [--self-test] [--help]");
     process.exit(0);
   }
   if (values["self-test"]) process.exit(runSelfTest());
-  if (!values.out) {
-    console.error("Error: --out <dir> is required unless --self-test is passed.");
+  if (!values.out || !values.out.trim()) {
+    console.error("Error: non-empty --out <dir> is required unless --self-test is passed.");
     process.exit(2);
   }
-  const written = generateGuardrails({ outDir: values.out, stack: values.stack, mode: values.mode });
+  const cleanStack = String(values.stack || "").toLowerCase();
+  if (!["css", "tailwind", "react"].includes(cleanStack)) {
+    console.error(`Error: invalid --stack '${values.stack}'. Expected css|tailwind|react.`);
+    process.exit(2);
+  }
+  const cleanMode = String(values.mode || "").toUpperCase();
+  if (!["S", "C", "P"].includes(cleanMode)) {
+    console.error(`Error: invalid --mode '${values.mode}'. Expected S|C|P.`);
+    process.exit(2);
+  }
+  let written;
+  try {
+    written = generateGuardrails({ outDir: values.out, stack: cleanStack, mode: cleanMode });
+  } catch (err) {
+    console.error(`ERROR: ${err instanceof Error ? err.message : String(err)}`);
+    process.exit(2);
+  }
   console.log(`DSAF guardrails generated (${written.length} files):`);
   for (const w of written) console.log(`  - ${w}`);
 }
 
-const isEntry = process.argv[1] && resolve(process.argv[1]) === decodeURIComponent(new URL(import.meta.url).pathname);
-if (isEntry) main();
+if (isDirectCliEntry(import.meta.url)) main();

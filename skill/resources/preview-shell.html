@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en" data-theme="light" data-uxs-ambition="L3" data-uxs-view="compare" data-uxs-viewport="desktop" data-uxs-theme="light" data-uxs-pins="off" data-uxs-state="default">
+<html lang="en" data-uxs-ambition="L3" data-uxs-view="compare" data-uxs-viewport="desktop" data-uxs-theme="auto" data-uxs-pins="off" data-uxs-state="default">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -13,17 +13,18 @@
       --uxs-surface-subtle: #F8F9FB;
       --uxs-border: #D5DBE3;
       --uxs-border-ui: #5D6B7E;
+      --uxs-ink-border: #2B3E5E;
       --uxs-fg: #111827;
       --uxs-muted: #465366;
       --uxs-primary: #14243D;
+      --uxs-primary-hover: #1E3557;
       --uxs-primary-fg: #FFFFFF;
       --uxs-ink-card: #122138;
       --uxs-ink-fg: #F1F5F9;
       --uxs-ink-muted: #C2CDDC;
       --uxs-accent: #F4BA17;
+      --uxs-accent-hover: #FFCA36;
       --uxs-accent-fg: #0D1420;
-      --uxs-accent-text: #6E4F00;
-      --uxs-accent-soft: #FEF7E0;
       --uxs-pass-bg: #E8F4ED;
       --uxs-pass-border: #9ECFBA;
       --uxs-pass-fg: #0B5936;
@@ -36,25 +37,30 @@
       --uxs-font: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
       --uxs-mono: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
 
-      &:has(> head > meta[name="color-scheme"][content="dark"]),
+      &[data-uxs-theme="light"],
+      &[data-theme="light"] {
+        color-scheme: light;
+      }
+      &:not([data-theme="light"])[data-uxs-theme="dark"],
       &[data-theme="dark"] {
         color-scheme: dark;
         --uxs-canvas-bg: #0B1018;
         --uxs-surface: #121925;
         --uxs-surface-subtle: #182232;
         --uxs-border: #273449;
-        --uxs-border-ui: #68778E;
+        --uxs-border-ui: #6E7E96;
+        --uxs-ink-border: #2D405F;
         --uxs-fg: #ECF1F8;
         --uxs-muted: #B6C2D4;
         --uxs-primary: #E8EEF7;
+        --uxs-primary-hover: #D4DFEE;
         --uxs-primary-fg: #0B1018;
         --uxs-ink-card: #18273F;
         --uxs-ink-fg: #F3F6FA;
         --uxs-ink-muted: #C3D0E0;
         --uxs-accent: #F4BA17;
+        --uxs-accent-hover: #FFCA36;
         --uxs-accent-fg: #0B1018;
-        --uxs-accent-text: #F4BA17;
-        --uxs-accent-soft: #3D3316;
         --uxs-pass-bg: #133124;
         --uxs-pass-border: #2D6F51;
         --uxs-pass-fg: #82DFB3;
@@ -68,23 +74,25 @@
     }
 
     @media (prefers-color-scheme: dark) {
-      :root:not([data-theme="light"]) {
+      :root:not([data-uxs-theme="light"]):not([data-theme="light"]) {
+        color-scheme: dark;
         --uxs-canvas-bg: #0B1018;
         --uxs-surface: #121925;
         --uxs-surface-subtle: #182232;
         --uxs-border: #273449;
-        --uxs-border-ui: #68778E;
+        --uxs-border-ui: #6E7E96;
+        --uxs-ink-border: #2D405F;
         --uxs-fg: #ECF1F8;
         --uxs-muted: #B6C2D4;
         --uxs-primary: #E8EEF7;
+        --uxs-primary-hover: #D4DFEE;
         --uxs-primary-fg: #0B1018;
         --uxs-ink-card: #18273F;
         --uxs-ink-fg: #F3F6FA;
         --uxs-ink-muted: #C3D0E0;
         --uxs-accent: #F4BA17;
+        --uxs-accent-hover: #FFCA36;
         --uxs-accent-fg: #0B1018;
-        --uxs-accent-text: #F4BA17;
-        --uxs-accent-soft: #3D3316;
         --uxs-pass-bg: #133124;
         --uxs-pass-border: #2D6F51;
         --uxs-pass-fg: #82DFB3;
@@ -97,12 +105,10 @@
       }
     }
 
-    @media (prefers-reduced-motion: reduce) {
-      *, *::before, *::after { animation-duration: 0.01ms; transition-duration: 0.01ms; }
-    }
-
     *, *::before, *::after { box-sizing: border-box; }
+    html { scroll-padding-top: calc(var(--uxs-toolbar-h, 72px) + 12px); }
     html, body { margin: 0; padding: 0; overflow-x: clip; }
+    [data-pin-card], [data-pin-target], button, a, select, [tabindex] { scroll-margin-top: calc(var(--uxs-toolbar-h, 72px) + 12px); }
     body {
       min-height: 100dvh;
       background: var(--uxs-canvas-bg);
@@ -112,7 +118,7 @@
       line-height: 1.5;
     }
 
-    button:focus-visible, select:focus-visible, a:focus-visible {
+    button:focus-visible, select:focus-visible, a:focus-visible, [tabindex]:focus-visible {
       outline: 2px solid var(--uxs-ring);
       outline-offset: 2px;
     }
@@ -134,10 +140,15 @@
     .uxs-toolbar-left {
       display: flex;
       align-items: center;
-      gap: 10px;
-      font-weight: 600;
-      font-size: 13px;
+      gap: 8px;
       white-space: nowrap;
+    }
+    .uxs-toolbar-title {
+      margin: 0;
+      font-weight: 700;
+      font-size: 14px;
+      line-height: 1.25;
+      color: var(--uxs-fg);
     }
     .uxs-toolbar-controls {
       display: flex;
@@ -149,10 +160,21 @@
       display: inline-flex;
       align-items: center;
       gap: 4px;
-      padding: 2px;
+      padding: 4px;
       border: 1px solid var(--uxs-border-ui);
       border-radius: 8px;
       background: var(--uxs-surface-subtle);
+    }
+    .uxs-select-wrap {
+      position: relative;
+      display: inline-flex;
+      align-items: center;
+    }
+    .uxs-select-chevron {
+      position: absolute;
+      right: 8px;
+      pointer-events: none;
+      color: var(--uxs-fg);
     }
     .uxs-tbtn, .uxs-select {
       appearance: none;
@@ -163,17 +185,35 @@
       font-size: 12.5px;
       font-weight: 600;
       min-height: 44px;
-      padding: 0 10px;
+      padding: 0 12px;
       border-radius: 6px;
       cursor: pointer;
       white-space: nowrap;
     }
     .uxs-select {
-      padding-right: 14px;
+      padding-right: 28px;
+    }
+    .uxs-select option {
+      background: var(--uxs-surface);
+      color: var(--uxs-fg);
     }
     .uxs-tbtn[aria-pressed="true"] {
       background: var(--uxs-primary);
       color: var(--uxs-primary-fg);
+    }
+
+    /* Ambition L1/L2/L3 scoping */
+    :root[data-uxs-ambition="L1"] [data-uxs-group="view"] [data-view="track-b"],
+    :root[data-uxs-ambition="L2"] [data-uxs-group="view"] [data-view="track-b"] {
+      display: none;
+    }
+    :root[data-uxs-ambition="L1"] [data-pin-track="track-b"],
+    :root[data-uxs-ambition="L2"] [data-pin-track="track-b"] {
+      display: none;
+    }
+    :root[data-uxs-ambition="L1"][data-uxs-view="compare"] .uxs-panes,
+    :root[data-uxs-ambition="L2"][data-uxs-view="compare"] .uxs-panes {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
     }
 
     /* Shell Layout */
@@ -215,7 +255,9 @@
       grid-template-columns: repeat(3, minmax(0, 1fr));
     }
     @container uxs-stage (max-width: 1020px) {
-      :root[data-uxs-view="compare"] .uxs-panes {
+      :root[data-uxs-view="compare"] .uxs-panes,
+      :root[data-uxs-ambition="L1"][data-uxs-view="compare"] .uxs-panes,
+      :root[data-uxs-ambition="L2"][data-uxs-view="compare"] .uxs-panes {
         grid-template-columns: minmax(0, 1fr);
       }
     }
@@ -234,13 +276,17 @@
     :root[data-uxs-view="before"] [data-pane="before"] { display: block; }
     :root[data-uxs-view="track-a"] [data-pane="track-a"] { display: block; }
     :root[data-uxs-view="track-b"] [data-pane="track-b"] { display: block; }
+    :root[data-uxs-ambition="L1"] .uxs-pane[data-pane="track-b"],
+    :root[data-uxs-ambition="L2"] .uxs-pane[data-pane="track-b"] {
+      display: none;
+    }
 
     .uxs-pane-bar {
       display: flex;
       align-items: center;
       justify-content: space-between;
       gap: 8px;
-      padding: 10px 16px;
+      padding: 12px 16px;
       background: var(--uxs-surface-subtle);
       border-bottom: 1px solid var(--uxs-border);
       font-size: 12px;
@@ -269,7 +315,7 @@
 
     /* Specimen Content Shared & Track Styling */
     .uxs-app {
-      padding: 18px 16px;
+      padding: 16px;
       display: grid;
       gap: 16px;
     }
@@ -279,14 +325,14 @@
       justify-content: space-between;
       flex-wrap: wrap;
       gap: 12px;
-      padding-bottom: 14px;
+      padding-bottom: 12px;
       border-bottom: 1px solid var(--uxs-border);
     }
     .uxs-app-title-wrap {
       min-width: 0;
       flex: 1 1 200px;
     }
-    .uxs-app h1, .uxs-app h2, .uxs-app h3 {
+    .uxs-app h2, .uxs-app h3 {
       margin: 0;
       color: var(--uxs-fg);
       line-height: 1.25;
@@ -300,7 +346,7 @@
       align-items: center;
       justify-content: center;
       min-height: 44px;
-      padding: 0 14px;
+      padding: 0 16px;
       border-radius: 8px;
       border: 1px solid var(--uxs-border-ui);
       background: var(--uxs-surface);
@@ -318,10 +364,19 @@
       border-color: var(--uxs-primary);
       color: var(--uxs-primary-fg);
     }
-    .uxs-btn--primary:hover { opacity: 0.92; background: var(--uxs-primary); }
+    .uxs-btn--primary:hover {
+      background: var(--uxs-primary-hover);
+      border-color: var(--uxs-primary-hover);
+      color: var(--uxs-primary-fg);
+    }
     .uxs-btn--accent {
       background: var(--uxs-accent);
       border-color: var(--uxs-accent);
+      color: var(--uxs-accent-fg);
+    }
+    .uxs-btn--accent:hover {
+      background: var(--uxs-accent-hover);
+      border-color: var(--uxs-accent-hover);
       color: var(--uxs-accent-fg);
     }
 
@@ -339,22 +394,18 @@
     .legacy-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 
     /* Track A: crisp structured polish on identical layout */
-    .polish-band {
-      display: grid;
-      gap: 12px;
-    }
     .polish-stats {
       display: grid;
       grid-template-columns: repeat(2, minmax(0, 1fr));
       gap: 12px;
     }
     .polish-stat {
-      padding: 12px 14px;
+      padding: 12px 16px;
       border: 1px solid var(--uxs-border);
       border-radius: 8px;
       background: var(--uxs-surface-subtle);
     }
-    .polish-stat-k { font-size: 12px; font-weight: 600; color: var(--uxs-muted); margin: 0 0 2px; }
+    .polish-stat-k { font-size: 12px; font-weight: 600; color: var(--uxs-muted); margin: 0 0 4px; }
     .polish-stat-v { font-size: 17px; font-weight: 700; font-variant-numeric: tabular-nums; margin: 0; }
 
     /* Track B: asymmetric North-Star 2-column grid */
@@ -371,7 +422,7 @@
     }
     .ns-main { display: grid; gap: 16px; min-width: 0; }
     .ns-section {
-      padding-bottom: 14px;
+      padding-bottom: 16px;
       border-bottom: 1px solid var(--uxs-border);
     }
     .ns-section:last-child { padding-bottom: 0; border-bottom: 0; }
@@ -390,10 +441,16 @@
       width: 80%;
       background: var(--uxs-primary);
     }
+    .meter-fill--stress {
+      width: 96%;
+    }
     .ns-summary-rail {
+      --uxs-ring: var(--uxs-accent);
+      --uxs-pin-bg: var(--uxs-accent);
+      --uxs-pin-fg: var(--uxs-accent-fg);
       background: var(--uxs-ink-card);
       color: var(--uxs-ink-fg);
-      border: 1px solid var(--uxs-border);
+      border: 1px solid var(--uxs-ink-border);
       border-radius: 10px;
       padding: 16px;
       display: grid;
@@ -407,13 +464,13 @@
       gap: 8px;
       font-size: 13px;
       padding-top: 8px;
-      border-top: 1px solid var(--uxs-border);
+      border-top: 1px solid var(--uxs-ink-border);
       font-variant-numeric: tabular-nums;
     }
 
     /* Status & Alert states */
     .uxs-alert {
-      padding: 10px 12px;
+      padding: 12px;
       border-radius: 8px;
       border: 1px solid var(--uxs-warn-border);
       background: var(--uxs-warn-bg);
@@ -458,7 +515,7 @@
       font-variant-numeric: tabular-nums;
     }
     .uxs-table th, .uxs-table td {
-      padding: 9px 12px;
+      padding: 8px 12px;
       text-align: left;
       border-bottom: 1px solid var(--uxs-border);
     }
@@ -475,12 +532,12 @@
       }
       .uxs-table thead { display: none; }
       .uxs-table tbody tr {
-        padding: 10px 12px;
+        padding: 12px;
         border-bottom: 1px solid var(--uxs-border);
       }
       .uxs-table tbody tr:last-child { border-bottom: 0; }
       .uxs-table tbody th, .uxs-table tbody td {
-        padding: 3px 0;
+        padding: 4px 0;
         border-bottom: 0;
       }
       .uxs-table tbody td[data-col]::before {
@@ -492,16 +549,19 @@
 
     /* State visibility */
     .uxs-state-block { display: none; }
-    :root[data-uxs-state="default"] .uxs-state-block[data-state-id="default"] { display: block; }
-    :root[data-uxs-state="empty"] .uxs-state-block[data-state-id="empty"] { display: block; }
-    :root[data-uxs-state="stress"] .uxs-state-block[data-state-id="stress"] { display: block; }
-    :root[data-uxs-state="error"] .uxs-state-block[data-state-id="error"] { display: block; }
+    :root[data-uxs-state="default"] .uxs-state-block[data-state-id~="default"] { display: block; }
+    :root[data-uxs-state="empty"] .uxs-state-block[data-state-id~="empty"] { display: block; }
+    :root[data-uxs-state="stress"] .uxs-state-block[data-state-id~="stress"] { display: block; }
+    :root[data-uxs-state="error"] .uxs-state-block[data-state-id~="error"] { display: block; }
 
     /* Finding Pins & Drawer */
     .uxs-pin-host {
       display: inline-flex;
       align-items: center;
-      gap: 6px;
+      gap: 8px;
+    }
+    .uxs-section-head {
+      margin-bottom: 8px;
     }
     .uxs-pin {
       display: none;
@@ -512,7 +572,7 @@
       padding: 0;
       border: 0;
       background: transparent;
-      color: var(--uxs-pin-fg);
+      color: inherit;
       cursor: pointer;
       flex: none;
     }
@@ -523,7 +583,7 @@
       justify-content: center;
       min-width: 26px;
       height: 24px;
-      padding: 0 7px;
+      padding: 0 8px;
       border-radius: 999px;
       background-color: var(--uxs-pin-bg);
       color: var(--uxs-pin-fg);
@@ -538,8 +598,8 @@
       background: var(--uxs-surface);
       border: 1px solid var(--uxs-border);
       border-radius: 10px;
-      padding: 14px;
-      gap: 10px;
+      padding: 16px;
+      gap: 8px;
     }
     :root[data-uxs-pins="on"] .uxs-drawer { display: grid; }
     .uxs-drawer-head {
@@ -552,17 +612,23 @@
     }
     .uxs-drawer-head h2 { margin: 0; font-size: 14px; font-weight: 700; }
     .uxs-note-item {
-      padding: 8px 0;
-      border-bottom: 1px solid var(--uxs-border);
+      padding: 8px;
+      border-radius: 8px;
+      border: 1px solid transparent;
+      border-bottom-color: var(--uxs-border);
     }
-    .uxs-note-item:last-child { border-bottom: 0; padding-bottom: 0; }
+    .uxs-note-item:last-child { border-bottom-color: transparent; }
+    .uxs-note-item.is-active {
+      border-color: var(--uxs-ring);
+      background: var(--uxs-surface-subtle);
+    }
     .uxs-note-title {
       display: flex;
       align-items: center;
-      gap: 6px;
+      gap: 8px;
       font-size: 13px;
       font-weight: 700;
-      margin: 0 0 3px;
+      margin: 0 0 4px;
     }
     .uxs-note-desc { margin: 0; font-size: 12.5px; color: var(--uxs-muted); }
 
@@ -570,7 +636,9 @@
       :root[data-uxs-pins="on"] .uxs-shell-body {
         grid-template-columns: minmax(0, 1fr);
       }
-      :root[data-uxs-view="compare"] .uxs-panes {
+      :root[data-uxs-view="compare"] .uxs-panes,
+      :root[data-uxs-ambition="L1"][data-uxs-view="compare"] .uxs-panes,
+      :root[data-uxs-ambition="L2"][data-uxs-view="compare"] .uxs-panes {
         grid-template-columns: minmax(0, 1fr);
       }
     }
@@ -578,15 +646,16 @@
       .uxs-toolbar {
         position: relative;
         padding: 8px 12px;
-        gap: 6px;
+        gap: 8px;
       }
       .uxs-toolbar-controls {
         width: 100%;
         flex-wrap: nowrap;
         overflow-x: auto;
         max-width: 100%;
-        padding-bottom: 2px;
+        padding-bottom: 4px;
         scrollbar-width: thin;
+        scroll-padding-inline: 16px;
       }
       .uxs-group, .uxs-tbtn, .uxs-select {
         flex: none;
@@ -594,13 +663,32 @@
       [data-uxs-group="viewport"] {
         display: none;
       }
+      :root[data-uxs-viewport="tablet"] .uxs-canvas,
+      :root[data-uxs-viewport="mobile"] .uxs-canvas {
+        max-width: 100%;
+      }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      :root, :root[data-uxs-view] {
+        scroll-behavior: auto;
+      }
+      :root *, :root *::before, :root *::after,
+      :root[data-uxs-view] .uxs-pane *, :root[data-uxs-view] .uxs-pane *::before, :root[data-uxs-view] .uxs-pane *::after {
+        animation-duration: 0.01ms;
+        animation-delay: 0ms;
+        animation-iteration-count: 1;
+        transition-duration: 0.01ms;
+        transition-delay: 0ms;
+        scroll-behavior: auto;
+      }
     }
   </style>
 </head>
 <body>
   <header class="uxs-toolbar" data-ux-shell-toolbar="v3.0">
     <div class="uxs-toolbar-left">
-      <span>Preview Workbench</span>
+      <!-- SLOT:SCREEN_TITLE -->
+      <h1 class="uxs-toolbar-title">Preview Workbench</h1>
       <span class="uxs-pane-tag">Billing Specimen</span>
     </div>
     <div class="uxs-toolbar-controls">
@@ -616,18 +704,24 @@
         <button type="button" class="uxs-tbtn" data-vp-btn="mobile" aria-pressed="false">390px</button>
       </div>
       <div class="uxs-group" data-uxs-group="state">
-        <select class="uxs-select" id="uxs-state-select" aria-label="Specimen UI state">
-          <option value="default" selected>State: Active</option>
-          <option value="empty">State: Trial (Empty)</option>
-          <option value="stress">State: Long Locale</option>
-          <option value="error">State: Card Declined</option>
-        </select>
+        <div class="uxs-select-wrap">
+          <select class="uxs-select" id="uxs-state-select" aria-label="Specimen UI state">
+            <option value="default" selected>State: Active</option>
+            <option value="empty">State: Trial (Empty)</option>
+            <option value="stress">State: Long Locale</option>
+            <option value="error">State: Card Declined</option>
+          </select>
+          <svg class="uxs-select-chevron" width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+            <path d="M2.5 4.5L6 8L9.5 4.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
+          </svg>
+        </div>
       </div>
-      <div class="uxs-group" data-uxs-group="theme">
-        <button type="button" class="uxs-tbtn" id="uxs-theme-btn" aria-pressed="false">Light</button>
+      <div class="uxs-group" data-uxs-group="theme" role="group" aria-label="Color theme">
+        <button type="button" class="uxs-tbtn" data-theme="light" aria-pressed="true">Light</button>
+        <button type="button" class="uxs-tbtn" data-theme="dark" aria-pressed="false">Dark</button>
       </div>
       <div class="uxs-group" data-uxs-group="pins">
-        <button type="button" class="uxs-tbtn" id="uxs-pins-btn" aria-pressed="false">Notes (4)</button>
+        <button type="button" class="uxs-tbtn" id="uxs-pins-btn" aria-pressed="false">Finding Pins (4)</button>
       </div>
     </div>
   </header>
@@ -636,7 +730,7 @@
     <main class="uxs-stage">
       <div class="uxs-canvas">
         <div class="uxs-panes">
-          <!-- BEFORE: Legacy Unpolished UI -->
+          <!-- SLOT:BEFORE_HTML -->
           <section class="uxs-pane" data-pane="before" aria-label="Before baseline UI">
             <div class="uxs-pane-bar">
               <span>Current UI</span>
@@ -645,7 +739,7 @@
             <div class="uxs-app">
               <div class="uxs-app-head">
                 <div class="uxs-app-title-wrap">
-                  <h1 class="uxs-app-title">Subscription &amp; Billing Administration</h1>
+                  <h2 class="uxs-app-title">Subscription &amp; Billing Administration</h2>
                   <p class="uxs-app-sub">Manage organization plan subscription tier settings and invoices.</p>
                 </div>
                 <div class="legacy-actions">
@@ -662,7 +756,7 @@
                 <div class="uxs-empty">Your 14-day workspace trial has no billing history or paid invoices yet.</div>
               </div>
 
-              <div class="uxs-state-block" data-state-id="default">
+              <div class="uxs-state-block" data-state-id="default error">
                 <div class="legacy-box">
                   <p class="legacy-label">Active Tier: Team Monthly ($49.00/mo billed to Visa ****4242)</p>
                   <p class="legacy-val">Assigned Workspace Seats: 8 of 10</p>
@@ -676,25 +770,49 @@
                 </div>
               </div>
 
-              <div class="uxs-table-wrap">
-                <table class="uxs-table">
-                  <thead>
-                    <tr>
-                      <th>Invoice Date</th>
-                      <th>Amount</th>
-                      <th>Status</th>
+              <div class="uxs-table-wrap uxs-state-block" data-state-id="default error">
+                <table class="uxs-table" role="table">
+                  <thead role="rowgroup">
+                    <tr role="row">
+                      <th role="columnheader" scope="col">Invoice Date</th>
+                      <th role="columnheader" scope="col">Amount</th>
+                      <th role="columnheader" scope="col">Status</th>
                     </tr>
                   </thead>
-                  <tbody>
-                    <tr>
-                      <th scope="row">Nov 01, 2026</th>
-                      <td data-col="Amount">$49.00</td>
-                      <td data-col="Status">Paid</td>
+                  <tbody role="rowgroup">
+                    <tr role="row">
+                      <th role="rowheader" scope="row">Nov 01, 2026</th>
+                      <td role="cell" data-col="Amount">$49.00</td>
+                      <td role="cell" data-col="Status">Paid</td>
                     </tr>
-                    <tr>
-                      <th scope="row">Oct 01, 2026</th>
-                      <td data-col="Amount">$49.00</td>
-                      <td data-col="Status">Paid</td>
+                    <tr role="row">
+                      <th role="rowheader" scope="row">Oct 01, 2026</th>
+                      <td role="cell" data-col="Amount">$49.00</td>
+                      <td role="cell" data-col="Status">Paid</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+
+              <div class="uxs-table-wrap uxs-state-block" data-state-id="stress">
+                <table class="uxs-table" role="table">
+                  <thead role="rowgroup">
+                    <tr role="row">
+                      <th role="columnheader" scope="col">Invoice Date</th>
+                      <th role="columnheader" scope="col">Amount</th>
+                      <th role="columnheader" scope="col">Status</th>
+                    </tr>
+                  </thead>
+                  <tbody role="rowgroup">
+                    <tr role="row">
+                      <th role="rowheader" scope="row">Nov 01, 2026</th>
+                      <td role="cell" data-col="Amount">$1,240.00</td>
+                      <td role="cell" data-col="Status">Paid</td>
+                    </tr>
+                    <tr role="row">
+                      <th role="rowheader" scope="row">Oct 01, 2026</th>
+                      <td role="cell" data-col="Amount">$1,240.00</td>
+                      <td role="cell" data-col="Status">Paid</td>
                     </tr>
                   </tbody>
                 </table>
@@ -702,7 +820,7 @@
             </div>
           </section>
 
-          <!-- TRACK A: Pragmatic Polish -->
+          <!-- SLOT:TRACK_A_HTML -->
           <section class="uxs-pane" data-pane="track-a" aria-label="Track A pragmatic fix">
             <div class="uxs-pane-bar">
               <span>Track A · Pragmatic</span>
@@ -728,7 +846,7 @@
                 <div class="uxs-empty">Trial active (14 days left). No invoices issued yet — add a card before trial ends.</div>
               </div>
 
-              <div class="polish-band uxs-state-block" data-state-id="default">
+              <div class="uxs-state-block" data-state-id="default error">
                 <div class="polish-stats">
                   <div class="polish-stat">
                     <p class="polish-stat-k">Plan Rate</p>
@@ -741,7 +859,7 @@
                 </div>
               </div>
 
-              <div class="polish-band uxs-state-block" data-state-id="stress">
+              <div class="uxs-state-block" data-state-id="stress">
                 <div class="polish-stats">
                   <div class="polish-stat">
                     <p class="polish-stat-k">Phòng Kỹ Thuật Nền Tảng — Gói Năm</p>
@@ -754,25 +872,49 @@
                 </div>
               </div>
 
-              <div class="uxs-table-wrap">
-                <table class="uxs-table">
-                  <thead>
-                    <tr>
-                      <th>Date</th>
-                      <th>Amount</th>
-                      <th>Status</th>
+              <div class="uxs-table-wrap uxs-state-block" data-state-id="default error">
+                <table class="uxs-table" role="table">
+                  <thead role="rowgroup">
+                    <tr role="row">
+                      <th role="columnheader" scope="col">Date</th>
+                      <th role="columnheader" scope="col">Amount</th>
+                      <th role="columnheader" scope="col">Status</th>
                     </tr>
                   </thead>
-                  <tbody>
-                    <tr>
-                      <th scope="row">Nov 01, 2026</th>
-                      <td data-col="Amount">$49.00</td>
-                      <td data-col="Status"><span class="uxs-status-pill">Paid</span></td>
+                  <tbody role="rowgroup">
+                    <tr role="row">
+                      <th role="rowheader" scope="row">Nov 01, 2026</th>
+                      <td role="cell" data-col="Amount">$49.00</td>
+                      <td role="cell" data-col="Status"><span class="uxs-status-pill">Paid</span></td>
                     </tr>
-                    <tr>
-                      <th scope="row">Oct 01, 2026</th>
-                      <td data-col="Amount">$49.00</td>
-                      <td data-col="Status"><span class="uxs-status-pill">Paid</span></td>
+                    <tr role="row">
+                      <th role="rowheader" scope="row">Oct 01, 2026</th>
+                      <td role="cell" data-col="Amount">$49.00</td>
+                      <td role="cell" data-col="Status"><span class="uxs-status-pill">Paid</span></td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+
+              <div class="uxs-table-wrap uxs-state-block" data-state-id="stress">
+                <table class="uxs-table" role="table">
+                  <thead role="rowgroup">
+                    <tr role="row">
+                      <th role="columnheader" scope="col">Date</th>
+                      <th role="columnheader" scope="col">Amount</th>
+                      <th role="columnheader" scope="col">Status</th>
+                    </tr>
+                  </thead>
+                  <tbody role="rowgroup">
+                    <tr role="row">
+                      <th role="rowheader" scope="row">Nov 01, 2026</th>
+                      <td role="cell" data-col="Amount">$1,240.00</td>
+                      <td role="cell" data-col="Status"><span class="uxs-status-pill">Paid</span></td>
+                    </tr>
+                    <tr role="row">
+                      <th role="rowheader" scope="row">Oct 01, 2026</th>
+                      <td role="cell" data-col="Amount">$1,240.00</td>
+                      <td role="cell" data-col="Status"><span class="uxs-status-pill">Paid</span></td>
                     </tr>
                   </tbody>
                 </table>
@@ -780,7 +922,7 @@
             </div>
           </section>
 
-          <!-- TRACK B: North-Star Layout -->
+          <!-- SLOT:TRACK_B_HTML -->
           <section class="uxs-pane" data-pane="track-b" aria-label="Track B north-star redesign">
             <div class="uxs-pane-bar">
               <span>Track B · North-Star</span>
@@ -803,48 +945,71 @@
 
               <div class="ns-grid">
                 <div class="ns-main">
-                  <div class="ns-section uxs-state-block" data-state-id="default">
+                  <div class="ns-section uxs-state-block" data-state-id="default error">
                     <p class="ns-k">Seats allocated</p>
                     <p class="ns-price">8 of 10 seats</p>
                     <div class="meter-track" aria-hidden="true"><div class="meter-fill"></div></div>
                     <p class="ns-k">2 seats remaining before auto-billing</p>
                   </div>
 
-                  <div class="ns-section uxs-state-block" data-state-id="empty">
+                  <div class="uxs-state-block" data-state-id="empty">
                     <div class="uxs-empty">Trial Workspace · 14 days remaining. Connect a payment method only when you invite member #4.</div>
                   </div>
 
                   <div class="ns-section uxs-state-block" data-state-id="stress">
                     <p class="ns-k">Nguyễn Hoàng Phương Thảo — Tổ Chức Enterprise</p>
                     <p class="ns-price">240 of 250 seats</p>
-                    <div class="meter-track" aria-hidden="true"><div class="meter-fill"></div></div>
+                    <div class="meter-track" aria-hidden="true"><div class="meter-fill meter-fill--stress"></div></div>
                     <p class="ns-k">Line-height preserves full Vietnamese diacritics across narrow panes.</p>
                   </div>
 
-                  <div class="ns-section">
-                    <div class="uxs-pin-host" style="margin-bottom: 8px;">
+                  <div class="ns-section uxs-state-block" data-state-id="default stress error">
+                    <div class="uxs-pin-host uxs-section-head">
                       <h3>Recent Invoices</h3>
                       <button type="button" class="uxs-pin" data-pin-target="4" aria-label="Inspect Note 4"><span class="uxs-pin-pill">#4</span></button>
                     </div>
-                    <div class="uxs-table-wrap">
-                      <table class="uxs-table">
-                        <thead>
-                          <tr>
-                            <th>Period</th>
-                            <th>Total</th>
-                            <th>State</th>
+                    <div class="uxs-table-wrap uxs-state-block" data-state-id="default error">
+                      <table class="uxs-table" role="table">
+                        <thead role="rowgroup">
+                          <tr role="row">
+                            <th role="columnheader" scope="col">Period</th>
+                            <th role="columnheader" scope="col">Total</th>
+                            <th role="columnheader" scope="col">State</th>
                           </tr>
                         </thead>
-                        <tbody>
-                          <tr>
-                            <th scope="row">Nov 2026</th>
-                            <td data-col="Total">$49.00</td>
-                            <td data-col="State"><span class="uxs-status-pill">Paid</span></td>
+                        <tbody role="rowgroup">
+                          <tr role="row">
+                            <th role="rowheader" scope="row">Nov 2026</th>
+                            <td role="cell" data-col="Total">$49.00</td>
+                            <td role="cell" data-col="State"><span class="uxs-status-pill">Paid</span></td>
                           </tr>
-                          <tr>
-                            <th scope="row">Oct 2026</th>
-                            <td data-col="Total">$49.00</td>
-                            <td data-col="State"><span class="uxs-status-pill">Paid</span></td>
+                          <tr role="row">
+                            <th role="rowheader" scope="row">Oct 2026</th>
+                            <td role="cell" data-col="Total">$49.00</td>
+                            <td role="cell" data-col="State"><span class="uxs-status-pill">Paid</span></td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
+                    <div class="uxs-table-wrap uxs-state-block" data-state-id="stress">
+                      <table class="uxs-table" role="table">
+                        <thead role="rowgroup">
+                          <tr role="row">
+                            <th role="columnheader" scope="col">Period</th>
+                            <th role="columnheader" scope="col">Total</th>
+                            <th role="columnheader" scope="col">State</th>
+                          </tr>
+                        </thead>
+                        <tbody role="rowgroup">
+                          <tr role="row">
+                            <th role="rowheader" scope="row">Nov 2026</th>
+                            <td role="cell" data-col="Total">$1,240.00</td>
+                            <td role="cell" data-col="State"><span class="uxs-status-pill">Paid</span></td>
+                          </tr>
+                          <tr role="row">
+                            <th role="rowheader" scope="row">Oct 2026</th>
+                            <td role="cell" data-col="Total">$1,240.00</td>
+                            <td role="cell" data-col="State"><span class="uxs-status-pill">Paid</span></td>
                           </tr>
                         </tbody>
                       </table>
@@ -852,22 +1017,42 @@
                   </div>
                 </div>
 
-                <aside class="ns-summary-rail" aria-label="Next invoice summary">
+                <section class="ns-summary-rail" aria-label="Next invoice summary">
                   <div class="uxs-pin-host">
                     <h3 data-pixel-behind>Next Charge</h3>
                     <button type="button" class="uxs-pin" data-pin-target="3" aria-label="Inspect Note 3"><span class="uxs-pin-pill">#3</span></button>
                   </div>
-                  <p>Dec 01, 2026 · Visa ****4242</p>
-                  <div class="ns-summary-row">
-                    <span>Base Plan</span>
-                    <span>$49.00</span>
+                  <div class="uxs-state-block" data-state-id="default error">
+                    <p>Dec 01, 2026 · Visa ****4242</p>
+                    <div class="ns-summary-row">
+                      <span>Base Plan</span>
+                      <span>$49.00</span>
+                    </div>
+                    <div class="ns-summary-row">
+                      <span>Extra Seats</span>
+                      <span>$0.00</span>
+                    </div>
                   </div>
-                  <div class="ns-summary-row">
-                    <span>Extra Seats</span>
-                    <span>$0.00</span>
+                  <div class="uxs-state-block" data-state-id="stress">
+                    <p>Dec 01, 2026 · Enterprise PO-8841</p>
+                    <div class="ns-summary-row">
+                      <span>Enterprise Plan</span>
+                      <span>$1,240.00</span>
+                    </div>
+                    <div class="ns-summary-row">
+                      <span>Seats (240 / 250)</span>
+                      <span>Included</span>
+                    </div>
+                  </div>
+                  <div class="uxs-state-block" data-state-id="empty">
+                    <p>No card on file · Trial ends in 14 days</p>
+                    <div class="ns-summary-row">
+                      <span>Trial Plan</span>
+                      <span>$0.00</span>
+                    </div>
                   </div>
                   <button type="button" class="uxs-btn uxs-btn--accent" data-primary-cta="track-b">Manage Plan</button>
-                </aside>
+                </section>
               </div>
             </div>
           </section>
@@ -875,83 +1060,293 @@
       </div>
     </main>
 
-    <aside class="uxs-drawer" id="uxs-drawer" aria-label="Design review annotations">
+    <!-- SLOT:PINS_HTML -->
+    <aside class="uxs-drawer" id="uxs-drawer" aria-label="Design review annotations" tabindex="-1">
       <div class="uxs-drawer-head">
         <h2>Review Notes</h2>
         <button type="button" class="uxs-tbtn" id="uxs-drawer-close">Close</button>
       </div>
-      <div class="uxs-note-item" data-pin-card="1">
+      <div class="uxs-note-item" data-pin-card="1" data-pin-track="track-a">
         <p class="uxs-note-title"><span class="uxs-pin-pill">#1</span> Scannable Hierarchy</p>
         <p class="uxs-note-desc">Cuts verbose admin filler to concise labels so plan cost and seats scan in under 2 seconds without breaking existing markup.</p>
       </div>
-      <div class="uxs-note-item" data-pin-card="2">
+      <div class="uxs-note-item" data-pin-card="2" data-pin-track="track-b">
         <p class="uxs-note-title"><span class="uxs-pin-pill">#2</span> Tabular Quota &amp; Diacritics</p>
         <p class="uxs-note-desc">Uses tabular figures and generous line-height so long multilingual workspace names wrap cleanly at 390px.</p>
       </div>
-      <div class="uxs-note-item" data-pin-card="3">
+      <div class="uxs-note-item" data-pin-card="3" data-pin-track="track-b">
         <p class="uxs-note-title"><span class="uxs-pin-pill">#3</span> Dedicated Summary Rail</p>
         <p class="uxs-note-desc">Separates payment summary from usage settings on wide containers, stacking gracefully at @container width &lt; 660px.</p>
       </div>
-      <div class="uxs-note-item" data-pin-card="4">
+      <div class="uxs-note-item" data-pin-card="4" data-pin-track="track-b">
         <p class="uxs-note-title"><span class="uxs-pin-pill">#4</span> Container-Stacked Table</p>
         <p class="uxs-note-desc">Invoice tables convert to clean key-value rows based on parent pane width rather than global browser width.</p>
       </div>
     </aside>
   </div>
 
+  <script type="application/json" id="uxs-findings-data">
+    [
+      { "id": "1", "title": "Scannable Hierarchy", "track": "track-a" },
+      { "id": "2", "title": "Tabular Quota & Diacritics", "track": "track-b" },
+      { "id": "3", "title": "Dedicated Summary Rail", "track": "track-b" },
+      { "id": "4", "title": "Container-Stacked Table", "track": "track-b" }
+    ]
+  </script>
+
   <script>
     (function() {
       var root = document.documentElement;
-      function pressGroup(attr, value) {
-        var btns = document.querySelectorAll("[" + attr + "]");
+      var mq = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)");
+      var lastPinTrigger = null;
+
+      function explicitTheme() {
+        var dt = root.getAttribute("data-theme");
+        if (dt === "light" || dt === "dark") return dt;
+        var ut = root.getAttribute("data-uxs-theme");
+        return (ut === "light" || ut === "dark") ? ut : null;
+      }
+
+      function currentTheme() {
+        var forced = explicitTheme();
+        if (forced) return forced;
+        return mq && mq.matches ? "dark" : "light";
+      }
+
+      function pressGroup(group, attr, value) {
+        var btns = document.querySelectorAll('[data-uxs-group="' + group + '"] [' + attr + ']');
         for (var i = 0; i < btns.length; i++) {
           btns[i].setAttribute("aria-pressed", String(btns[i].getAttribute(attr) === value));
         }
       }
 
-      document.querySelectorAll("[data-view]").forEach(function(btn) {
-        btn.addEventListener("click", function() {
-          var v = btn.getAttribute("data-view");
-          root.setAttribute("data-uxs-view", v);
-          pressGroup("data-view", v);
-        });
-      });
-
-      document.querySelectorAll("[data-vp-btn]").forEach(function(btn) {
-        btn.addEventListener("click", function() {
-          var vp = btn.getAttribute("data-vp-btn");
-          root.setAttribute("data-uxs-viewport", vp);
-          pressGroup("data-vp-btn", vp);
-        });
-      });
-
-      var stateSel = document.getElementById("uxs-state-select");
-      if (stateSel) {
-        stateSel.addEventListener("change", function() {
-          root.setAttribute("data-uxs-state", stateSel.value);
-        });
+      function emitState() {
+        window.dispatchEvent(
+          new CustomEvent("uxs:change", {
+            detail: {
+              view: root.getAttribute("data-uxs-view") || "compare",
+              viewport: root.getAttribute("data-uxs-viewport") || "desktop",
+              theme: currentTheme(),
+              state: root.getAttribute("data-uxs-state") || "default",
+              pins: root.getAttribute("data-uxs-pins") === "on",
+              ambition: root.getAttribute("data-uxs-ambition") || "L3",
+            },
+          })
+        );
       }
 
-      var themeBtn = document.getElementById("uxs-theme-btn");
-      if (themeBtn) {
-        themeBtn.addEventListener("click", function() {
-          var next = root.getAttribute("data-theme") === "dark" ? "light" : "dark";
-          root.setAttribute("data-theme", next);
-          root.setAttribute("data-uxs-theme", next);
-          themeBtn.textContent = next === "dark" ? "Dark" : "Light";
-          themeBtn.setAttribute("aria-pressed", String(next === "dark"));
+      function setView(v, silent) {
+        if (!["before", "track-a", "track-b", "compare"].includes(v)) return;
+        var amb = root.getAttribute("data-uxs-ambition");
+        if (v === "track-b" && (amb === "L1" || amb === "L2")) v = "compare";
+        root.setAttribute("data-uxs-view", v);
+        pressGroup("view", "data-view", v);
+        if (!silent) emitState();
+      }
+
+      function setViewport(vp, silent) {
+        if (!["desktop", "tablet", "mobile"].includes(vp)) return;
+        root.setAttribute("data-uxs-viewport", vp);
+        pressGroup("viewport", "data-vp-btn", vp);
+        if (!silent) emitState();
+      }
+
+      function setTheme(theme, silent) {
+        if (theme !== "light" && theme !== "dark") return;
+        root.setAttribute("data-theme", theme);
+        root.setAttribute("data-uxs-theme", theme);
+        document.querySelectorAll('[data-uxs-group="theme"] [data-theme]').forEach(function(b) {
+          b.setAttribute("aria-pressed", String(b.getAttribute("data-theme") === theme));
         });
+        if (!silent) emitState();
+      }
+
+      var stateSel = document.getElementById("uxs-state-select");
+      function setUiState(st, silent) {
+        if (!["default", "empty", "stress", "error"].includes(st)) return;
+        root.setAttribute("data-uxs-state", st);
+        if (stateSel) stateSel.value = st;
+        if (!silent) emitState();
       }
 
       var pinsBtn = document.getElementById("uxs-pins-btn");
       var closeBtn = document.getElementById("uxs-drawer-close");
-      function togglePins(force) {
+      var drawerEl = document.getElementById("uxs-drawer");
+      var toolbarEl = document.querySelector(".uxs-toolbar");
+      function syncToolbarOffset() {
+        var h = 0;
+        if (toolbarEl && getComputedStyle(toolbarEl).position === "sticky") {
+          h = Math.ceil(toolbarEl.getBoundingClientRect().height);
+        }
+        root.style.setProperty("--uxs-toolbar-h", h + "px");
+        return h;
+      }
+      function isPinCardVisible(card) {
+        var amb = root.getAttribute("data-uxs-ambition");
+        if (amb === "L1" || amb === "L2") {
+          return card.getAttribute("data-pin-track") !== "track-b";
+        }
+        return true;
+      }
+      function syncPinCount() {
+        if (!pinsBtn) return;
+        var count = 0;
+        document.querySelectorAll("[data-pin-card]").forEach(function(card) {
+          if (isPinCardVisible(card)) count++;
+        });
+        pinsBtn.textContent = "Finding Pins (" + count + ")";
+      }
+      function highlightPinCard(pinId, moveFocus) {
+        var tbBottom = syncToolbarOffset();
+        var matchedCard = null;
+        document.querySelectorAll("[data-pin-card]").forEach(function(card) {
+          var active = Boolean(pinId && isPinCardVisible(card) && card.getAttribute("data-pin-card") === String(pinId));
+          card.classList.toggle("is-active", active);
+          if (active) {
+            card.setAttribute("aria-current", "true");
+            matchedCard = card;
+            card.scrollIntoView({ block: "nearest" });
+          } else {
+            card.removeAttribute("aria-current");
+          }
+        });
+        if (moveFocus) {
+          if (matchedCard && typeof matchedCard.focus === "function") {
+            if (!matchedCard.hasAttribute("tabindex")) matchedCard.setAttribute("tabindex", "-1");
+            matchedCard.focus();
+            if (tbBottom > 0) {
+              var cr = matchedCard.getBoundingClientRect();
+              if (cr.top < tbBottom + 8) {
+                window.scrollBy(0, Math.floor(cr.top - (tbBottom + 12)));
+              }
+            }
+          } else if (drawerEl && typeof drawerEl.focus === "function") {
+            drawerEl.focus();
+          }
+        }
+      }
+
+      function togglePins(force, triggerEl, silent, restoreFocus) {
         var on = typeof force === "boolean" ? force : root.getAttribute("data-uxs-pins") !== "on";
         root.setAttribute("data-uxs-pins", on ? "on" : "off");
         if (pinsBtn) pinsBtn.setAttribute("aria-pressed", String(on));
+        if (on && triggerEl) lastPinTrigger = triggerEl;
+        if (!on) {
+          highlightPinCard(null, false);
+          var shouldRestore = Boolean(restoreFocus) || Boolean(triggerEl && triggerEl !== pinsBtn);
+          if (shouldRestore) {
+            if (
+              lastPinTrigger &&
+              typeof lastPinTrigger.focus === "function" &&
+              !(lastPinTrigger.classList && lastPinTrigger.classList.contains("uxs-pin")) &&
+              lastPinTrigger.getClientRects().length > 0
+            ) {
+              lastPinTrigger.focus();
+            } else if (pinsBtn && typeof pinsBtn.focus === "function") {
+              pinsBtn.focus();
+            }
+          }
+          lastPinTrigger = null;
+        }
+        if (!silent) emitState();
       }
-      if (pinsBtn) pinsBtn.addEventListener("click", function() { togglePins(); });
-      if (closeBtn) closeBtn.addEventListener("click", function() { togglePins(false); });
+
+      // Sync initial UI state from <html> attributes with query-param overrides (and OS theme when unset)
+      var params = new URLSearchParams(window.location.search || "");
+      var qAmbition = params.get("ambition");
+      if (qAmbition === "L1" || qAmbition === "L2" || qAmbition === "L3") {
+        root.setAttribute("data-uxs-ambition", qAmbition);
+      }
+      syncPinCount();
+      setView(root.getAttribute("data-uxs-view") || "compare", true);
+      if (params.get("view")) setView(params.get("view"), true);
+      setViewport(root.getAttribute("data-uxs-viewport") || "desktop", true);
+      if (params.get("vp") || params.get("viewport")) setViewport(params.get("vp") || params.get("viewport"), true);
+      setUiState(root.getAttribute("data-uxs-state") || "default", true);
+      if (params.get("state")) setUiState(params.get("state"), true);
+      togglePins(root.getAttribute("data-uxs-pins") === "on", null, true);
+      var qPins = params.get("pins");
+      if (qPins === "on" || qPins === "off") togglePins(qPins === "on", null, true);
+      var qTheme = params.get("theme");
+      if (qTheme === "light" || qTheme === "dark") {
+        setTheme(qTheme, true);
+      } else {
+        var activeTheme = explicitTheme() || (mq && mq.matches ? "dark" : "light");
+        document.querySelectorAll('[data-uxs-group="theme"] [data-theme]').forEach(function(b) {
+          b.setAttribute("aria-pressed", String(b.getAttribute("data-theme") === activeTheme));
+        });
+      }
+
+      if (mq && typeof mq.addEventListener === "function") {
+        mq.addEventListener("change", function() {
+          if (!explicitTheme()) {
+            var next = mq.matches ? "dark" : "light";
+            document.querySelectorAll('[data-uxs-group="theme"] [data-theme]').forEach(function(b) {
+              b.setAttribute("aria-pressed", String(b.getAttribute("data-theme") === next));
+            });
+            emitState();
+          }
+        });
+      }
+
+      document.querySelectorAll('[data-uxs-group="view"] [data-view]').forEach(function(btn) {
+        btn.addEventListener("click", function() { setView(btn.getAttribute("data-view")); });
+      });
+
+      document.querySelectorAll('[data-uxs-group="viewport"] [data-vp-btn]').forEach(function(btn) {
+        btn.addEventListener("click", function() { setViewport(btn.getAttribute("data-vp-btn")); });
+      });
+
+      document.querySelectorAll('[data-uxs-group="theme"] [data-theme]').forEach(function(btn) {
+        btn.addEventListener("click", function() { setTheme(btn.getAttribute("data-theme")); });
+      });
+
+      if (stateSel) {
+        stateSel.addEventListener("change", function() { setUiState(stateSel.value); });
+      }
+
+      if (pinsBtn) {
+        pinsBtn.addEventListener("click", function() {
+          togglePins(root.getAttribute("data-uxs-pins") !== "on", pinsBtn);
+        });
+      }
+      if (closeBtn) {
+        closeBtn.addEventListener("click", function() { togglePins(false, closeBtn, false, true); });
+      }
+
+      document.querySelectorAll("[data-pin-target]").forEach(function(pinBtn) {
+        pinBtn.addEventListener("click", function() {
+          var id = pinBtn.getAttribute("data-pin-target");
+          togglePins(true, pinBtn);
+          highlightPinCard(id, true);
+        });
+      });
+
+      document.addEventListener("keydown", function(ev) {
+        if (ev.key === "Escape" && root.getAttribute("data-uxs-pins") === "on") {
+          togglePins(false, closeBtn || null, false, true);
+        }
+      });
+
+      var ctrlBar = document.querySelector(".uxs-toolbar-controls");
+      if (ctrlBar) {
+        ctrlBar.addEventListener("focusin", function(ev) {
+          var target = ev.target;
+          if (!target || typeof target.getBoundingClientRect !== "function") return;
+          if (ctrlBar.scrollWidth <= ctrlBar.clientWidth) return;
+          var r = target.getBoundingClientRect();
+          var cr = ctrlBar.getBoundingClientRect();
+          var pad = 12;
+          if (r.right > cr.right - pad) ctrlBar.scrollLeft += r.right - (cr.right - pad);
+          else if (r.left < cr.left + pad) ctrlBar.scrollLeft -= (cr.left + pad) - r.left;
+        });
+      }
+
+      syncToolbarOffset();
+      window.addEventListener("resize", syncToolbarOffset);
+      if (typeof ResizeObserver === "function" && toolbarEl) {
+        new ResizeObserver(syncToolbarOffset).observe(toolbarEl);
+      }
     })();
   </script>
 </body>

@@ -1,0 +1,835 @@
+{
+  "schema": "dsaf-scores/2",
+  "engine_version": "0.9.3",
+  "generated": "2026-11-27T06:15:14.513Z",
+  "type": "system",
+  "profile": "product_conformance",
+  "weights": {
+    "P1": 20,
+    "P2": 25,
+    "P3": 35,
+    "P4": 20
+  },
+  "review_provenance": null,
+  "waivers": [],
+  "phases": {
+    "before": {
+      "pillars": [
+        {
+          "id": "P1",
+          "name": "Foundations & Token Architecture",
+          "weight": 20,
+          "scored_criteria": 1,
+          "total_criteria": 3,
+          "raw_sum": 2,
+          "max_raw": 2,
+          "pct": 100,
+          "weighted_points": 20,
+          "pts_per_step": 10
+        },
+        {
+          "id": "P2",
+          "name": "Component Architecture & Accessibility",
+          "weight": 25,
+          "scored_criteria": 2,
+          "total_criteria": 3,
+          "raw_sum": 4,
+          "max_raw": 4,
+          "pct": 100,
+          "weighted_points": 25,
+          "pts_per_step": 6.25
+        },
+        {
+          "id": "P3",
+          "name": "Product Conformance & Drift",
+          "weight": 35,
+          "scored_criteria": 3,
+          "total_criteria": 3,
+          "raw_sum": 2,
+          "max_raw": 6,
+          "pct": 33.33,
+          "weighted_points": 11.67,
+          "pts_per_step": 5.83
+        },
+        {
+          "id": "P4",
+          "name": "Governance, DX & AI Readiness",
+          "weight": 20,
+          "scored_criteria": 1,
+          "total_criteria": 3,
+          "raw_sum": 0,
+          "max_raw": 2,
+          "pct": 0,
+          "weighted_points": 0,
+          "pts_per_step": 10
+        }
+      ],
+      "scored_weight_sum": 100,
+      "total": 56.67,
+      "hard_floor_blockers": [],
+      "grade": "L2 — Defined Baseline",
+      "criterion_unit_points": {
+        "DS01": {
+          "exact_step": 10,
+          "pts_per_step": 10,
+          "max_pts": 20
+        },
+        "DS02": {
+          "exact_step": null,
+          "pts_per_step": null,
+          "max_pts": null
+        },
+        "DS03": {
+          "exact_step": null,
+          "pts_per_step": null,
+          "max_pts": null
+        },
+        "DS04": {
+          "exact_step": 6.25,
+          "pts_per_step": 6.25,
+          "max_pts": 12.5
+        },
+        "DS05": {
+          "exact_step": 6.25,
+          "pts_per_step": 6.25,
+          "max_pts": 12.5
+        },
+        "DS06": {
+          "exact_step": null,
+          "pts_per_step": null,
+          "max_pts": null
+        },
+        "DS07": {
+          "exact_step": 5.833333333333333,
+          "pts_per_step": 5.83,
+          "max_pts": 11.67
+        },
+        "DS08": {
+          "exact_step": 5.833333333333333,
+          "pts_per_step": 5.83,
+          "max_pts": 11.67
+        },
+        "DS09": {
+          "exact_step": 5.833333333333333,
+          "pts_per_step": 5.83,
+          "max_pts": 11.67
+        },
+        "DS10": {
+          "exact_step": null,
+          "pts_per_step": null,
+          "max_pts": null
+        },
+        "DS11": {
+          "exact_step": null,
+          "pts_per_step": null,
+          "max_pts": null
+        },
+        "DS12": {
+          "exact_step": 10,
+          "pts_per_step": 10,
+          "max_pts": 20
+        }
+      }
+    },
+    "after_track_a": {
+      "pillars": [
+        {
+          "id": "P1",
+          "name": "Foundations & Token Architecture",
+          "weight": 20,
+          "scored_criteria": 1,
+          "total_criteria": 3,
+          "raw_sum": 2,
+          "max_raw": 2,
+          "pct": 100,
+          "weighted_points": 20,
+          "pts_per_step": 10
+        },
+        {
+          "id": "P2",
+          "name": "Component Architecture & Accessibility",
+          "weight": 25,
+          "scored_criteria": 2,
+          "total_criteria": 3,
+          "raw_sum": 4,
+          "max_raw": 4,
+          "pct": 100,
+          "weighted_points": 25,
+          "pts_per_step": 6.25
+        },
+        {
+          "id": "P3",
+          "name": "Product Conformance & Drift",
+          "weight": 35,
+          "scored_criteria": 3,
+          "total_criteria": 3,
+          "raw_sum": 5,
+          "max_raw": 6,
+          "pct": 83.33,
+          "weighted_points": 29.17,
+          "pts_per_step": 5.83
+        },
+        {
+          "id": "P4",
+          "name": "Governance, DX & AI Readiness",
+          "weight": 20,
+          "scored_criteria": 1,
+          "total_criteria": 3,
+          "raw_sum": 0,
+          "max_raw": 2,
+          "pct": 0,
+          "weighted_points": 0,
+          "pts_per_step": 10
+        }
+      ],
+      "scored_weight_sum": 100,
+      "total": 74.17,
+      "hard_floor_blockers": [],
+      "grade": "L3 — Built & Shipped",
+      "criterion_unit_points": {
+        "DS01": {
+          "exact_step": 10,
+          "pts_per_step": 10,
+          "max_pts": 20
+        },
+        "DS02": {
+          "exact_step": null,
+          "pts_per_step": null,
+          "max_pts": null
+        },
+        "DS03": {
+          "exact_step": null,
+          "pts_per_step": null,
+          "max_pts": null
+        },
+        "DS04": {
+          "exact_step": 6.25,
+          "pts_per_step": 6.25,
+          "max_pts": 12.5
+        },
+        "DS05": {
+          "exact_step": 6.25,
+          "pts_per_step": 6.25,
+          "max_pts": 12.5
+        },
+        "DS06": {
+          "exact_step": null,
+          "pts_per_step": null,
+          "max_pts": null
+        },
+        "DS07": {
+          "exact_step": 5.833333333333333,
+          "pts_per_step": 5.83,
+          "max_pts": 11.67
+        },
+        "DS08": {
+          "exact_step": 5.833333333333333,
+          "pts_per_step": 5.83,
+          "max_pts": 11.67
+        },
+        "DS09": {
+          "exact_step": 5.833333333333333,
+          "pts_per_step": 5.83,
+          "max_pts": 11.67
+        },
+        "DS10": {
+          "exact_step": null,
+          "pts_per_step": null,
+          "max_pts": null
+        },
+        "DS11": {
+          "exact_step": null,
+          "pts_per_step": null,
+          "max_pts": null
+        },
+        "DS12": {
+          "exact_step": 10,
+          "pts_per_step": 10,
+          "max_pts": 20
+        }
+      }
+    },
+    "after_track_b": {
+      "pillars": [
+        {
+          "id": "P1",
+          "name": "Foundations & Token Architecture",
+          "weight": 20,
+          "scored_criteria": 1,
+          "total_criteria": 3,
+          "raw_sum": 2,
+          "max_raw": 2,
+          "pct": 100,
+          "weighted_points": 20,
+          "pts_per_step": 10
+        },
+        {
+          "id": "P2",
+          "name": "Component Architecture & Accessibility",
+          "weight": 25,
+          "scored_criteria": 2,
+          "total_criteria": 3,
+          "raw_sum": 4,
+          "max_raw": 4,
+          "pct": 100,
+          "weighted_points": 25,
+          "pts_per_step": 6.25
+        },
+        {
+          "id": "P3",
+          "name": "Product Conformance & Drift",
+          "weight": 35,
+          "scored_criteria": 3,
+          "total_criteria": 3,
+          "raw_sum": 6,
+          "max_raw": 6,
+          "pct": 100,
+          "weighted_points": 35,
+          "pts_per_step": 5.83
+        },
+        {
+          "id": "P4",
+          "name": "Governance, DX & AI Readiness",
+          "weight": 20,
+          "scored_criteria": 1,
+          "total_criteria": 3,
+          "raw_sum": 2,
+          "max_raw": 2,
+          "pct": 100,
+          "weighted_points": 20,
+          "pts_per_step": 10
+        }
+      ],
+      "scored_weight_sum": 100,
+      "total": 100,
+      "hard_floor_blockers": [],
+      "grade": "L5 — Optimizing & Agent-Ready (External verification required for public L4/L5)",
+      "criterion_unit_points": {
+        "DS01": {
+          "exact_step": 10,
+          "pts_per_step": 10,
+          "max_pts": 20
+        },
+        "DS02": {
+          "exact_step": null,
+          "pts_per_step": null,
+          "max_pts": null
+        },
+        "DS03": {
+          "exact_step": null,
+          "pts_per_step": null,
+          "max_pts": null
+        },
+        "DS04": {
+          "exact_step": 6.25,
+          "pts_per_step": 6.25,
+          "max_pts": 12.5
+        },
+        "DS05": {
+          "exact_step": 6.25,
+          "pts_per_step": 6.25,
+          "max_pts": 12.5
+        },
+        "DS06": {
+          "exact_step": null,
+          "pts_per_step": null,
+          "max_pts": null
+        },
+        "DS07": {
+          "exact_step": 5.833333333333333,
+          "pts_per_step": 5.83,
+          "max_pts": 11.67
+        },
+        "DS08": {
+          "exact_step": 5.833333333333333,
+          "pts_per_step": 5.83,
+          "max_pts": 11.67
+        },
+        "DS09": {
+          "exact_step": 5.833333333333333,
+          "pts_per_step": 5.83,
+          "max_pts": 11.67
+        },
+        "DS10": {
+          "exact_step": null,
+          "pts_per_step": null,
+          "max_pts": null
+        },
+        "DS11": {
+          "exact_step": null,
+          "pts_per_step": null,
+          "max_pts": null
+        },
+        "DS12": {
+          "exact_step": 10,
+          "pts_per_step": 10,
+          "max_pts": 20
+        }
+      }
+    }
+  },
+  "deltas": {
+    "after_track_a": 17.5,
+    "after_track_b": 43.33
+  },
+  "criterion_deltas": {
+    "after_track_a": {
+      "DS01": 0,
+      "DS02": null,
+      "DS03": null,
+      "DS04": 0,
+      "DS05": 0,
+      "DS06": null,
+      "DS07": 11.67,
+      "DS08": 5.83,
+      "DS09": 0,
+      "DS10": null,
+      "DS11": null,
+      "DS12": 0
+    },
+    "after_track_b": {
+      "DS01": 0,
+      "DS02": null,
+      "DS03": null,
+      "DS04": 0,
+      "DS05": 0,
+      "DS06": null,
+      "DS07": 11.67,
+      "DS08": 5.83,
+      "DS09": 5.83,
+      "DS10": null,
+      "DS11": null,
+      "DS12": 20
+    }
+  },
+  "criteria": {
+    "before": {
+      "DS01": {
+        "score": 2,
+        "findings": [],
+        "reason": "",
+        "secondary_impact": false,
+        "volatility": "FIXED",
+        "bands": {
+          "prose": 20,
+          "artifacts": 30,
+          "verification": 15
+        },
+        "check_type": "AUTO"
+      },
+      "DS02": {
+        "score": "N/A",
+        "findings": [],
+        "reason": "Upstream DS owns W3C DTCG schema; product app fixture has tokenJson=0",
+        "secondary_impact": false,
+        "volatility": "DYNAMIC",
+        "bands": null,
+        "check_type": "AUTO"
+      },
+      "DS03": {
+        "score": "N/A",
+        "findings": [],
+        "reason": "Product app consumes upstream theme tokens",
+        "secondary_impact": false,
+        "volatility": "DYNAMIC",
+        "bands": null,
+        "check_type": "AUTO"
+      },
+      "DS04": {
+        "score": 2,
+        "findings": [],
+        "reason": "",
+        "secondary_impact": false,
+        "volatility": "FIXED",
+        "bands": {
+          "prose": 20,
+          "artifacts": 30,
+          "verification": 15
+        },
+        "check_type": "AUTO"
+      },
+      "DS05": {
+        "score": 2,
+        "findings": [],
+        "reason": "",
+        "secondary_impact": false,
+        "volatility": "FIXED",
+        "bands": {
+          "prose": 15,
+          "artifacts": 30,
+          "verification": 15
+        },
+        "check_type": "AUTO"
+      },
+      "DS06": {
+        "score": "N/A",
+        "findings": [],
+        "reason": "Static-only fixture — runtime WCAG/APCA audit not run",
+        "secondary_impact": false,
+        "volatility": "FIXED",
+        "bands": null,
+        "check_type": "AUTO"
+      },
+      "DS07": {
+        "score": 0,
+        "findings": [
+          "DRIFT-01",
+          "DRIFT-02",
+          "DRIFT-03"
+        ],
+        "reason": "",
+        "secondary_impact": false,
+        "volatility": "FIXED",
+        "bands": {
+          "prose": 10,
+          "artifacts": 20,
+          "verification": 15
+        },
+        "check_type": "AUTO"
+      },
+      "DS08": {
+        "score": 1,
+        "findings": [
+          "DRIFT-02"
+        ],
+        "reason": "",
+        "secondary_impact": false,
+        "volatility": "FIXED",
+        "bands": {
+          "prose": 10,
+          "artifacts": 25,
+          "verification": 15
+        },
+        "check_type": "AUTO"
+      },
+      "DS09": {
+        "score": 1,
+        "findings": [
+          "DRIFT-03"
+        ],
+        "reason": "",
+        "secondary_impact": false,
+        "volatility": "FIXED",
+        "bands": {
+          "prose": 10,
+          "artifacts": 25,
+          "verification": 15
+        },
+        "check_type": "AUTO+MANUAL"
+      },
+      "DS10": {
+        "score": "N/A",
+        "findings": [],
+        "reason": "Upstream DS governance external to app repo",
+        "secondary_impact": false,
+        "volatility": "FIXED",
+        "bands": null,
+        "check_type": "AUTO"
+      },
+      "DS11": {
+        "score": "N/A",
+        "findings": [],
+        "reason": "Upstream DS governance and versioning external to app repo",
+        "secondary_impact": false,
+        "volatility": "FIXED",
+        "bands": null,
+        "check_type": "AUTO+MANUAL"
+      },
+      "DS12": {
+        "score": 0,
+        "findings": [
+          "DRIFT-04"
+        ],
+        "reason": "",
+        "secondary_impact": false,
+        "volatility": "DYNAMIC",
+        "bands": {
+          "prose": 15,
+          "artifacts": 10,
+          "verification": 0
+        },
+        "check_type": "AUTO"
+      }
+    },
+    "after_track_a": {
+      "DS01": {
+        "score": 2,
+        "findings": [],
+        "reason": "",
+        "secondary_impact": false,
+        "volatility": "FIXED",
+        "bands": {
+          "prose": 20,
+          "artifacts": 30,
+          "verification": 15
+        },
+        "check_type": "AUTO"
+      },
+      "DS02": {
+        "score": "N/A",
+        "findings": [],
+        "reason": "Upstream DS owns W3C DTCG schema; product app fixture has tokenJson=0",
+        "secondary_impact": false,
+        "volatility": "DYNAMIC",
+        "bands": null,
+        "check_type": "AUTO"
+      },
+      "DS03": {
+        "score": "N/A",
+        "findings": [],
+        "reason": "Product app consumes upstream theme tokens",
+        "secondary_impact": false,
+        "volatility": "DYNAMIC",
+        "bands": null,
+        "check_type": "AUTO"
+      },
+      "DS04": {
+        "score": 2,
+        "findings": [],
+        "reason": "",
+        "secondary_impact": false,
+        "volatility": "FIXED",
+        "bands": {
+          "prose": 20,
+          "artifacts": 30,
+          "verification": 15
+        },
+        "check_type": "AUTO"
+      },
+      "DS05": {
+        "score": 2,
+        "findings": [],
+        "reason": "",
+        "secondary_impact": false,
+        "volatility": "FIXED",
+        "bands": {
+          "prose": 15,
+          "artifacts": 30,
+          "verification": 15
+        },
+        "check_type": "AUTO"
+      },
+      "DS06": {
+        "score": "N/A",
+        "findings": [],
+        "reason": "Static-only fixture — runtime WCAG/APCA audit not run",
+        "secondary_impact": false,
+        "volatility": "FIXED",
+        "bands": null,
+        "check_type": "AUTO"
+      },
+      "DS07": {
+        "score": 2,
+        "findings": [],
+        "reason": "Hardcoded hexes and off-grid spacing fixed in Track A; dead orphan var cleanup deferred to Track B",
+        "secondary_impact": false,
+        "volatility": "FIXED",
+        "bands": {
+          "prose": 15,
+          "artifacts": 35,
+          "verification": 20
+        },
+        "check_type": "AUTO"
+      },
+      "DS08": {
+        "score": 2,
+        "findings": [],
+        "reason": "",
+        "secondary_impact": false,
+        "volatility": "FIXED",
+        "bands": {
+          "prose": 15,
+          "artifacts": 35,
+          "verification": 20
+        },
+        "check_type": "AUTO"
+      },
+      "DS09": {
+        "score": 1,
+        "findings": [
+          "DRIFT-03"
+        ],
+        "reason": "",
+        "secondary_impact": false,
+        "volatility": "FIXED",
+        "bands": {
+          "prose": 10,
+          "artifacts": 25,
+          "verification": 15
+        },
+        "check_type": "AUTO+MANUAL"
+      },
+      "DS10": {
+        "score": "N/A",
+        "findings": [],
+        "reason": "Upstream DS governance external to app repo",
+        "secondary_impact": false,
+        "volatility": "FIXED",
+        "bands": null,
+        "check_type": "AUTO"
+      },
+      "DS11": {
+        "score": "N/A",
+        "findings": [],
+        "reason": "Upstream DS governance and versioning external to app repo",
+        "secondary_impact": false,
+        "volatility": "FIXED",
+        "bands": null,
+        "check_type": "AUTO+MANUAL"
+      },
+      "DS12": {
+        "score": 0,
+        "findings": [
+          "DRIFT-04"
+        ],
+        "reason": "",
+        "secondary_impact": false,
+        "volatility": "DYNAMIC",
+        "bands": {
+          "prose": 15,
+          "artifacts": 10,
+          "verification": 0
+        },
+        "check_type": "AUTO"
+      }
+    },
+    "after_track_b": {
+      "DS01": {
+        "score": 2,
+        "findings": [],
+        "reason": "",
+        "secondary_impact": false,
+        "volatility": "FIXED",
+        "bands": {
+          "prose": 20,
+          "artifacts": 30,
+          "verification": 15
+        },
+        "check_type": "AUTO"
+      },
+      "DS02": {
+        "score": "N/A",
+        "findings": [],
+        "reason": "Upstream DS owns W3C DTCG schema; product app fixture has tokenJson=0",
+        "secondary_impact": false,
+        "volatility": "DYNAMIC",
+        "bands": null,
+        "check_type": "AUTO"
+      },
+      "DS03": {
+        "score": "N/A",
+        "findings": [],
+        "reason": "Product app consumes upstream theme tokens",
+        "secondary_impact": false,
+        "volatility": "DYNAMIC",
+        "bands": null,
+        "check_type": "AUTO"
+      },
+      "DS04": {
+        "score": 2,
+        "findings": [],
+        "reason": "",
+        "secondary_impact": false,
+        "volatility": "FIXED",
+        "bands": {
+          "prose": 20,
+          "artifacts": 30,
+          "verification": 15
+        },
+        "check_type": "AUTO"
+      },
+      "DS05": {
+        "score": 2,
+        "findings": [],
+        "reason": "",
+        "secondary_impact": false,
+        "volatility": "FIXED",
+        "bands": {
+          "prose": 15,
+          "artifacts": 30,
+          "verification": 15
+        },
+        "check_type": "AUTO"
+      },
+      "DS06": {
+        "score": "N/A",
+        "findings": [],
+        "reason": "Static-only fixture — runtime WCAG/APCA audit not run",
+        "secondary_impact": false,
+        "volatility": "FIXED",
+        "bands": null,
+        "check_type": "AUTO"
+      },
+      "DS07": {
+        "score": 2,
+        "findings": [],
+        "reason": "",
+        "secondary_impact": false,
+        "volatility": "FIXED",
+        "bands": {
+          "prose": 15,
+          "artifacts": 35,
+          "verification": 20
+        },
+        "check_type": "AUTO"
+      },
+      "DS08": {
+        "score": 2,
+        "findings": [],
+        "reason": "",
+        "secondary_impact": false,
+        "volatility": "FIXED",
+        "bands": {
+          "prose": 15,
+          "artifacts": 35,
+          "verification": 20
+        },
+        "check_type": "AUTO"
+      },
+      "DS09": {
+        "score": 2,
+        "findings": [],
+        "reason": "",
+        "secondary_impact": false,
+        "volatility": "FIXED",
+        "bands": {
+          "prose": 15,
+          "artifacts": 35,
+          "verification": 20
+        },
+        "check_type": "AUTO+MANUAL"
+      },
+      "DS10": {
+        "score": "N/A",
+        "findings": [],
+        "reason": "Upstream DS governance external to app repo",
+        "secondary_impact": false,
+        "volatility": "FIXED",
+        "bands": null,
+        "check_type": "AUTO"
+      },
+      "DS11": {
+        "score": "N/A",
+        "findings": [],
+        "reason": "Upstream DS governance and versioning external to app repo",
+        "secondary_impact": false,
+        "volatility": "FIXED",
+        "bands": null,
+        "check_type": "AUTO+MANUAL"
+      },
+      "DS12": {
+        "score": 2,
+        "findings": [],
+        "reason": "",
+        "secondary_impact": false,
+        "volatility": "DYNAMIC",
+        "bands": {
+          "prose": 15,
+          "artifacts": 35,
+          "verification": 20
+        },
+        "check_type": "AUTO"
+      }
+    }
+  }
+}

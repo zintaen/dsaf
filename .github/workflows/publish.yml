@@ -3,12 +3,16 @@ name: Publish to npm (OIDC)
 on:
   push:
     tags:
-      - 'v*'
+      - 'v*.*.*'
   workflow_dispatch:
 
 permissions:
   id-token: write
-  contents: read
+  contents: write
+
+concurrency:
+  group: publish-npm
+  cancel-in-progress: false
 
 jobs:
   publish:
@@ -21,7 +25,7 @@ jobs:
           registry-url: 'https://registry.npmjs.org'
       - name: Run full verification & isolation suite
         run: npm test
-      - name: Verify tag matches package.json version & tarball excludes evolve/
+      - name: Verify tag matches package.json version & tarball excludes repo-only paths
         run: |
           node -e '
             const fs = require("fs");
@@ -31,11 +35,97 @@ jobs:
               process.exit(1);
             }
           '
-          if npm pack --dry-run 2>&1 | grep -E '(^|\s)evolve/'; then
-            echo "ERROR: evolve/ leaked into npm tarball!"
+          if npm pack --dry-run 2>&1 | grep -E '(^|[[:space:]])(docs|fixtures|scripts|examples|\.?evolve)/'; then
+            echo "ERROR: non-publishable repo directory leaked into npm tarball!"
             exit 1
           fi
+      - name: Fetch git tags for dist-tag & floating tag checks
+        run: git fetch --tags --force origin
+      - name: Determine npm dist-tag & floating major tag policy
+        id: release_meta
+        run: |
+          node --input-type=module -e '
+            import { readFileSync, appendFileSync } from "node:fs";
+            import { execSync } from "node:child_process";
+            import { parseSemver, compareSemver } from "./skill/scripts/update-check.mjs";
+
+            const pkg = JSON.parse(readFileSync("package.json", "utf8"));
+            const pkgTag = `v${pkg.version}`;
+            const pPkg = parseSemver(pkgTag);
+            if (!pPkg) {
+              console.error(`Invalid package.json version: ${pkg.version}`);
+              process.exit(1);
+            }
+            const major = `v${pPkg.major}`;
+
+            const allTags = execSync("git tag -l \"v*.*.*\"", { encoding: "utf8" })
+              .split(/\r?\n/)
+              .map((s) => s.trim())
+              .filter(Boolean);
+            const stableTags = allTags.filter((t) => {
+              const p = parseSemver(t);
+              return Boolean(p && p.pre.length === 0);
+            });
+
+            let npmTag = "latest";
+            if (pPkg.pre.length > 0) {
+              npmTag = "next";
+            } else if (stableTags.some((t) => compareSemver(pkgTag, t) === -1)) {
+              npmTag = `maintenance-${major}`;
+            }
+
+            const refType = process.env.GITHUB_REF_TYPE || "";
+            const ref = process.env.GITHUB_REF_NAME || "";
+            const pRef = parseSemver(ref);
+            let shouldUpdate = false;
+            let skipReason = "is not a tag push";
+            if (refType === "tag") {
+              if (!pRef) {
+                skipReason = "is not a valid semver tag";
+              } else if (pRef.pre.length > 0) {
+                skipReason = "is a pre-release tag";
+              } else {
+                const sameMajorStable = stableTags.filter((t) => {
+                  const pt = parseSemver(t);
+                  return pt && `v${pt.major}` === `v${pRef.major}`;
+                });
+                const behindMajor = sameMajorStable.some((t) => compareSemver(ref, t) === -1);
+                if (behindMajor) {
+                  skipReason = `is older than an existing v${pRef.major}.* tag`;
+                } else {
+                  shouldUpdate = true;
+                  skipReason = "";
+                }
+              }
+            }
+
+            const outFile = process.env.GITHUB_OUTPUT;
+            if (outFile) {
+              appendFileSync(
+                outFile,
+                `npm_tag=${npmTag}\nmajor=${major}\nshould_update_floating=${shouldUpdate ? "true" : "false"}\nskip_reason=${skipReason}\n`
+              );
+            }
+            console.log(`Release policy: version=${pkgTag} npm_tag=${npmTag} major=${major} should_update_floating=${shouldUpdate}`);
+          '
       - name: Upgrade npm CLI for OIDC Trusted Publishing
         run: npm install -g npm@latest
       - name: Publish @zintaen/dsaf with provenance
-        run: npm publish --provenance --access public
+        env:
+          NPM_TAG: ${{ steps.release_meta.outputs.npm_tag }}
+        run: npm publish --provenance --access public --tag "$NPM_TAG"
+      - name: Update floating major tag (v0)
+        if: github.ref_type == 'tag'
+        env:
+          MAJOR: ${{ steps.release_meta.outputs.major }}
+          SHOULD_UPDATE: ${{ steps.release_meta.outputs.should_update_floating }}
+          SKIP_REASON: ${{ steps.release_meta.outputs.skip_reason }}
+        run: |
+          if [ "$SHOULD_UPDATE" != "true" ]; then
+            echo "Skipping floating tag ${MAJOR}: ${GITHUB_REF_NAME} ${SKIP_REASON}."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -f "$MAJOR"
+          git push origin "refs/tags/$MAJOR" --force

@@ -4,6 +4,7 @@
   const meta = document.querySelector('meta[name="color-scheme"]');
   const themeBtn = document.getElementById("theme-toggle-btn");
   const systemMq = window.matchMedia("(prefers-color-scheme: dark)");
+  let manualTheme = meta && (meta.content === "light" || meta.content === "dark") ? meta.content : null;
 
   function getRenderedScheme() {
     if (meta?.content === "light" || meta?.content === "dark") return meta.content;
@@ -23,27 +24,41 @@
     themeBtn.addEventListener("click", () => {
       const target = getRenderedScheme() === "dark" ? "light" : "dark";
       const systemScheme = systemMq.matches ? "dark" : "light";
+      manualTheme = target === systemScheme ? null : target;
+      meta.content = manualTheme || "light dark";
       try {
         if (target === systemScheme) {
           localStorage.removeItem("color-scheme");
-          meta.content = "light dark";
         } else {
           localStorage.setItem("color-scheme", target);
-          meta.content = target;
         }
       } catch {
-        meta.content = target;
+        // In-session meta.content & manualTheme remain intact when storage is blocked
       }
       syncThemeBtn();
     });
 
     window.addEventListener("storage", (e) => {
-      if (e.key !== "color-scheme") return;
-      meta.content = e.newValue === "light" || e.newValue === "dark" ? e.newValue : "light dark";
+      if (e.key !== null && e.key !== "color-scheme") return;
+      const nextVal = e.key === null ? null : e.newValue;
+      manualTheme = nextVal === "light" || nextVal === "dark" ? nextVal : null;
+      meta.content = manualTheme || "light dark";
       syncThemeBtn();
     });
 
-    systemMq.addEventListener("change", syncThemeBtn);
+    systemMq.addEventListener("change", () => {
+      let stored = null;
+      let storageOk = false;
+      try {
+        stored = localStorage.getItem("color-scheme");
+        storageOk = true;
+      } catch {}
+      if (storageOk) {
+        manualTheme = stored === "light" || stored === "dark" ? stored : null;
+      }
+      meta.content = manualTheme === "light" || manualTheme === "dark" ? manualTheme : "light dark";
+      syncThemeBtn();
+    });
   }
 
   /* Single-row accessible tabs with hidden="until-found" + beforematch */
@@ -100,21 +115,53 @@
     }
   }
 
+  function fallbackCopyText(text) {
+    const prevFocus = document.activeElement;
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.setAttribute("readonly", "");
+    ta.style.position = "fixed";
+    ta.style.top = "-9999px";
+    ta.style.left = "-9999px";
+    ta.style.opacity = "0";
+    document.body.appendChild(ta);
+    try {
+      ta.select();
+      ta.setSelectionRange(0, text.length);
+      return typeof document.execCommand === "function" && document.execCommand("copy");
+    } catch {
+      return false;
+    } finally {
+      ta.remove();
+      if (prevFocus && typeof prevFocus.focus === "function" && prevFocus.isConnected) {
+        prevFocus.focus({ preventScroll: true });
+      }
+    }
+  }
+
   /* Copy buttons */
   for (const btn of document.querySelectorAll("[data-copy-target]")) {
+    const orig = btn.textContent;
+    let timerId = null;
     btn.addEventListener("click", async () => {
       const targetEl = document.getElementById(btn.getAttribute("data-copy-target"));
       const text = targetEl?.textContent?.trim();
       if (!text) return;
-      const orig = btn.textContent;
+      let copied = false;
       try {
-        await navigator.clipboard.writeText(text);
-        btn.textContent = "Copied";
-      } catch {
-        btn.textContent = "Ready";
+        if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+          await navigator.clipboard.writeText(text);
+          copied = true;
+        }
+      } catch {}
+      if (!copied) {
+        copied = fallbackCopyText(text);
       }
-      setTimeout(() => {
+      btn.textContent = copied ? "Copied" : "Copy failed";
+      clearTimeout(timerId);
+      timerId = setTimeout(() => {
         btn.textContent = orig;
+        timerId = null;
       }, 1500);
     });
   }

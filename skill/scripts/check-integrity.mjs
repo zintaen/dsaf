@@ -1,20 +1,19 @@
 #!/usr/bin/env node
 /**
- * DSAF v0.3.0 — Tier 1 Skill Integrity & Self-Test Runner.
+ * DSAF v0.9.3 — Tier 1 Skill Integrity & Self-Test Runner.
  * Verifies required structure, YAML frontmatter, relative markdown links, Canonical
- * Preview Shell attributes, zero contamination in `skill/`, and all 8 CLI self-tests.
+ * Preview Shell attributes, zero contamination in `skill/`, and all CLI self-tests.
  */
 
 import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { dirname, join, relative, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { fileURLToPath } from "node:url";
+import { parseArgs } from "node:util";
+import { isDirectCliEntry } from "./ci-report.mjs";
 
-const SCRIPT_DIR = dirname(fileURLToPathSafe());
+const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const SKILL_DIR = resolve(SCRIPT_DIR, "..");
-
-function fileURLToPathSafe() {
-  return decodeURIComponent(new URL(import.meta.url).pathname);
-}
 
 const REQUIRED_FILES = [
   "SKILL.md",
@@ -25,16 +24,14 @@ const REQUIRED_FILES = [
   "references/mode-product-ux.md",
   "references/mode-product-ui.md",
   "references/preview-shell-contract.md",
-  "references/retro-capture.md",
-  "resources/evolve-strategy.md",
   "resources/preview-shell.html",
   "scripts/audit-pipeline.mjs",
   "scripts/setup.mjs",
+  "scripts/update-check.mjs",
+  "scripts/update.mjs",
   "scripts/generate-html-report.mjs",
   "scripts/generate-personas.mjs",
-  "scripts/init-evolve.mjs",
   "scripts/fix-floor.mjs",
-  "scripts/evolve-runner.mjs",
   "scripts/mcp-server.mjs",
   "scripts/recon.mjs",
   "scripts/audit-tokens.mjs",
@@ -50,7 +47,7 @@ const REQUIRED_FILES = [
   "scripts/check-integrity.mjs",
 ];
 
-const CONTAM_RE = /((?<![.\w-])evolve\/|benchmark\.md|\/(Users|home)\/[A-Za-z0-9._-]+\/|[A-Za-z0-9._%+-]+@(?!example\.com|users\.noreply)[A-Za-z0-9.-]+\.[A-Za-z]{2,})/i;
+const CONTAM_RE = /((?<![A-Za-z0-9_-])\.?evolve\/|benchmark\.md|(?<![A-Za-z0-9_.-])(?<!https?:\/\/[^\s"'<>()[\]{},;\\|`]*)(?:\/|(?:[A-Za-z]:)?\\{1,2})(?:Users|home)(?:\/|\\{1,2})[A-Za-z0-9._-]+(?=$|[\s"'<>()[\]{},;`:\/\\])|(?:^|[^a-z])file:\/\/[A-Za-z0-9._:/\\-]+|[A-Za-z0-9._%+-]+@(?!(?:[A-Za-z0-9.-]*\.(?:png|jpe?g|webp|svg|gif|avif|tar|tgz|zip)(?![A-Za-z0-9-]|\.[A-Za-z0-9])))(?!example\.com(?![A-Za-z0-9-]|\.[A-Za-z0-9])|users\.noreply\.github\.com(?![A-Za-z0-9-]|\.[A-Za-z0-9]))(?!v?\d+\.\d+\.\d+(?:-(?:alpha|beta|rc|next|canary|dev|pre|preview|nightly|insiders|snapshot|experimental)(?:[.-](?:alpha|beta|rc|\d+))*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?![A-Za-z0-9-]|\.[A-Za-z0-9]))[A-Za-z0-9.-]+\.[A-Za-z]{2,})/i;
 const EXTRA_TERMS = String(process.env.DSAF_PRIVATE_TERMS || "")
   .split(",")
   .map((s) => s.trim())
@@ -69,12 +66,18 @@ function listAllFiles(dir) {
 
 function checkLinks(mdFiles) {
   const errors = [];
-  const linkRe = /\[[^\]]+\]\((\.[^)#\s]+(?:#[^)\s]*)?)\)/g;
+  const linkRe = /\[[^\]]+\]\((?!https?:|mailto:|tel:|data:|#|\/)([^)#\s]+(?:#[^)\s]*)?)\)/gi;
   for (const file of mdFiles) {
     const body = readFileSync(file, "utf8");
     for (const m of body.matchAll(linkRe)) {
       const targetRel = m[1].split("#")[0];
+      if (!targetRel) continue;
       const targetAbs = resolve(dirname(file), targetRel);
+      const relFromSkill = relative(SKILL_DIR, targetAbs);
+      if (relFromSkill === ".." || relFromSkill.startsWith(`..${sep}`) || isAbsolute(relFromSkill)) {
+        errors.push(`${relative(SKILL_DIR, file)}: link escapes skill/ directory -> ${targetRel}`);
+        continue;
+      }
       if (!existsSync(targetAbs)) {
         errors.push(`${relative(SKILL_DIR, file)}: broken link target ${targetRel}`);
       }
@@ -84,6 +87,28 @@ function checkLinks(mdFiles) {
 }
 
 function main() {
+  let values;
+  let positionals;
+  try {
+    ({ values, positionals } = parseArgs({
+      allowPositionals: true,
+      options: {
+        help: { type: "boolean", short: "h", default: false },
+      },
+    }));
+  } catch (err) {
+    console.error(`ERROR: ${err instanceof Error ? err.message : String(err)}`);
+    process.exit(2);
+  }
+  if (values.help) {
+    console.log("Usage: node skill/scripts/check-integrity.mjs [--help]");
+    process.exit(0);
+  }
+  if (positionals.length > 0) {
+    console.error(`Error: unexpected argument '${positionals[0]}'.`);
+    process.exit(2);
+  }
+
   console.log("==> [1/4] Checking required Tier 1 files & SKILL.md frontmatter...");
   for (const rel of REQUIRED_FILES) {
     const abs = join(SKILL_DIR, rel);
@@ -117,7 +142,7 @@ function main() {
 
   console.log("==> [3/4] Checking ZERO private/org/evolve contamination inside skill/...");
   for (const file of files) {
-    const rel = relative(SKILL_DIR, file);
+    const rel = relative(SKILL_DIR, file).replace(/\\/g, "/");
     if (rel === "scripts/check-integrity.mjs") continue;
     const text = readFileSync(file, "utf8");
     const m = CONTAM_RE.exec(text);
@@ -138,11 +163,9 @@ function main() {
     "recon.mjs",
     "generate-personas.mjs",
     "generate-html-report.mjs",
-    "init-evolve.mjs",
     "ci-report.mjs",
     "dsaf-hook.mjs",
     "fix-floor.mjs",
-    "evolve-runner.mjs",
     "install-skill.mjs",
     "doctor.mjs",
     "audit-tokens.mjs",
@@ -154,6 +177,8 @@ function main() {
     "audit-pipeline.mjs",
     "mcp-server.mjs",
     "setup.mjs",
+    "update-check.mjs",
+    "update.mjs",
   ]) {
     const res = spawnSync(process.execPath, [join(SCRIPT_DIR, script), "--self-test"], { encoding: "utf8" });
     process.stdout.write(res.stdout || "");
@@ -164,7 +189,27 @@ function main() {
     }
   }
 
-  console.log("SKILL_INTEGRITY_ALL_PASSED (v0.9.2)");
+  const binCliPath = resolve(SKILL_DIR, "../bin/dsaf.mjs");
+  if (existsSync(binCliPath)) {
+    const pkgVer = JSON.parse(readFileSync(resolve(SKILL_DIR, "../package.json"), "utf8")).version;
+    const vRes = spawnSync(process.execPath, [binCliPath, "version"], { encoding: "utf8" });
+    if (vRes.status !== 0 || !(vRes.stdout || "").includes(`v${pkgVer}`)) {
+      console.error(`ERROR: bin/dsaf.mjs version failed (status=${vRes.status}, out=${vRes.stdout})`);
+      process.exit(1);
+    }
+    const hRes = spawnSync(process.execPath, [binCliPath, "help"], { encoding: "utf8" });
+    if (hRes.status !== 0 || !(hRes.stdout || "").includes("Usage: dsaf")) {
+      console.error(`ERROR: bin/dsaf.mjs help failed (status=${hRes.status})`);
+      process.exit(1);
+    }
+    const badRes = spawnSync(process.execPath, [binCliPath, "version", "--bogus"], { encoding: "utf8" });
+    if (badRes.status !== 2) {
+      console.error(`ERROR: bin/dsaf.mjs version --bogus must exit 2 (got ${badRes.status})`);
+      process.exit(1);
+    }
+  }
+
+  console.log("SKILL_INTEGRITY_ALL_PASSED (v0.9.3)");
 }
 
-main();
+if (isDirectCliEntry(import.meta.url)) main();

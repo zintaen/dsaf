@@ -1,7 +1,7 @@
 {
   "schema": "dsaf-scores/2",
-  "engine_version": "0.2.2",
-  "generated": "2026-11-26T12:58:58.753Z",
+  "engine_version": "0.9.3",
+  "generated": "2026-11-27T06:15:14.517Z",
   "type": "usability",
   "profile": "consumer_mobile",
   "weights": {
@@ -12,6 +12,8 @@
     "P5": 15,
     "P6": 15
   },
+  "review_provenance": null,
+  "waivers": [],
   "phases": {
     "before": {
       "pillars": [

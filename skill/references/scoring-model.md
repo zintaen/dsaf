@@ -1,4 +1,4 @@
-# Unified Deterministic Scoring Model & No-Silent-Regression Policy (`v0.4.0`)
+# Unified Deterministic Scoring Model & No-Silent-Regression Policy (`v0.9.3`)
 
 Load this reference during criterion scoring and baseline comparison in every mode (`Mode S`, `Mode C`, `Mode P`). Pair with `../scripts/compute-scorecard.mjs` and `../scripts/audit-diff.mjs` to guarantee zero arithmetic drift, strict evidence linkage, and mechanical regression blocking.
 
@@ -10,7 +10,7 @@ Every criterion across all three rubrics uses the same verifiable discrete scale
 
 | Score | Label | Exact Observable Requirement |
 |---|---|---|
-| **2** | **Pass** | Verified across audited scope with zero Blocker/Major/Moderate findings linked to this criterion (and for System `DS*` rows, BOTH artifact and verification bands present — prose alone is blocked at score `<= 1`). |
+| **2** | **Pass** | Verified across audited scope with zero Blocker/Major/Moderate findings linked to this criterion (and for System `DS*` rows, at least one of `artifacts` or `verification > 0` is present — prose alone is blocked at score `<= 1`). |
 | **1** | **Partial** | Works fundamentally or documented cleanly, with one or more verified **Moderate or Minor** findings (or capped due to missing runtime/CI verification). **MUST cite linked Finding IDs.** *(If citing a Blocker strictly as secondary impact rather than primary root cause, set `"secondary_impact": true` in JSON.)* |
 | **0** | **Fail** | One or more verified **Blocker** or **systemic Major** findings (or complete absence of evidence across audited scope). **MUST cite linked Finding IDs.** |
 | **N/A** | **Not Applicable / Untested** | Does not apply to product topology OR blocked by confirmed Data Tier (e.g. post-submit flows at `T0`). Excluded from that pillar's denominator; **MUST state reason**. |
@@ -53,7 +53,7 @@ For each pillar $p$ with assigned weight $W_p$ ($\sum W_p = 100$):
 ### 3-Band Evidence Cap (Anti-Prose-Inflation Rule for `system` Audits)
 Every `DS01–DS12` entry in `system` mode optionally records `bands: { prose, artifacts, verification }` (`0..40`, `0..40`, `0..20`):
 - **Rule:** Documentation alone (`artifacts === 0 && verification === 0`) **CANNOT** score `2` (Pass) — `compute-scorecard.mjs` rejects `score: 2` when structural artifacts and verification proof are both missing (`prose <= 40%` hard cap).
-- Every `DS*` criterion additionally carries `check_type`: `"AUTO"` (verifiable via code, tokens, DOM, Storybook, CI) or `"MANUAL"` (requiring human research, AT testing, counsel/design stewardship review), plus `volatility`: `"FIXED"` or `"DYNAMIC"`.
+- Every `DS*` criterion additionally carries `check_type`: `"AUTO"` (verifiable via code, tokens, DOM, Storybook, CI), `"MANUAL"` (requiring human research, AT testing, counsel/design stewardship review), or `"AUTO+MANUAL"` (combining automated checks with manual engineering/design triangulation), plus `volatility`: `"FIXED"` or `"DYNAMIC"`.
 
 ### 2b. Three-Tier Gate & Controlled Waiver Model (`Floor` · `Reflex` · `Finish`)
 Static, edit-time hook (`dsaf hook`), and CI SARIF (`--sarif` / `--github`) checks classify findings into three operational tiers:
@@ -62,7 +62,7 @@ Static, edit-time hook (`dsaf hook`), and CI SARIF (`--sarif` / `--github`) chec
 |---|---|---|---|
 | **`Floor`** (`error`) | Non-negotiable baseline correctness, a11y, focus, reduced motion, DTCG validity. **Never waivable.** | Rejected (`dsaf/floor-waiver-rejected`) | N/A — must be fixed |
 | **`Reflex`** (`warning`) | Model defaults & drift heuristics (hardcoded colors, `!important`, off-grid px, Tailwind brackets). | `/* dsaf-ignore <rule-id> -- <reason> */` | Concrete, project-specific rationale `>= 12` chars (boilerplate like `ok`/`todo`/`legacy` fails `dsaf/waiver-reason-weak`) |
-| **`Finish`** (`note`) | Craft polish & cleanup hygiene (semantic orphan tokens, stale waivers). Non-blocking unless escalated. | Tracked by `--report-unused-ignores` | Remove stale `dsaf-ignore` directives once resolved |
+| **`Finish`** (`note`; `warning` for `dsaf/unused-ignore`) | Craft polish & cleanup hygiene (semantic orphan tokens, stale waivers). Non-blocking unless escalated. | Tracked by `--report-unused-ignores` | Remove stale `dsaf-ignore` directives once resolved |
 
 ---
 
@@ -109,7 +109,7 @@ Static, edit-time hook (`dsaf hook`), and CI SARIF (`--sarif` / `--github`) chec
 | **P6 Design System & Resilience** | **V10** | 3-Tier System & Component Consistency | Primitive -> Semantic -> Component tokens, 4-level button hierarchy, unified icon family & stroke weight. |
 | | **V11** | Extreme Content & Viewport Resilience | Zero overflow/clipping under accented stress copy, 200% zoom, 375px mobile; `overflow-x: clip`, no `100vw`, `minmax(0, 1fr)`. |
 
-**APCA Reference (`check-apca` / `audit-runtime.mjs`):** Body 14–16px (`|Lc| >= 75`, min `60`) · Secondary 12–14px (`>= 60`) · Large headings >= 24px or 18.66px bold (`>= 45`) · Non-text borders/icons (WCAG 1.4.11 `>= 3.0:1`, APCA `>= Lc 30`).
+**APCA Reference (`audit-tokens.mjs` / `audit-runtime.mjs` vs Craft Targets):** Automated scripts enforce `|Lc| >= 60` for body copy (12–16px), `|Lc| >= 45` for large headings (>= 24px or 18.66px bold), and WCAG 1.4.11 `>= 3.00:1` for UI borders; `|Lc| >= 75` for 14–16px body prose and `APCA >= Lc 30` for non-text icons/borders are manual editorial/visual craft targets.
 
 **Domain Weight Presets:** `dev_b2b` (20/20/18/20/10/12) · `consumer_brand` (20/15/18/17/20/10) · `content_docs` (18/27/18/15/10/12) · `balanced` (18/18/18/18/14/14).
 
@@ -117,20 +117,20 @@ Static, edit-time hook (`dsaf hook`), and CI SARIF (`--sarif` / `--github`) chec
 
 ## 5. Rubric 3 — Design System & Product Conformance (`DS01–DS12` across 4 Pillars)
 
-| Pillar | ID | Criterion | Core Anchors (`DSAF-25` Refs) | Volatility / Check |
+| Pillar | ID | Criterion | Core Evidence & Scope | Volatility / Check |
 |---|---|---|---|---|
-| **P1 Foundations & Tokens** | **DS01** | 3-Tier Token Architecture | Primitive -> Semantic -> Component hierarchy, spacing/type/elevation scales (`A1.1–A1.7`) | `FIXED` / `AUTO` |
-| | **DS02** | W3C DTCG Conformance & Ref Integrity | `$value`/`$type` conformance, `{alias}` & `$ref` resolution, zero circular/unresolved refs (`A1.8`) | `DYNAMIC` / `AUTO` |
-| | **DS03** | Modern Color & Multi-Mode Parity | OKLCH/P3 support + full Light/Dark/High-Contrast token parity (`A1.9, A6.1`) | `DYNAMIC` / `AUTO` |
-| **P2 Component Architecture & A11y** | **DS04** | Core Component Coverage & APIs | Coverage of core primitives (Button, Input, Select, Dialog, Table, Tabs, Toast, Nav) & cohesive props (`A2.1`) | `FIXED` / `AUTO` |
-| | **DS05** | Variant & Interactive State Matrix | Complete hover, focus-visible, active, disabled, loading, error states across light/dark (`A2.4`) | `FIXED` / `AUTO` |
-| | **DS06** | Baked-In WCAG 2.2 AA + APCA | Runtime verified `0` axe errors, WCAG `>= 4.5:1` / `>= 3.00:1`, APCA `Lc` floors, `>= 44px` touch & keyboard traps (`A8.1, B5.2`) | `FIXED` / `AUTO` |
-| **P3 Conformance & Drift** | **DS07** | Token Compliance & Hardcode Ratio | High token compliance %; minimal rogue hex/rgb/off-grid spacing or orphan tokens (`A7.1`) | `FIXED` / `AUTO` |
-| | **DS08** | Override Hygiene & N-of-1 Consolidation | Low `!important` / local style patching; unified button/input/card DOM signatures (`A7.1`) | `FIXED` / `AUTO` |
-| | **DS09** | Design-to-Code Triangulation | Parity across Defined (DTCG/docs) <-> Designed (Figma/Code Connect) <-> Shipped (DOM/Storybook) (`A5.4`) | `FIXED` / `MANUAL+AUTO` |
-| **P4 Governance, DX & AI Readiness** | **DS10** | Docs, Storybook & Usage Guidance | Live Storybook/catalog, When-to-use / Do & Don't, content voice & tone (`A3.1, A5.4, B6.1`) | `FIXED` / `AUTO` |
-| | **DS11** | Governance, Versioning & Budgets | Semver discipline, RFC process, changelog, CI/CD, bundle size budgets (`A4.2, A4.3, A5.5, A9.1`) | `FIXED` / `AUTO+MANUAL` |
-| | **DS12** | AI Guardrails & Regression Gate | Agent rule files (`AGENTS.md`, `llms.txt`), executable design/copy lint, and mechanical `audit-diff` CI (`A10.3, B9.1`) | `DYNAMIC` / `AUTO` |
+| **P1 Foundations & Tokens** | **DS01** | 3-Tier Token Architecture | Primitive -> Semantic -> Component hierarchy (`componentScopedCount`), spacing/type/elevation scales | `FIXED` / `AUTO` |
+| | **DS02** | W3C DTCG Conformance & Ref Integrity | `$value`/`$type` conformance, `{alias}` & `$ref` resolution, zero circular/unresolved refs (`blockingIssues`) | `DYNAMIC` / `AUTO` |
+| | **DS03** | Modern Color & Multi-Mode Parity | OKLCH/P3 support (`modernColorCount`) + Light/Dark parity (`dtcgModes`); High-Contrast / `forced-colors` inspection | `DYNAMIC` / `AUTO` |
+| **P2 Component Architecture & A11y** | **DS04** | Core Component Coverage & APIs | Coverage of core primitives (Button, Input, Select, Dialog, Table, Tabs, Toast, Nav) & cohesive props | `FIXED` / `AUTO` |
+| | **DS05** | Variant & Interactive State Matrix | Complete hover, focus-visible, active, disabled, loading, error states across light/dark | `FIXED` / `AUTO` |
+| | **DS06** | Baked-In WCAG 2.2 AA + APCA | Runtime verified `0` axe errors, WCAG `>= 4.5:1` / `>= 3.00:1`, APCA `Lc` floors, `>= 44px` touch & keyboard traps | `FIXED` / `AUTO` |
+| **P3 Conformance & Drift** | **DS07** | Token Compliance & Hardcode Ratio | High token compliance %; minimal rogue hex/rgb/off-grid spacing or orphan tokens | `FIXED` / `AUTO` |
+| | **DS08** | Override Hygiene & N-of-1 Consolidation | Low `!important` / local style patching; unified button/input/card DOM signatures | `FIXED` / `AUTO` |
+| | **DS09** | Design-to-Code Triangulation | Parity across Defined (DTCG/docs) <-> Designed (Figma/Code Connect) <-> Shipped (DOM/Storybook) | `FIXED` / `AUTO+MANUAL` |
+| **P4 Governance, DX & AI Readiness** | **DS10** | Docs, Storybook & Usage Guidance | Live Storybook/catalog, When-to-use / Do & Don't, content voice & tone | `FIXED` / `AUTO` |
+| | **DS11** | Governance, Versioning & Budgets | Semver discipline, RFC process, changelog, CI/CD, bundle size budgets | `FIXED` / `AUTO+MANUAL` |
+| | **DS12** | AI Guardrails & Regression Gate | Agent rule files (`AGENTS.md`, `llms.txt`), executable design/copy lint, and mechanical `audit-diff` CI | `DYNAMIC` / `AUTO` |
 
 **Weight Presets (`P1..P4`):** `ds_core` (`30/30/20/20`) · `product_conformance` (`20/25/35/20`) · `balanced` (`25/25/25/25`).
 
@@ -140,7 +140,7 @@ Static, edit-time hook (`dsaf hook`), and CI SARIF (`--sarif` / `--github`) chec
 
 ## 6. No-Silent-Regression Policy (`audit-diff.mjs`)
 
-Regressions between two runs (`baseline-scores.json` -> `current-scores.json` of matching engine major version) are NEVER silently averaged away by gains elsewhere. Any criterion score drop is surfaced by `node ./scripts/audit-diff.mjs`:
+Regressions between two runs (`baseline-scores.json` -> `current-scores.json` of matching engine major.minor version) are NEVER silently averaged away by gains elsewhere. Any criterion score drop is surfaced by `node ./scripts/audit-diff.mjs`:
 
 | Cause Category | Tag | Eligible Criteria | Approver Required? |
 |---|---|---|---|

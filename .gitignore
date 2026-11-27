@@ -2,12 +2,10 @@ node_modules/
 .DS_Store
 **/.DS_Store
 audit-output/
+dsaf-audit-output/
 draft/
 coverage/
 .tmp/
 .tmp-action-smoke/
-.evolve/repro/
-.evolve/lease.*
-.dsaf/lease.*
 *.log
 *.tgz

@@ -1,7 +1,7 @@
 {
   "schema": "dsaf-scores/2",
-  "engine_version": "0.2.0",
-  "generated": "2026-11-26T11:35:27.289Z",
+  "engine_version": "0.9.3",
+  "generated": "2026-11-27T06:15:14.516Z",
   "type": "visual",
   "profile": "dev_b2b",
   "weights": {
@@ -12,6 +12,8 @@
     "P5": 10,
     "P6": 12
   },
+  "review_provenance": null,
+  "waivers": [],
   "phases": {
     "before": {
       "pillars": [
