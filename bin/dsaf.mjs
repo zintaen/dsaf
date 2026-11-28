@@ -155,7 +155,7 @@ async function main() {
 
   const scriptPath = join(REPO_ROOT, entry.script);
   if (!existsSync(scriptPath)) {
-    console.error(`Command '${effectiveCmd}' (${entry.script}) is only available in the full DSAF source repository (Tier 2 maintainer tools are excluded from npm installs).`);
+    console.error(`Command '${effectiveCmd}' (${entry.script}) is only available in the full DSAF source repository (repository verification scripts are excluded from npm installs).`);
     process.exit(2);
   }
 

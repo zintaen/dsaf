@@ -98,6 +98,27 @@ export function extractCssRuleBlocks(cleanedCss) {
   let interpDepth = 0;
   let parenDepth = 0;
   const stack = [];
+  const layerTree = { orderIndex: 0, children: new Map() };
+  let anonLayerSeq = 0;
+  const registerLayerPath = (segs) => {
+    if (!Array.isArray(segs) || segs.length === 0) return [];
+    let cur = layerTree;
+    for (const seg of segs) {
+      let child = cur.children.get(seg);
+      if (!child) {
+        child = { orderIndex: cur.children.size, children: new Map() };
+        cur.children.set(seg, child);
+      }
+      cur = child;
+    }
+    return segs;
+  };
+  const currentLayerPath = () => {
+    for (let k = stack.length - 1; k >= 0; k--) {
+      if (stack[k].layerPath && stack[k].layerPath.length > 0) return stack[k].layerPath;
+    }
+    return [];
+  };
 
   while (idx < cleanedCss.length) {
     const ch = cleanedCss[idx];
@@ -139,6 +160,18 @@ export function extractCssRuleBlocks(cleanedCss) {
       const normCond = selector.replace(/\s+/g, " ").trim().toLowerCase();
       const parentConditions = parent?.conditions || [];
       const conditions = isConditionalRule ? [...parentConditions, normCond] : [...parentConditions];
+      const isLayerBlock = /^@layer\b/i.test(selector);
+      let layerPath = parent?.layerPath ? [...parent.layerPath] : [];
+      let layerName = parent?.layerName || null;
+      if (isLayerBlock) {
+        const rawLayer = selector.replace(/^@layer\b/i, "").replace(/\s+/g, "").trim();
+        const segs = rawLayer
+          ? rawLayer.split(".").map((s) => s.trim()).filter(Boolean)
+          : [`__anon_${++anonLayerSeq}`];
+        const pref = currentLayerPath();
+        layerPath = registerLayerPath([...pref, ...(segs.length > 0 ? segs : [`__anon_${++anonLayerSeq}`])]);
+        layerName = layerPath.join(".");
+      }
       const resolvedSelector = parent?.inKeyframes ? selector : resolveNestedSelector(parent?.resolvedSelector || "", selector);
       stack.push({
         selector,
@@ -148,6 +181,8 @@ export function extractCssRuleBlocks(cleanedCss) {
         inStartingStyle,
         inKeyframes,
         conditions,
+        layerName,
+        layerPath,
         nestedSpans: [],
       });
       headerStart = idx + 1;
@@ -182,6 +217,9 @@ export function extractCssRuleBlocks(cleanedCss) {
           inStartingStyle: top.inStartingStyle,
           inKeyframes: top.inKeyframes,
           conditions: top.conditions,
+          layer: top.layerName,
+          layerPath: top.layerPath || [],
+          layerTree,
           body,
           fullBody,
         });
@@ -189,7 +227,23 @@ export function extractCssRuleBlocks(cleanedCss) {
       headerStart = idx + 1;
       parenDepth = 0;
     } else if (ch === ";") {
-      if (interpDepth === 0 && parenDepth === 0) headerStart = idx + 1;
+      if (interpDepth === 0 && parenDepth === 0) {
+        const stmt = cleanedCss.slice(headerStart, idx).trim();
+        if (/^@layer\s+[\s\S]+$/i.test(stmt)) {
+          const pref = currentLayerPath();
+          for (const rawItem of stmt.replace(/^@layer\s+/i, "").split(",")) {
+            const segs = rawItem
+              .replace(/\s+/g, "")
+              .trim()
+              .split(".")
+              .map((s) => s.trim())
+              .filter(Boolean);
+            if (segs.length === 0) continue;
+            registerLayerPath([...pref, ...segs]);
+          }
+        }
+        headerStart = idx + 1;
+      }
     }
     idx++;
   }
@@ -223,7 +277,7 @@ export function stripQuotedAttrValues(attrs) {
   for (let i = 0; i < s.length; i++) {
     const ch = s[i];
     if (attrQuote) {
-      if (ch === "\\" && i + 1 < s.length) {
+      if (attrQuote === "`" && ch === "\\" && i + 1 < s.length) {
         if (chars[i + 1] !== "\n") chars[i + 1] = " ";
         chars[i] = " ";
         i++;
@@ -348,7 +402,16 @@ function maskSvgAndStyleTokens(raw, isStyle, markupOpts = null, markupCtx = null
     return stripTokenBlocksPreservingLines(clean);
   }
   const chars = clean.split("");
-  for (const r of findSvgBlockRanges(clean, { ...(markupOpts || {}), ...(markupCtx ? { markupCtx } : {}) })) {
+  const ctx = markupCtx || scanMarkupContexts(clean, markupOpts || {});
+  for (const blk of extractRealStyleBlocks(clean, ctx, markupOpts || {})) {
+    const strippedStyle = stripTokenBlocksPreservingLines(blk.text);
+    for (let k = 0; k < strippedStyle.length && blk.bodyStart + k < blk.bodyEnd; k++) {
+      chars[blk.bodyStart + k] = strippedStyle[k];
+    }
+  }
+  const cleanAfterStyle = chars.join("");
+  const svgCtx = cleanAfterStyle === clean ? ctx : scanMarkupContexts(cleanAfterStyle, markupOpts || {});
+  for (const r of findSvgBlockRanges(cleanAfterStyle, { ...(markupOpts || {}), markupCtx: svgCtx })) {
     maskRangePreservingLines(chars, r.start, r.end);
   }
   return chars.join("");
@@ -607,8 +670,15 @@ function classifyBorderDecl(propLower, rawVal) {
   return { state: inv ? "invisible" : "visible", isImportant, suppressedProps };
 }
 
+export function maskAtApplyDeclsPreservingLines(cssBody) {
+  return String(cssBody || "").replace(
+    /(?<![a-zA-Z0-9_$-])@apply\s+(?:[^#;{}]|#\{[^{}]*\}|#(?!\{))+;?/gi,
+    (m) => m.replace(/[^\n]/g, " ")
+  );
+}
+
 export function findOutlineRemovals(body) {
-  const masked = maskCssQuotedStringsPreservingLines(body);
+  const masked = maskAtApplyDeclsPreservingLines(maskCssQuotedStringsPreservingLines(body));
   const out = [];
   for (const m of masked.matchAll(/(?<![a-zA-Z0-9_$-])(outline|outline-style|outline-width|outline-color)\s*:\s*((?:[^#;{}]|#\{[^{}]*\}|#(?!\{))+)/gi)) {
     const prop = m[1].toLowerCase();
@@ -760,10 +830,16 @@ export function splitTailwindVariants(token) {
   };
   const isNotFvVariant = (v) => {
     const lv = v.toLowerCase();
-    if (lv === "not-focus-visible" || lv === "not-[:focus-visible]") return true;
+    if (lv === "not-focus-visible" || lv === "not-[:focus-visible]" || lv === "not-(:focus-visible)") return true;
     if (!(lv.startsWith("[") && lv.endsWith("]")) || isTargetVariant(v)) return false;
     const body = lv.slice(1, -1);
     return /(?<!\\):not\(:focus-visible\)/i.test(body) && !/(?<!\\):focus-visible(?![a-z-])/i.test(stripNotPseudo(body));
+  };
+  const isTargetNotFvGuarded = (v) => {
+    const lv = v.toLowerCase();
+    if (!(lv.startsWith("[") && lv.endsWith("]"))) return false;
+    const subj = extractSubjectSelector(lv.slice(1, -1).replace(/_/g, " "));
+    return /(?<!\\):not\(:focus-visible\)/i.test(subj) && !/(?<!\\):focus-visible(?![a-z-])/i.test(stripNotPseudo(subj));
   };
   for (const rawV of parts) {
     const v = rawV.replace(/^!+/, "");
@@ -783,7 +859,7 @@ export function splitTailwindVariants(token) {
         }
       } else if (isTargetVariant(v)) {
         targetPrefixes.add(lv);
-        isSafeNotFocusVisible = false;
+        isSafeNotFocusVisible = isTargetNotFvGuarded(v);
       } else {
         if (isNotFvVariant(v)) isSafeNotFocusVisible = true;
         condPrefixes.add(lv);
@@ -796,6 +872,9 @@ export function splitTailwindVariants(token) {
 const TW_NESTED_BRACKET = "\\[(?:[^\\[\\]\\s`;]|\\[[^\\[\\]\\s`;]*\\])+\\]";
 const TW_NESTED_PAREN = "\\((?:[^()\\s`;]|\\([^()\\s`;]*\\))+\\)";
 export const TW_VARIANT_SEG = `(?:(?:\\*{1,2}|@?${TW_NESTED_BRACKET}|@?[a-zA-Z0-9_-]+(?:-(?:${TW_NESTED_BRACKET}|${TW_NESTED_PAREN}))?)(?:/[a-zA-Z0-9_-]+)?):`;
+export const TW_TRANS_ALL_CORE = `(?:transition-all|transition-\\[[^\\]\\s\`;]*?(?<![a-zA-Z0-9-])all(?![a-zA-Z0-9-])[^\\]\\s\`;]*\\]|\\[transition(?:-property)?:[^\\]\\s\`;]*?(?<![a-zA-Z0-9-])all(?![a-zA-Z0-9-])[^\\]\\s\`;]*\\])`;
+export const TW_VW_CORE = `(?:(?:min-|max-)?w-screen(?![a-zA-Z0-9_-])|(?:min-|max-)?(?:w|size)-\\[[^\\]\\s\`;]*?(?<![a-zA-Z0-9]|[a-zA-Z0-9]-)100vw(?![a-zA-Z0-9]|-[a-zA-Z])[^\\]\\s\`;]*\\]|\\[(?:min-|max-)?(?:width|inline-size):[^\\]\\s\`;]*?(?<![a-zA-Z0-9]|[a-zA-Z0-9]-)100vw(?![a-zA-Z0-9]|-[a-zA-Z])[^\\]\\s\`;]*\\])`;
+const TW_SHADOW_VIS_BODY = `(?:shadow-${TW_NESTED_BRACKET}|\\[box-shadow:[^\\]\\s\`;]+\\])`;
 const TW_ZERO_LEN_OR_NONE = "(?:(?:length|color):)?(?:(?:0(?:\\.0+)?|\\.0+)(?:px|rem|em|vw|vh|%)?|none|hidden|transparent)";
 const TW_OUTLINE_REM_BODY = `(?:outline-(?:none|0|hidden|transparent|${TW_NESTED_BRACKET})|\\[outline(?:-(?:style|width|color))?:(?:${TW_ZERO_LEN_OR_NONE}|[^\\]\\s\`;]+)\\])`;
 const TW_VAL_CHAR = "(?:[a-zA-Z0-9_/.#%-]|\\[[^\\s\"'`;\\]]+\\]|\\([^\\s\"'`;)]+\\))+";
@@ -957,7 +1036,7 @@ export function isInvisibleTwFocusUtility(tok) {
   if (/^(?:ring|border|outline)-\[(?:(?:length|color):)?(?:(?:0(?:\.0+)?|\.0+)(?:px|rem|em|vw|vh|%)?|none|hidden|transparent)\]$/i.test(util)) {
     return true;
   }
-  if (/^(?:ring|border|outline)-opacity-/i.test(util)) return true;
+  if (/^(?:ring|border|outline)-opacity-(?:0+(?:\.0+)?|\[(?:0+(?:\.0+)?|\.0+)%?\])$/i.test(util)) return true;
   if (/\/(?:0(?:\.0+)?|\.0+|\[(?:0(?:\.0+)?|\.0+)%?\])$/.test(util)) return true;
   const arbPropM = /^\[(outline|border(?:-[trblxyse])?|ring)(?:-(?:style|width|color))?:([^\]]+)\]$/i.exec(util);
   if (arbPropM) {
@@ -967,6 +1046,14 @@ export function isInvisibleTwFocusUtility(tok) {
   const utilProp = propM ? propM[1] : "";
   for (const bm of util.matchAll(/\[([^\]]+)\]/g)) {
     if (isArbitraryFocusSpecInvisible(utilProp, bm[1])) return true;
+  }
+  if (/^shadow-none$/i.test(util)) return true;
+  const shadowBracketM = /^(?:shadow-\[([^\]]+)\]|\[box-shadow:([^\]]+)\])$/i.exec(util);
+  if (shadowBracketM) {
+    const rawShadow = (shadowBracketM[1] || shadowBracketM[2] || "").replace(/_/g, " ").trim();
+    if (!rawShadow) return true;
+    const layers = splitTopLevelCommas(rawShadow).filter(Boolean);
+    return layers.length === 0 || !layers.some((l) => isBoxShadowLayerVisible(l));
   }
   return false;
 }
@@ -1005,15 +1092,172 @@ function hasArgCoversTargets(hasInner, targetPrefixes) {
   return false;
 }
 
+function stripTrailingTwAlphaModifier(util) {
+  const s = String(util || "");
+  let br = 0;
+  let par = 0;
+  let splitIdx = -1;
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    if (ch === "[") br++;
+    else if (ch === "]") br = Math.max(0, br - 1);
+    else if (ch === "(") par++;
+    else if (ch === ")") par = Math.max(0, par - 1);
+    else if (ch === "/" && br === 0 && par === 0) splitIdx = i;
+  }
+  if (splitIdx === -1) return { bare: s, alphaMod: "" };
+  return { bare: s.slice(0, splitIdx), alphaMod: s.slice(splitIdx + 1) };
+}
+
+function classifyTwRingOrBorder(tok) {
+  const util = getTwUtilityPart(tok).toLowerCase();
+  if (/^shadow(?:-|$)/.test(util) || /^\[box-shadow:/.test(util)) {
+    if (/^shadow-none$/.test(util) || isInvisibleTwFocusUtility(tok)) {
+      return { family: "shadow", side: "", killsWidth: true, killsStyle: true, killsColor: true, setsWidth: false, setsStyle: false, setsColor: false };
+    }
+    if (/^shadow-\[/.test(util) || /^\[box-shadow:/.test(util)) {
+      return { family: "shadow", side: "", killsWidth: false, killsStyle: false, killsColor: false, setsWidth: true, setsStyle: true, setsColor: true };
+    }
+    return null;
+  }
+  const arbPm = /^\[(ring|border|outline)(?:-(t|r|b|l|x|y|s|e))?(?:-(style|width|color))?:([^\]]+)\]$/.exec(util);
+  const pm = arbPm ? [arbPm[0], arbPm[1]] : /^(ring|border|outline)(?:-|$)/.exec(util);
+  if (!pm) return null;
+  const family = pm[1];
+  const sideM = arbPm ? null : family === "border" ? /^border-(t|r|b|l|x|y|s|e)(?=-|$)/.exec(util) : null;
+  const side = arbPm && arbPm[2] ? arbPm[2] : sideM ? sideM[1] : "";
+  const subProp = arbPm && arbPm[3] ? arbPm[3] : null;
+  if (!arbPm) {
+    if (family === "ring" && /^ring-(?:offset-|inset\b)/i.test(util)) return null;
+    if (family === "border" && /^border-(?:collapse|separate|spacing-)/i.test(util)) return null;
+    if (family === "outline" && /^outline-offset-/i.test(util)) return null;
+  }
+  if (isInvisibleTwFocusUtility(tok)) {
+    if (arbPm) {
+      const inner = arbPm[4].replace(/_/g, " ").trim();
+      const hasZeroCol = hasZeroAlphaColor(inner) || /\btransparent\b/i.test(inner);
+      const hasNoneKw = /(?:^|\s)(?:none|hidden)(?=$|\s)/i.test(inner);
+      const hasZeroLen = /(?:^|\s)(?:0(?:\.0+)?|\.0+)(?:px|rem|em|vw|vh|%)?(?=$|\s)/i.test(inner);
+      const killsColor = subProp === "color" || (!subProp && hasZeroCol);
+      const killsStyle = subProp === "style" || (!subProp && hasNoneKw);
+      const killsWidth = subProp === "width" || (!subProp && (hasZeroLen || hasNoneKw || (!hasZeroCol && !hasNoneKw)));
+      return { family, side, killsWidth, killsStyle, killsColor, setsWidth: false, setsStyle: false, setsColor: false };
+    }
+    if (/^(?:ring|border|outline)-opacity-/i.test(util)) {
+      if (/^(?:ring|border|outline)-opacity-(?:0(?:\.0+)?|\.0+|\[(?:0(?:\.0+)?|\.0+)%?\])$/i.test(util)) {
+        return { family, side: "", killsWidth: false, killsStyle: false, killsColor: true, setsWidth: false, setsStyle: false, setsColor: false };
+      }
+      return null;
+    }
+    const { bare: noAlphaMod, alphaMod } = stripTrailingTwAlphaModifier(util);
+    const hasZeroMod = Boolean(alphaMod) && /^(?:0(?:\.0+)?|\.0+|\[(?:0(?:\.0+)?|\.0+)%?\])$/.test(alphaMod);
+    const isTransparentKw = /^(?:ring|border|outline)(?:-[trblxyse])?-transparent$/i.test(noAlphaMod);
+    const isNoneStyleKw = /^(?:ring|border|outline)(?:-[trblxyse])?-(?:none|hidden)$/i.test(noAlphaMod);
+    const isZeroWidthKw = /^(?:ring|border|outline)(?:-[trblxyse])?-(?:0|none|hidden)$/i.test(noAlphaMod);
+    let killsWidth = isZeroWidthKw;
+    let killsStyle = isNoneStyleKw;
+    let killsColor = isTransparentKw || hasZeroMod;
+    const bm = /\[([^\]]+)\]/.exec(noAlphaMod);
+    if (bm) {
+      const inner = bm[1].replace(/_/g, " ").trim().replace(/^[a-z-]+:\s*/i, "");
+      if (hasZeroAlphaColor(inner) || /\btransparent\b/i.test(inner)) killsColor = true;
+      if (/(?:^|\s)(?:none|hidden)(?=$|\s)/i.test(inner)) killsStyle = true;
+      if (/(?:^|\s)(?:0(?:\.0+)?|\.0+)(?:px|rem|em|vw|vh|%)?(?=$|\s)|(?:^|\s)(?:none|hidden)(?=$|\s)/i.test(inner)) killsWidth = true;
+      if (!killsWidth && !killsColor && !killsStyle) killsWidth = true;
+    }
+    if (!killsWidth && !killsColor && !killsStyle) killsWidth = true;
+    return { family, side, killsWidth, killsStyle, killsColor, setsWidth: false, setsStyle: false, setsColor: false };
+  }
+  if (arbPm) {
+    if (subProp === "style") return { family, side, killsWidth: false, killsStyle: false, killsColor: false, setsWidth: false, setsStyle: true, setsColor: false };
+    if (subProp === "width") return { family, side, killsWidth: false, killsStyle: false, killsColor: false, setsWidth: true, setsStyle: false, setsColor: false };
+    if (subProp === "color") return { family, side, killsWidth: false, killsStyle: false, killsColor: false, setsWidth: false, setsStyle: false, setsColor: true };
+    const inner = arbPm[4].replace(/_/g, " ").trim();
+    const tokens = stripCssParens(inner).split(/\s+/).filter(Boolean);
+    const hasStyleKw = tokens.some((t) => /^(?:solid|dashed|dotted|double|groove|ridge|inset|outset|auto)$/i.test(t));
+    const hasLen = /^length:/i.test(inner) || tokens.some((t) => /^(?:\d|\.\d)/.test(t));
+    const hasCol = /^color:/i.test(inner) || tokens.some((t) => !/^(?:length:|\d|\.\d|solid|dashed|dotted|double|groove|ridge|inset|outset|auto)$/i.test(t));
+    return {
+      family,
+      side,
+      killsWidth: false,
+      killsStyle: false,
+      killsColor: false,
+      setsWidth: hasLen || tokens.length === 0,
+      setsStyle: hasStyleKw || (family === "ring" && hasLen) || tokens.length === 0,
+      setsColor: hasCol,
+    };
+  }
+  const { bare } = stripTrailingTwAlphaModifier(util);
+  let setsWidth = false;
+  let setsStyle = false;
+  let setsColor = false;
+  if (family === "ring") {
+    if (/^ring(?:-(?:1|2|4|8|\d+))?$/i.test(bare) || /^ring-\((?:length:)?--[^)]+\)$/i.test(bare)) {
+      setsWidth = true;
+      setsStyle = true;
+    } else if (/^ring-\[([^\]]+)\]$/.test(bare)) {
+      const inner = bare.slice(6, -1).replace(/_/g, " ").trim();
+      const tokens = stripCssParens(inner).split(/\s+/).filter(Boolean);
+      const hasLen = /^length:/i.test(inner) || tokens.some((t) => /^(?:\d|\.\d)/.test(t));
+      const hasCol = /^color:/i.test(inner) || tokens.some((t) => !/^(?:length:|\d|\.\d)/.test(t));
+      setsWidth = hasLen || tokens.length === 0;
+      setsStyle = setsWidth;
+      setsColor = hasCol;
+    } else {
+      setsColor = true;
+    }
+  } else if (family === "outline") {
+    if (/^outline(?:-\d+)?$/i.test(bare) || /^outline-\((?:length:)?--[^)]+\)$/i.test(bare)) {
+      setsWidth = true;
+      setsStyle = true;
+    } else if (/^outline-(?:solid|dashed|dotted|double)$/i.test(bare)) {
+      setsStyle = true;
+    } else if (/^outline-\[([^\]]+)\]$/.test(bare)) {
+      const inner = bare.slice(9, -1).replace(/_/g, " ").trim();
+      const tokens = stripCssParens(inner).split(/\s+/).filter(Boolean);
+      const hasLen = /^length:/i.test(inner) || tokens.some((t) => /^(?:\d|\.\d)/.test(t));
+      const hasStyleKw = tokens.some((t) => /^(?:solid|dashed|dotted|double|auto)$/i.test(t));
+      const hasCol = /^color:/i.test(inner) || tokens.some((t) => !/^(?:length:|\d|\.\d|solid|dashed|dotted|double|auto)/i.test(t));
+      setsWidth = hasLen || tokens.length === 0;
+      setsStyle = hasStyleKw || tokens.length === 0;
+      setsColor = hasCol;
+    } else {
+      setsColor = true;
+    }
+  } else {
+    if (/^border(?:-(?:t|r|b|l|x|y|s|e))?$/i.test(bare) || /^border(?:-(?:t|r|b|l|x|y|s|e))?-\((?:length:)?--[^)]+\)$/i.test(bare)) {
+      setsWidth = true;
+      setsStyle = true;
+    } else if (/^border(?:-(?:t|r|b|l|x|y|s|e))?-\d+$/i.test(bare)) {
+      setsWidth = true;
+    } else if (/^border(?:-(?:t|r|b|l|x|y|s|e))?-(?:solid|dashed|dotted|double)$/i.test(bare)) {
+      setsStyle = true;
+    } else if (/^border(?:-[trblxyse])?-\[([^\]]+)\]$/.test(bare)) {
+      const inner = bare.replace(/^border(?:-[trblxyse])?-\[/, "").slice(0, -1).replace(/_/g, " ").trim();
+      const tokens = stripCssParens(inner).split(/\s+/).filter(Boolean);
+      const hasLen = /^length:/i.test(inner) || tokens.some((t) => /^(?:\d|\.\d)/.test(t));
+      const hasStyleKw = tokens.some((t) => /^(?:solid|dashed|dotted|double)$/i.test(t));
+      const hasCol = /^color:/i.test(inner) || tokens.some((t) => !/^(?:length:|\d|\.\d|solid|dashed|dotted|double)/i.test(t));
+      setsWidth = hasLen || tokens.length === 0;
+      setsStyle = hasStyleKw || tokens.length === 0;
+      setsColor = hasCol;
+    } else {
+      setsColor = true;
+    }
+  }
+  return { family, side, killsWidth: false, killsStyle: false, killsColor: false, setsWidth, setsStyle, setsColor };
+}
+
 export function analyzeTailwindOutline(classes, extraReplacementClasses = "", prevSameRuleClasses = "") {
   const s = String(classes || "");
   const twOutlineRemovalAllRe = new RegExp(`(?:^|\\s)(!?(?:${TW_VARIANT_SEG})*!?${TW_OUTLINE_REM_BODY}!?)(?=$|[\\s;])`, "g");
   const twFocusReplacementRe = new RegExp(
-    `(?:^|\\s)(!?(?:${TW_VARIANT_SEG})*(?:focus(?:-visible|-within)?|has-${TW_NESTED_BRACKET}):(?:${TW_VARIANT_SEG})*!?(?:${TW_RING_VIS_BODY}|${TW_OUTLINE_VIS_BODY}|${TW_BORDER_VIS_BODY})!?)(?=$|[\\s;])`,
+    `(?:^|\\s)(!?(?:${TW_VARIANT_SEG})*(?:focus(?:-visible|-within)?|has-${TW_NESTED_BRACKET}):(?:${TW_VARIANT_SEG})*!?(?:${TW_RING_VIS_BODY}|${TW_OUTLINE_VIS_BODY}|${TW_BORDER_VIS_BODY}|${TW_SHADOW_VIS_BODY})!?)(?=$|[\\s;])`,
     "g"
   );
   const twRingBorderAllRe = new RegExp(
-    `(?:^|\\s)(!?(?:${TW_VARIANT_SEG})*!?(?:(?:ring|border|outline)(?:-[^\\s"'\`;]+)?|\\[(?:ring|border(?:-[trblxyse])?|outline)(?:-(?:style|width|color))?:[^\\]\\s\`;]+\\])!?)(?=$|[\\s;])`,
+    `(?:^|\\s)(!?(?:${TW_VARIANT_SEG})*!?(?:(?:ring|border|outline|shadow)(?:-[^\\s"'\`;]+)?|\\[(?:ring|border(?:-[trblxyse])?|outline|box-shadow)(?:-(?:style|width|color))?:[^\\]\\s\`;]+\\])!?)(?=$|[\\s;])`,
     "g"
   );
   const removals = [];
@@ -1033,136 +1277,6 @@ export function analyzeTailwindOutline(classes, extraReplacementClasses = "", pr
   const cmpPos = (a, b) => {
     const sr = (SOURCE_RANK[a.fromSource] ?? 1) - (SOURCE_RANK[b.fromSource] ?? 1);
     return sr !== 0 ? sr : a.tokIdx - b.tokIdx;
-  };
-  const classifyTwRingOrBorder = (tok) => {
-    const util = getTwUtilityPart(tok).toLowerCase();
-    const arbPm = /^\[(ring|border|outline)(?:-(t|r|b|l|x|y|s|e))?(?:-(style|width|color))?:([^\]]+)\]$/.exec(util);
-    const pm = arbPm ? [arbPm[0], arbPm[1]] : /^(ring|border|outline)(?:-|$)/.exec(util);
-    if (!pm) return null;
-    const family = pm[1];
-    const sideM = arbPm ? null : family === "border" ? /^border-(t|r|b|l|x|y|s|e)(?=-|$)/.exec(util) : null;
-    const side = arbPm && arbPm[2] ? arbPm[2] : sideM ? sideM[1] : "";
-    const subProp = arbPm && arbPm[3] ? arbPm[3] : null;
-    if (!arbPm) {
-      if (family === "ring" && /^ring-(?:offset-|inset\b)/i.test(util)) return null;
-      if (family === "border" && /^border-(?:collapse|separate|spacing-)/i.test(util)) return null;
-      if (family === "outline" && /^outline-offset-/i.test(util)) return null;
-    }
-    if (isInvisibleTwFocusUtility(tok)) {
-      if (arbPm) {
-        const inner = arbPm[4].replace(/_/g, " ").trim();
-        const hasZeroCol = hasZeroAlphaColor(inner) || /\btransparent\b/i.test(inner);
-        const hasNoneKw = /(?:^|\s)(?:none|hidden)(?=$|\s)/i.test(inner);
-        const hasZeroLen = /(?:^|\s)(?:0(?:\.0+)?|\.0+)(?:px|rem|em|vw|vh|%)?(?=$|\s)/i.test(inner);
-        const killsColor = subProp === "color" || (!subProp && hasZeroCol);
-        const killsStyle = subProp === "style" || (!subProp && hasNoneKw);
-        const killsWidth = subProp === "width" || (!subProp && (hasZeroLen || hasNoneKw || (!hasZeroCol && !hasNoneKw)));
-        return { family, side, killsWidth, killsStyle, killsColor, setsWidth: false, setsStyle: false, setsColor: false };
-      }
-      if (/^(?:ring|border|outline)-opacity-/i.test(util)) {
-        if (/^(?:ring|border|outline)-opacity-(?:0(?:\.0+)?|\.0+|\[(?:0(?:\.0+)?|\.0+)%?\])$/i.test(util)) {
-          return { family, side: "", killsWidth: false, killsStyle: false, killsColor: true, setsWidth: false, setsStyle: false, setsColor: false };
-        }
-        return null;
-      }
-      const noAlphaMod = util.replace(/\/[^\s]+$/, "");
-      const hasZeroMod = util !== noAlphaMod && /\/(?:0(?:\.0+)?|\.0+|\[(?:0(?:\.0+)?|\.0+)%?\])$/.test(util);
-      const isTransparentKw = /^(?:ring|border|outline)(?:-[trblxyse])?-transparent$/i.test(noAlphaMod);
-      const isNoneStyleKw = /^(?:ring|border|outline)(?:-[trblxyse])?-(?:none|hidden)$/i.test(noAlphaMod);
-      const isZeroWidthKw = /^(?:ring|border|outline)(?:-[trblxyse])?-(?:0|none|hidden)$/i.test(noAlphaMod);
-      let killsWidth = isZeroWidthKw;
-      let killsStyle = isNoneStyleKw;
-      let killsColor = isTransparentKw || hasZeroMod;
-      const bm = /\[([^\]]+)\]/.exec(noAlphaMod);
-      if (bm) {
-        const inner = bm[1].replace(/_/g, " ").trim().replace(/^[a-z-]+:\s*/i, "");
-        if (hasZeroAlphaColor(inner) || /\btransparent\b/i.test(inner)) killsColor = true;
-        if (/(?:^|\s)(?:none|hidden)(?=$|\s)/i.test(inner)) killsStyle = true;
-        if (/(?:^|\s)(?:0(?:\.0+)?|\.0+)(?:px|rem|em|vw|vh|%)?(?=$|\s)|(?:^|\s)(?:none|hidden)(?=$|\s)/i.test(inner)) killsWidth = true;
-        if (!killsWidth && !killsColor && !killsStyle) killsWidth = true;
-      }
-      if (!killsWidth && !killsColor && !killsStyle) killsWidth = true;
-      return { family, side, killsWidth, killsStyle, killsColor, setsWidth: false, setsStyle: false, setsColor: false };
-    }
-    if (arbPm) {
-      if (subProp === "style") return { family, side, killsWidth: false, killsStyle: false, killsColor: false, setsWidth: false, setsStyle: true, setsColor: false };
-      if (subProp === "width") return { family, side, killsWidth: false, killsStyle: false, killsColor: false, setsWidth: true, setsStyle: false, setsColor: false };
-      if (subProp === "color") return { family, side, killsWidth: false, killsStyle: false, killsColor: false, setsWidth: false, setsStyle: false, setsColor: true };
-      const inner = arbPm[4].replace(/_/g, " ").trim();
-      const tokens = stripCssParens(inner).split(/\s+/).filter(Boolean);
-      const hasStyleKw = tokens.some((t) => /^(?:solid|dashed|dotted|double|groove|ridge|inset|outset|auto)$/i.test(t));
-      const hasLen = /^length:/i.test(inner) || tokens.some((t) => /^(?:\d|\.\d)/.test(t));
-      const hasCol = /^color:/i.test(inner) || tokens.some((t) => !/^(?:length:|\d|\.\d|solid|dashed|dotted|double|groove|ridge|inset|outset|auto)$/i.test(t));
-      return {
-        family,
-        side,
-        killsWidth: false,
-        killsStyle: false,
-        killsColor: false,
-        setsWidth: hasLen || tokens.length === 0,
-        setsStyle: hasStyleKw || (family === "ring" && hasLen) || tokens.length === 0,
-        setsColor: hasCol,
-      };
-    }
-    const bare = util.replace(/\/[^\s]+$/, "");
-    let setsWidth = false;
-    let setsStyle = false;
-    let setsColor = false;
-    if (family === "ring") {
-      if (/^ring(?:-(?:1|2|4|8|\d+))?$/i.test(bare) || /^ring-\((?:length:)?--[^)]+\)$/i.test(bare)) {
-        setsWidth = true;
-        setsStyle = true;
-      } else if (/^ring-\[([^\]]+)\]$/.test(bare)) {
-        const inner = bare.slice(6, -1).replace(/_/g, " ").trim();
-        const tokens = stripCssParens(inner).split(/\s+/).filter(Boolean);
-        const hasLen = /^length:/i.test(inner) || tokens.some((t) => /^(?:\d|\.\d)/.test(t));
-        const hasCol = /^color:/i.test(inner) || tokens.some((t) => !/^(?:length:|\d|\.\d)/.test(t));
-        setsWidth = hasLen || tokens.length === 0;
-        setsStyle = setsWidth;
-        setsColor = hasCol;
-      } else {
-        setsColor = true;
-      }
-    } else if (family === "outline") {
-      if (/^outline(?:-\d+)?$/i.test(bare) || /^outline-\((?:length:)?--[^)]+\)$/i.test(bare)) {
-        setsWidth = true;
-        setsStyle = true;
-      } else if (/^outline-(?:solid|dashed|dotted|double)$/i.test(bare)) {
-        setsStyle = true;
-      } else if (/^outline-\[([^\]]+)\]$/.test(bare)) {
-        const inner = bare.slice(9, -1).replace(/_/g, " ").trim();
-        const tokens = stripCssParens(inner).split(/\s+/).filter(Boolean);
-        const hasLen = /^length:/i.test(inner) || tokens.some((t) => /^(?:\d|\.\d)/.test(t));
-        const hasStyleKw = tokens.some((t) => /^(?:solid|dashed|dotted|double|auto)$/i.test(t));
-        const hasCol = /^color:/i.test(inner) || tokens.some((t) => !/^(?:length:|\d|\.\d|solid|dashed|dotted|double|auto)/i.test(t));
-        setsWidth = hasLen || tokens.length === 0;
-        setsStyle = hasStyleKw || tokens.length === 0;
-        setsColor = hasCol;
-      } else {
-        setsColor = true;
-      }
-    } else {
-      if (/^border(?:-(?:t|r|b|l|x|y|s|e))?$/i.test(bare) || /^border(?:-(?:t|r|b|l|x|y|s|e))?-\((?:length:)?--[^)]+\)$/i.test(bare)) {
-        setsWidth = true;
-        setsStyle = true;
-      } else if (/^border(?:-(?:t|r|b|l|x|y|s|e))?-\d+$/i.test(bare)) {
-        setsWidth = true;
-      } else if (/^border(?:-(?:t|r|b|l|x|y|s|e))?-(?:solid|dashed|dotted|double)$/i.test(bare)) {
-        setsStyle = true;
-      } else if (/^border(?:-[trblxyse])?-\[([^\]]+)\]$/.test(bare)) {
-        const inner = bare.replace(/^border(?:-[trblxyse])?-\[/, "").slice(0, -1).replace(/_/g, " ").trim();
-        const tokens = stripCssParens(inner).split(/\s+/).filter(Boolean);
-        const hasLen = /^length:/i.test(inner) || tokens.some((t) => /^(?:\d|\.\d)/.test(t));
-        const hasStyleKw = tokens.some((t) => /^(?:solid|dashed|dotted|double)$/i.test(t));
-        const hasCol = /^color:/i.test(inner) || tokens.some((t) => !/^(?:length:|\d|\.\d|solid|dashed|dotted|double)/i.test(t));
-        setsWidth = hasLen || tokens.length === 0;
-        setsStyle = hasStyleKw || tokens.length === 0;
-        setsColor = hasCol;
-      } else {
-        setsColor = true;
-      }
-    }
-    return { family, side, killsWidth: false, killsStyle: false, killsColor: false, setsWidth, setsStyle, setsColor };
   };
   const replacements = [];
   const rbEvents = [];
@@ -1215,6 +1329,82 @@ export function analyzeTailwindOutline(classes, extraReplacementClasses = "", pr
     s: ["l"],
     e: ["r"],
   };
+  const condsConflict = (aConds, bConds) => {
+    if (!aConds || !bConds || aConds.size === 0 || bConds.size === 0) return false;
+    if ((aConds.has("dark") && bConds.has("light")) || (aConds.has("light") && bConds.has("dark"))) return true;
+    for (const c of aConds) {
+      if (bConds.has(`not-${c}`)) return true;
+    }
+    for (const c of bConds) {
+      if (aConds.has(`not-${c}`)) return true;
+    }
+    return false;
+  };
+  const findConditionalKillers = (rep, rem = null) => {
+    const rb = rep.rbInfo;
+    if (!rb) return [];
+    const reqConds = new Set([...rep.condPrefixes, ...(rem?.condPrefixes || [])]);
+    const sameMetaAnyCond = (ev) => {
+      if (ev.family !== rb.family) return false;
+      if (!sameSet(ev.targetPrefixes, rep.targetPrefixes)) return false;
+      if (ev.focusKind === rep.focusKind) return true;
+      if (rep.focusKind === "focus" && ev.focusKind === "focus-visible") return true;
+      if (ev.focusKind === null) return true;
+      return ev.focusKind === "focus" && ev.isImportant && !rep.isImportant;
+    };
+    const evsAll = rbEvents.filter(sameMetaAnyCond);
+    const beatsCond = (a, b) => {
+      if (a.isImportant !== b.isImportant) return a.isImportant;
+      const focusRank = (fk) => (fk === "focus-visible" ? 2 : fk === "focus" ? 1 : 0);
+      const ra = focusRank(a.focusKind);
+      const rbRank = focusRank(b.focusKind);
+      if (ra !== rbRank) return ra > rbRank;
+      const bMoreSpec = condSubset(a.condPrefixes, b.condPrefixes) && b.condPrefixes.size > a.condPrefixes.size;
+      if (bMoreSpec) return false;
+      const aMoreSpec = condSubset(b.condPrefixes, a.condPrefixes) && a.condPrefixes.size > b.condPrefixes.size;
+      if (aMoreSpec) return true;
+      return cmpPos(a, b) > 0;
+    };
+    const setterCoversRep = (ev) =>
+      ev.focusKind === rep.focusKind ||
+      ev.focusKind === null ||
+      (rep.focusKind === "focus" && ev.focusKind === "focus-visible");
+    const reqSides = rb.family === "border" ? BORDER_SIDE_MAP[rb.side] || BORDER_SIDE_MAP[""] : [null];
+    const extraKillConds = [];
+    for (const kEv of evsAll) {
+      if (!kEv.killsWidth && !kEv.killsStyle && !kEv.killsColor) continue;
+      if (condSubset(kEv.condPrefixes, rep.condPrefixes)) continue;
+      if (condsConflict(kEv.condPrefixes, reqConds)) continue;
+      const combinedConds = new Set([...reqConds, ...kEv.condPrefixes]);
+      const sideMatches = (ev, sideKey) => !sideKey || (BORDER_SIDE_MAP[ev.side] || BORDER_SIDE_MAP[""]).includes(sideKey);
+      let kIsRestored = true;
+      for (const sideKey of reqSides) {
+        if (!sideMatches(kEv, sideKey)) continue;
+        for (const [kFlag, sFlag] of [
+          ["killsWidth", "setsWidth"],
+          ["killsStyle", "setsStyle"],
+          ["killsColor", "setsColor"],
+        ]) {
+          if (!kEv[kFlag]) continue;
+          const hasRestorer = evsAll.some(
+            (se) =>
+              se[sFlag] &&
+              sideMatches(se, sideKey) &&
+              setterCoversRep(se) &&
+              condSubset(se.condPrefixes, combinedConds) &&
+              beatsCond(se, kEv)
+          );
+          if (!hasRestorer) {
+            kIsRestored = false;
+            break;
+          }
+        }
+        if (!kIsRestored) break;
+      }
+      if (!kIsRestored) extraKillConds.push(combinedConds);
+    }
+    return extraKillConds;
+  };
   const isRingBorderRepCancelled = (rep) => {
     const rb = rep.rbInfo;
     if (!rb) return false;
@@ -1233,6 +1423,10 @@ export function analyzeTailwindOutline(classes, extraReplacementClasses = "", pr
       const ra = focusRank(a.focusKind);
       const rbRank = focusRank(b.focusKind);
       if (ra !== rbRank) return ra > rbRank;
+      const bMoreSpec = condSubset(a.condPrefixes, b.condPrefixes) && b.condPrefixes.size > a.condPrefixes.size;
+      if (bMoreSpec) return false;
+      const aMoreSpec = condSubset(b.condPrefixes, a.condPrefixes) && a.condPrefixes.size > b.condPrefixes.size;
+      if (aMoreSpec) return true;
       return cmpPos(a, b) > 0;
     };
     const setterCoversRep = (ev) =>
@@ -1278,7 +1472,7 @@ export function analyzeTailwindOutline(classes, extraReplacementClasses = "", pr
     if (rb.family === "outline" && !hasLiveSetter(evs, "setsStyle", "killsStyle")) return true;
     return false;
   };
-  const coversRemoval = (rep, rem) => {
+  const coversRemoval = (rep, rem, depth = 0) => {
     let wrapperMatch = false;
     if (rem.targetPrefixes.size > 0) {
       wrapperMatch =
@@ -1305,6 +1499,15 @@ export function analyzeTailwindOutline(classes, extraReplacementClasses = "", pr
     if (isRingBorderRepCancelled(rep)) return false;
     for (const c of rep.condPrefixes) {
       if (!rem.condPrefixes.has(c)) return false;
+    }
+    if (!wrapperMatch && rep.rbInfo && depth < 3) {
+      const extraCondsList = findConditionalKillers(rep, rem);
+      for (const combinedConds of extraCondsList) {
+        const subRem = { ...rem, condPrefixes: combinedConds };
+        if (!replacements.some((altRep) => altRep !== rep && coversRemoval(altRep, subRem, depth + 1))) {
+          return false;
+        }
+      }
     }
     return true;
   };
@@ -1449,13 +1652,13 @@ export function extractClassAttributes(src, options = {}) {
   const attrRanges = [];
   let cursor = 0;
 
-  const findQuotedEnd = (openIdx, allowMultiline = false, limit = s.length) => {
+  const findQuotedEnd = (openIdx, allowMultiline = false, limit = s.length, allowBackslashEscape = true) => {
     const q = s[openIdx];
     let i = openIdx + 1;
     const stop = Math.min(limit, s.length);
     while (i < stop) {
       const ch = s[i];
-      if (ch === "\\" && i + 1 < stop) {
+      if (allowBackslashEscape && ch === "\\" && i + 1 < stop) {
         i += 2;
         continue;
       }
@@ -2232,6 +2435,20 @@ export function extractClassAttributes(src, options = {}) {
   const ctx = options.markupCtx || scanMarkupContexts(s, options);
   const svelteSiblingsByTag = new Map();
   let activeTagForEmit = null;
+  let attrGroupSeq = 0;
+  let activeAttrGroupId = 0;
+  const entriesByTag = new Map();
+  const emitEntryToOut = (tagObj, entryObj) => {
+    const tagged = { ...entryObj, _attrGroup: activeAttrGroupId };
+    out.push(tagged);
+    if (!tagObj) return;
+    let list = entriesByTag.get(tagObj);
+    if (!list) {
+      list = [];
+      entriesByTag.set(tagObj, list);
+    }
+    list.push(tagged);
+  };
   if (options.isMarkupSfc && options.braceExprs) {
     for (const dir of extractSvelteClassDirectives(s, ctx)) {
       if (dir.rhs === "" || dir.rhs === "true") {
@@ -2266,7 +2483,7 @@ export function extractClassAttributes(src, options = {}) {
             .filter(Boolean)
             .join(" ")
         : [uncondJoined, lit.localSiblingClasses || ""].filter(Boolean).join(" ");
-      out.push({
+      emitEntryToOut(activeTagForEmit, {
         contentStart: lit.contentStart,
         contentEnd: lit.contentEnd,
         content: lit.content,
@@ -2316,8 +2533,9 @@ export function extractClassAttributes(src, options = {}) {
     const isBoundAttr = m.index > 0 && s[m.index - 1] === ":";
     const outerLimit = tag.end;
     const tagDirSibs = (svelteSiblingsByTag.get(tag) || []).join(" ");
+    activeAttrGroupId = ++attrGroupSeq;
     if (ch === '"' || ch === "'") {
-      const endQ = findQuotedEnd(i, true, outerLimit);
+      const endQ = findQuotedEnd(i, true, outerLimit, false);
       if (endQ === -1) continue;
       const attrContent = s.slice(i + 1, endQ);
       if (isBoundAttr) {
@@ -2371,7 +2589,7 @@ export function extractClassAttributes(src, options = {}) {
         if (segStart < endQ) segs.push({ kind: "static", start: segStart, end: endQ });
         const hasBalancedExpr = segs.some((seg) => seg.kind === "expr");
         if (!hasBalancedExpr) {
-          out.push({
+          emitEntryToOut(tag, {
             contentStart: i + 1,
             contentEnd: endQ,
             content: attrContent,
@@ -2397,7 +2615,7 @@ export function extractClassAttributes(src, options = {}) {
               allUncondExpr,
               tagDirSibs
             );
-            out.push({
+            emitEntryToOut(tag, {
               contentStart: st.start,
               contentEnd: st.end,
               content: st.content,
@@ -2418,7 +2636,7 @@ export function extractClassAttributes(src, options = {}) {
           activeTagForEmit = null;
         }
       } else {
-        out.push({
+        emitEntryToOut(tag, {
           contentStart: i + 1,
           contentEnd: endQ,
           content: attrContent,
@@ -2438,6 +2656,38 @@ export function extractClassAttributes(src, options = {}) {
     activeTagForEmit = null;
     attrRanges.push([i + 1, closeBrace]);
     cursor = closeBrace + 1;
+  }
+  for (const tagEntries of entriesByTag.values()) {
+    const attrGroups = new Map();
+    for (const e of tagEntries) {
+      const gid = e._attrGroup || 0;
+      let g = attrGroups.get(gid);
+      if (!g) {
+        g = [];
+        attrGroups.set(gid, g);
+      }
+      g.push(e);
+    }
+    if (attrGroups.size > 1) {
+      const uncondByGroup = new Map();
+      for (const [gid, g] of attrGroups.entries()) {
+        uncondByGroup.set(
+          gid,
+          g.filter((e) => e.unconditional !== false).map((e) => e.content).filter(Boolean).join(" ")
+        );
+      }
+      for (const [gid, g] of attrGroups.entries()) {
+        const otherAttrUncond = [...uncondByGroup.entries()]
+          .filter(([ogid, txt]) => ogid !== gid && txt)
+          .map(([, txt]) => txt)
+          .join(" ");
+        if (!otherAttrUncond) continue;
+        for (const e of g) {
+          e.siblingClasses = joinSibs(e.siblingClasses, otherAttrUncond);
+        }
+      }
+    }
+    for (const e of tagEntries) delete e._attrGroup;
   }
   if (options.includeHelpers) {
     const insideAttr = (idx) => attrRanges.some(([rs, re]) => idx >= rs && idx < re);
@@ -2581,7 +2831,7 @@ export function buildTailwindScanSurfacePreservingLines(surface, isStyle = false
     const copySlice = (start, end, overrideText = null) => {
       const txt = overrideText !== null ? overrideText : s.slice(start, end);
       for (let k = 0; k < txt.length && start + k < chars.length; k++) {
-        if (chars[start + k] !== "\n") chars[start + k] = txt[k];
+        if (chars[start + k] !== "\n" && txt[k] !== " ") chars[start + k] = txt[k];
       }
     };
     for (const [s0, e0] of styleTagRanges || []) {
@@ -2589,7 +2839,9 @@ export function buildTailwindScanSurfacePreservingLines(surface, isStyle = false
     }
     for (const sp of extractTailwindClassSpans(s, { ...opts, markupCtx: ctx, includeAllCvaArgs: true })) {
       if (sp.contentStart >= 0 && sp.contentEnd > sp.contentStart) {
-        copySlice(sp.contentStart, sp.contentEnd);
+        const override =
+          typeof sp.content === "string" && sp.content.length === sp.contentEnd - sp.contentStart ? sp.content : null;
+        copySlice(sp.contentStart, sp.contentEnd, override);
       }
     }
     if (opts.isMarkupSfc && opts.braceExprs) {
@@ -2669,30 +2921,193 @@ function isBoxShadowLayerVisible(layer) {
   return true;
 }
 
-function collectBorderTupleState(maskedBody, initTuple = null) {
+function computeSelectorSpecificity(sel) {
+  const str = String(sel || "").trim();
+  let a = 0;
+  let b = 0;
+  let c = 0;
+  const maxSpecOf = (argStr) => {
+    let best = [0, 0, 0];
+    for (const part of splitTopLevelCommas(argStr)) {
+      const sp = computeSelectorSpecificity(part);
+      if (compareSpecificity(sp, best) > 0) best = sp;
+    }
+    return best;
+  };
+  let i = 0;
+  while (i < str.length) {
+    const ch = str[i];
+    if (/[\s>+~*]/.test(ch) || ch === "&") {
+      i++;
+      continue;
+    }
+    if (ch === "[") {
+      b++;
+      i++;
+      let q = null;
+      while (i < str.length) {
+        const bc = str[i];
+        if (q) {
+          if (bc === "\\" && i + 1 < str.length) i += 2;
+          else {
+            if (bc === q) q = null;
+            i++;
+          }
+        } else if (bc === '"' || bc === "'") {
+          q = bc;
+          i++;
+        } else if (bc === "]") {
+          i++;
+          break;
+        } else {
+          i++;
+        }
+      }
+      continue;
+    }
+    if (ch === "#") {
+      a++;
+      i++;
+      while (i < str.length) {
+        if (str[i] === "\\" && i + 1 < str.length) { i += 2; continue; }
+        if (!/[a-zA-Z0-9_-]/.test(str[i]) && str.charCodeAt(i) < 128) break;
+        i++;
+      }
+      continue;
+    }
+    if (ch === ".") {
+      b++;
+      i++;
+      while (i < str.length) {
+        if (str[i] === "\\" && i + 1 < str.length) { i += 2; continue; }
+        if (!/[a-zA-Z0-9_-]/.test(str[i]) && str.charCodeAt(i) < 128) break;
+        i++;
+      }
+      continue;
+    }
+    if (ch === ":") {
+      const isDouble = str[i + 1] === ":";
+      i += isDouble ? 2 : 1;
+      const nameStart = i;
+      while (i < str.length && /[a-zA-Z0-9_-]/.test(str[i])) i++;
+      const pname = str.slice(nameStart, i).toLowerCase();
+      let arg = null;
+      if (str[i] === "(") {
+        let d = 1;
+        let pq = null;
+        const argStart = i + 1;
+        i++;
+        while (i < str.length && d > 0) {
+          const pc = str[i];
+          if (pq) {
+            if (pc === "\\" && i + 1 < str.length) i += 2;
+            else {
+              if (pc === pq) pq = null;
+              i++;
+            }
+          } else if (pc === '"' || pc === "'") {
+            pq = pc;
+            i++;
+          } else if (pc === "(") {
+            d++;
+            i++;
+          } else if (pc === ")") {
+            d--;
+            if (d === 0) break;
+            i++;
+          } else {
+            i++;
+          }
+        }
+        arg = str.slice(argStart, i);
+        if (str[i] === ")") i++;
+      }
+      if (isDouble) {
+        c++;
+      } else if (pname === "where") {
+        // :where(...) always has zero specificity
+      } else if ((pname === "is" || pname === "not" || pname === "has") && arg !== null) {
+        const best = maxSpecOf(arg);
+        a += best[0];
+        b += best[1];
+        c += best[2];
+      } else if ((pname === "nth-child" || pname === "nth-last-child") && arg !== null) {
+        b++;
+        const ofM = /\bof\s+([\s\S]+)$/i.exec(arg);
+        if (ofM) {
+          const best = maxSpecOf(ofM[1]);
+          a += best[0];
+          b += best[1];
+          c += best[2];
+        }
+      } else {
+        b++;
+      }
+      continue;
+    }
+    if (ch === "\\" && i + 1 < str.length) {
+      i += 2;
+      continue;
+    }
+    if (/[a-zA-Z_-]/.test(ch)) {
+      c++;
+      while (i < str.length) {
+        if (str[i] === "\\" && i + 1 < str.length) { i += 2; continue; }
+        if (!/[a-zA-Z0-9_|-]/.test(str[i]) && str.charCodeAt(i) < 128) break;
+        i++;
+      }
+      continue;
+    }
+    i++;
+  }
+  return [a, b, c];
+}
+
+function compareSpecificity(spA, spB) {
+  for (let i = 0; i < 3; i++) {
+    if ((spA[i] || 0) !== (spB[i] || 0)) return (spA[i] || 0) > (spB[i] || 0) ? 1 : -1;
+  }
+  return 0;
+}
+
+function collectBorderTupleState(maskedBody, initTuple = null, baseOffset = 0, impFilter = "all", candMeta = null) {
   const borderTuple = initTuple || {
-    style: { state: null, imp: false },
-    width: { state: null, imp: false },
-    color: { state: null, imp: false },
+    style: { state: null, imp: false, offset: -1, candWinsImportant: false },
+    width: { state: null, imp: false, offset: -1, candWinsImportant: false },
+    color: { state: null, imp: false, offset: -1, candWinsImportant: false },
+    styleInvNormalOff: -1,
+    widthInvNormalOff: -1,
+    colorInvNormalOff: -1,
     sawBorder: false,
   };
-  const setBorderComp = (comp, state, imp) => {
+  const setBorderComp = (comp, state, imp, off) => {
+    if (!imp && state === "invisible") {
+      borderTuple[`${comp}InvNormalOff`] = Math.max(borderTuple[`${comp}InvNormalOff`] ?? -1, off);
+    }
     const cur = borderTuple[comp];
     if (cur.state !== null && cur.imp && !imp) return;
-    borderTuple[comp] = { state, imp };
+    borderTuple[comp] = {
+      state,
+      imp,
+      offset: off,
+      candWinsImportant: candMeta ? Boolean(candMeta.candWinsImportant) : Boolean(cur.candWinsImportant),
+    };
   };
   for (const bm of String(maskedBody || "").matchAll(/(?<![a-zA-Z0-9_$-])(border|border-style|border-width|border-color)\s*:\s*((?:[^#;{}]|#\{[^{}]*\}|#(?!\{))+)/gi)) {
-    borderTuple.sawBorder = true;
     const bProp = bm[1].toLowerCase();
     const bInfo = classifyBorderDecl(bProp, bm[2]);
-    if (bProp === "border-style") setBorderComp("style", bInfo.state, bInfo.isImportant);
-    else if (bProp === "border-width") setBorderComp("width", bInfo.state, bInfo.isImportant);
-    else if (bProp === "border-color") setBorderComp("color", bInfo.state, bInfo.isImportant);
+    if (impFilter === "normal-only" && bInfo.isImportant) continue;
+    if (impFilter === "important-only" && !bInfo.isImportant) continue;
+    borderTuple.sawBorder = true;
+    const off = baseOffset + bm.index;
+    if (bProp === "border-style") setBorderComp("style", bInfo.state, bInfo.isImportant, off);
+    else if (bProp === "border-width") setBorderComp("width", bInfo.state, bInfo.isImportant, off);
+    else if (bProp === "border-color") setBorderComp("color", bInfo.state, bInfo.isImportant, off);
     else {
       const bSup = new Set(bInfo.suppressedProps);
-      setBorderComp("style", bSup.has("style") ? "invisible" : "visible", bInfo.isImportant);
-      setBorderComp("width", bSup.has("width") ? "invisible" : "visible", bInfo.isImportant);
-      setBorderComp("color", bSup.has("color") ? "invisible" : "visible", bInfo.isImportant);
+      setBorderComp("style", bSup.has("style") ? "invisible" : "visible", bInfo.isImportant, off);
+      setBorderComp("width", bSup.has("width") ? "invisible" : "visible", bInfo.isImportant, off);
+      setBorderComp("color", bSup.has("color") ? "invisible" : "visible", bInfo.isImportant, off);
     }
   }
   return borderTuple;
@@ -2701,65 +3116,105 @@ function collectBorderTupleState(maskedBody, initTuple = null) {
 export function hasVisibleFocusIndicator(body, selector = "", options = {}) {
   const rawBody = String(body || "");
   const maskedBody = maskCssQuotedStringsPreservingLines(rawBody);
+  const cssDeclBody = maskAtApplyDeclsPreservingLines(maskedBody);
   const selBranches = splitTopLevelCommas(selector).filter(Boolean);
   const isFocusSelector =
     Boolean(options.treatAsFocusSelector) ||
     (selBranches.length > 0 &&
       selBranches.every((b) => /(?<!\\)(?::focus(?:-visible|-within)?\b|:has\([^;]*:focus)/i.test(stripNotPseudo(extractSubjectSelector(b)))));
+  let winBox = null;
+  let lastInvNormalBoxOff = -1;
+  for (const bm of cssDeclBody.matchAll(/(?<![a-zA-Z0-9_$-])box-shadow\s*:\s*((?:[^#;{}]|#\{[^{}]*\}|#(?!\{))+)/gi)) {
+    const imp = /!\s*important\b/i.test(bm[1]);
+    const cleanBox = bm[1].replace(/!\s*important\b/gi, "").trim();
+    const vis = Boolean(
+      cleanBox &&
+        !/^(?:none|0|initial|inherit|unset)$/i.test(cleanBox) &&
+        splitTopLevelCommas(cleanBox).some((layer) => isBoxShadowLayerVisible(layer))
+    );
+    if (!imp && !vis) lastInvNormalBoxOff = Math.max(lastInvNormalBoxOff, bm.index);
+    if (!winBox || imp || !winBox.imp) {
+      winBox = { val: bm[1], imp, vis, offset: bm.index };
+    }
+  }
+  const borderTuple = collectBorderTupleState(cssDeclBody);
   if (isFocusSelector) {
-    let winBox = null;
-    for (const bm of maskedBody.matchAll(/(?<![a-zA-Z0-9_$-])box-shadow\s*:\s*((?:[^#;{}]|#\{[^{}]*\}|#(?!\{))+)/gi)) {
-      const imp = /!\s*important\b/i.test(bm[1]);
-      if (!winBox || imp || !winBox.imp) {
-        winBox = { val: bm[1], imp };
-      }
-    }
     if (winBox) {
-      const cleanBox = winBox.val.replace(/!\s*important\b/gi, "").trim();
-      if (cleanBox && !/^(?:none|0|initial|inherit|unset)$/i.test(cleanBox)) {
-        const layers = splitTopLevelCommas(cleanBox);
-        if (layers.some((layer) => isBoxShadowLayerVisible(layer))) {
-          return true;
-        }
+      const boxNeedsImp = Boolean(options.requireImportantOnly || (options.requireImportantOutlineOnly && options.boxShadowSuppressedBySrc));
+      const boxImpAllowed = !boxNeedsImp || winBox.imp;
+      const notBlockedBySup = !options.boxShadowUnrecoverable && (!options.boxShadowImportantSuppressed || winBox.imp);
+      if (winBox.vis && boxImpAllowed && notBlockedBySup) {
+        return true;
       }
     }
-    const borderTuple = collectBorderTupleState(maskedBody);
     if (borderTuple.sawBorder) {
       const bComps = [borderTuple.style, borderTuple.width, borderTuple.color];
       const blockedByOwn = bComps.some((c) => c.state === "invisible");
+      const blockedByUnrecoverable = (options.borderUnrecoverableProps || []).length > 0;
       const blockedByInherited = (options.borderSuppressedProps || []).some(
         (req) => borderTuple[req]?.state !== "visible"
       );
       const blockedByInheritedImp = (options.borderImportantSuppressedProps || []).some(
         (req) => borderTuple[req]?.state !== "visible" || !borderTuple[req]?.imp
       );
-      if (!blockedByOwn && !blockedByInherited && !blockedByInheritedImp && bComps.some((c) => c.state === "visible")) {
+      const borderNeedsImp = Boolean(options.requireImportantOnly || (options.requireImportantOutlineOnly && options.borderSuppressedBySrc));
+      const blockedByReqImp = borderNeedsImp && !bComps.some((c) => c.state === "visible" && c.imp);
+      if (!blockedByOwn && !blockedByUnrecoverable && !blockedByInherited && !blockedByInheritedImp && !blockedByReqImp && bComps.some((c) => c.state === "visible")) {
         return true;
       }
     }
   }
   const applyReG = /(?<![a-zA-Z0-9_$-])@apply\s+((?:[^#;{}]|#\{[^{}]*\}|#(?!\{))+)/gi;
+  const applyMaskedBody = maskCssQuotedStringsPreservingLines(rawBody, "_");
   const applyMatches = [...maskedBody.matchAll(applyReG)];
   const events = [];
   if (applyMatches.length > 0) {
-    const nonOutlineTwTokens = [];
+    const nonOutlineEntries = [];
     const appOutlineRemRe = new RegExp(`(?:^|\\s)(!?(?:${TW_VARIANT_SEG})*!?${TW_OUTLINE_REM_BODY}!?)(?=$|[\\s;])`, "g");
     const appOutlineVisRe = new RegExp(`(?:^|\\s)(!?(?:${TW_VARIANT_SEG})*!?${TW_OUTLINE_VIS_BODY}!?(?=$|[\\s;]))`, "g");
+    const sameRuleBoxImpSup = Boolean(winBox && !winBox.vis && winBox.imp);
+    const sameRuleBoxImpOff = sameRuleBoxImpSup ? winBox.offset : -1;
+    const extBorderImpSet = new Set(options.borderImportantSuppressedProps || []);
+    const extBorderNormSet = new Set(options.borderSuppressedProps || []);
+    const borderUnrecoverable = (options.borderUnrecoverableProps || []).length > 0;
+    const borderNeedsImpReq = Boolean(options.requireImportantOnly || (options.requireImportantOutlineOnly && options.borderSuppressedBySrc));
     for (const am of applyMatches) {
       const appStart = am.index + am[0].indexOf(am[1]);
-      const rawStmt = rawBody.slice(appStart, appStart + am[1].length);
+      const rawStmt = applyMaskedBody.slice(appStart, appStart + am[1].length);
       const stmtImp = /\s*!\s*important\s*$/i.test(rawStmt);
       const appNoImp = stmtImp ? rawStmt.replace(/\s*!\s*important\s*$/i, "") : rawStmt;
       for (const rawTok of appNoImp.trim().split(/\s+/).filter(Boolean)) {
         const info = splitTailwindVariants(rawTok);
-        if (info.condPrefixes.size > 0 || info.targetPrefixes.size > 0) continue;
+        if (info.targetPrefixes.size > 0) continue;
         if (options.forWrapperChildFocus && (info.focusKind === "focus" || info.focusKind === "focus-visible")) continue;
         const util = getTwUtilityPart(rawTok).toLowerCase();
         if (/^outline(?:-|$)/i.test(util)) continue;
+        const isKiller = isInvisibleTwFocusUtility(rawTok);
         let tok = isFocusSelector && !info.focusKind ? `focus-visible:${rawTok}` : rawTok;
         if (stmtImp && !/(?:^|:)!|!$/.test(tok)) tok = `!${tok}`;
-        if (isFocusSelector || info.focusKind === "focus" || info.focusKind === "focus-visible") {
-          nonOutlineTwTokens.push(tok);
+        const tokHasImp = /(?:^|:)!|!$/.test(tok);
+        const rb = classifyTwRingOrBorder(rawTok);
+        const isRingOrShadow = rb ? rb.family === "ring" || rb.family === "shadow" : /^(?:ring|shadow)(?:-|$)/i.test(util);
+        const isBorderUtil = rb ? rb.family === "border" : /^border(?:-|$)/i.test(util);
+        const tokNeedsImp =
+          Boolean(options.requireImportantOnly) ||
+          (Boolean(options.requireImportantOutlineOnly) &&
+            ((isRingOrShadow && Boolean(options.boxShadowSuppressedBySrc)) ||
+              (isBorderUtil && Boolean(options.borderSuppressedBySrc))));
+        if (!isKiller && tokNeedsImp && !tokHasImp) continue;
+        if (!isKiller && isRingOrShadow) {
+          if (options.boxShadowUnrecoverable) continue;
+          if (options.boxShadowImportantSuppressed && !tokHasImp) continue;
+          if (sameRuleBoxImpSup && (!tokHasImp || appStart < sameRuleBoxImpOff)) continue;
+          if (!tokHasImp && lastInvNormalBoxOff > appStart) continue;
+        }
+        const coversFocus = isKiller || isFocusSelector || info.focusKind === "focus" || info.focusKind === "focus-visible";
+        if (!coversFocus) continue;
+        if (!isKiller && isBorderUtil && rb) {
+          if (borderUnrecoverable) continue;
+          nonOutlineEntries.push({ tok, isBorderCand: true, appStart, tokHasImp, rb });
+        } else {
+          nonOutlineEntries.push({ tok, isBorderCand: false });
         }
       }
       for (const m of rawStmt.matchAll(appOutlineRemRe)) {
@@ -2776,7 +3231,7 @@ export function hasVisibleFocusIndicator(body, selector = "", options = {}) {
           });
         }
       }
-      if (!options.ignoreApplyOutline) {
+      if (!options.ignoreApplyOutline && !options.outlineUnrecoverable) {
         for (const m of rawStmt.matchAll(appOutlineVisRe)) {
           const tok = m[1];
           if (isInvisibleTwFocusUtility(tok)) continue;
@@ -2794,12 +3249,59 @@ export function hasVisibleFocusIndicator(body, selector = "", options = {}) {
         }
       }
     }
+    const borderTokenCands = nonOutlineEntries.filter((e) => e.isBorderCand);
+    let borderCandsValid = !borderUnrecoverable;
+    if (borderTokenCands.length > 0 && borderCandsValid) {
+      for (const [comp, setFlag] of [
+        ["style", "setsStyle"],
+        ["width", "setsWidth"],
+        ["color", "setsColor"],
+      ]) {
+        const extImp = extBorderImpSet.has(comp);
+        const extNorm = extBorderNormSet.has(comp);
+        const btComp = borderTuple[comp];
+        const sameImp = btComp.state === "invisible" && btComp.imp;
+        const sameImpOff = sameImp ? btComp.offset : -1;
+        const sameNormOff = borderTuple[`${comp}InvNormalOff`] ?? -1;
+        const hasAnySupp = extImp || extNorm || sameImp || sameNormOff >= 0;
+        if (!hasAnySupp) continue;
+        const cssRestored =
+          isFocusSelector &&
+          btComp.state === "visible" &&
+          (!extImp || btComp.imp) &&
+          (!borderNeedsImpReq || btComp.imp);
+        if (cssRestored) continue;
+        const twRestored = borderTokenCands.some((c) => {
+          if (!c.rb[setFlag]) return false;
+          if (extImp && !c.tokHasImp) return false;
+          if (sameImp && (!c.tokHasImp || c.appStart < sameImpOff)) return false;
+          if (!sameImp && sameNormOff > c.appStart && !c.tokHasImp) return false;
+          return true;
+        });
+        if (!twRestored) {
+          borderCandsValid = false;
+          break;
+        }
+      }
+    }
+    const nonOutlineTwTokens = nonOutlineEntries
+      .filter((e) => {
+        if (!e.isBorderCand) return true;
+        if (!borderCandsValid) return false;
+        const extAnyImp =
+          (e.rb.setsStyle && (extBorderImpSet.has("style") || (borderTuple.style.state === "invisible" && borderTuple.style.imp))) ||
+          (e.rb.setsWidth && (extBorderImpSet.has("width") || (borderTuple.width.state === "invisible" && borderTuple.width.imp))) ||
+          (e.rb.setsColor && (extBorderImpSet.has("color") || (borderTuple.color.state === "invisible" && borderTuple.color.imp)));
+        return !(extAnyImp && !e.tokHasImp);
+      })
+      .map((e) => e.tok);
     if (nonOutlineTwTokens.length > 0 && !analyzeTailwindOutline(`outline-none ${nonOutlineTwTokens.join(" ")}`).naked) {
       return true;
     }
   }
 
-  for (const m of maskedBody.matchAll(/(?<![a-zA-Z0-9_$-])(outline|outline-style|outline-width|outline-color)\s*:\s*((?:[^#;{}]|#\{[^{}]*\}|#(?!\{))+)/gi)) {
+  if (options.outlineUnrecoverable) return false;
+  for (const m of cssDeclBody.matchAll(/(?<![a-zA-Z0-9_$-])(outline|outline-style|outline-width|outline-color)\s*:\s*((?:[^#;{}]|#\{[^{}]*\}|#(?!\{))+)/gi)) {
     const prop = m[1].toLowerCase();
     events.push({
       offset: m.index,
@@ -2857,6 +3359,10 @@ export function hasVisibleFocusIndicator(body, selector = "", options = {}) {
   for (const req of options.importantSuppressedProps || []) {
     if (tuple[req] && (!tuple[req].imp || tuple[req].state !== "visible")) return false;
   }
+  if (options.requireImportantOnly || options.requireImportantOutlineOnly) {
+    if (!comps.some((c) => c.state === "visible" && c.imp)) return false;
+    if (comps.some((c) => c.state === "visible" && !c.imp)) return false;
+  }
   return true;
 }
 
@@ -2906,15 +3412,116 @@ export function discoverExternalDsCss(startDir = ".", explicitPaths = []) {
     for (const blk of extractCssRuleBlocks(clean)) {
       const sel = blk.resolvedSelector || blk.selector;
       if (/(?<!\\)(?::focus-within\b|:has\([^;]*:focus(?:-visible)?\b)/i.test(sel) && hasVisibleFocusIndicator(blk.body, sel)) {
-        focusBlocks.push({ selector: sel, resolvedSelector: sel, body: blk.body, conditions: blk.conditions || [], source: p });
+        focusBlocks.push({
+          selector: sel,
+          resolvedSelector: sel,
+          body: blk.body,
+          conditions: blk.conditions || [],
+          layer: blk.layer ?? null,
+          layerPath: blk.layerPath ?? null,
+          layerTree: blk.layerTree ?? null,
+          layerRank: blk.layerRank ?? Infinity,
+          layerOrder: blk.layerOrder ?? null,
+          source: p,
+        });
       }
     }
   }
   return focusBlocks;
 }
 
+export function createCascadeLayerComparator(orderedBlocks = []) {
+  const mergedTree = { orderIndex: 0, children: new Map() };
+  const treeIds = new Map();
+  let nextTreeId = 1;
+  const mergeNode = (srcNode, dstNode, treeId) => {
+    const entries = [...srcNode.children.entries()].sort((a, b) => a[1].orderIndex - b[1].orderIndex);
+    for (const [seg, srcChild] of entries) {
+      const mergedKey = seg.startsWith("__anon_") ? `${seg}__t${treeId}` : seg;
+      let dstChild = dstNode.children.get(mergedKey);
+      if (!dstChild) {
+        dstChild = { orderIndex: dstNode.children.size, children: new Map() };
+        dstNode.children.set(mergedKey, dstChild);
+      }
+      mergeNode(srcChild, dstChild, treeId);
+    }
+  };
+  const ensurePath = (lp, treeId = 0) => {
+    let cur = mergedTree;
+    for (const seg of lp) {
+      const key = seg.startsWith("__anon_") && treeId ? `${seg}__t${treeId}` : seg;
+      let child = cur.children.get(key);
+      if (!child) {
+        child = { orderIndex: cur.children.size, children: new Map() };
+        cur.children.set(key, child);
+      }
+      cur = child;
+    }
+  };
+  for (const b of orderedBlocks) {
+    const lt = b?.layerTree;
+    if (lt) {
+      if (!treeIds.has(lt)) {
+        const tid = nextTreeId++;
+        treeIds.set(lt, tid);
+        mergeNode(lt, mergedTree, tid);
+      }
+      continue;
+    }
+    const lp = Array.isArray(b?.layerPath)
+      ? b.layerPath
+      : b?.layer
+      ? String(b.layer)
+          .split(".")
+          .map((s) => s.trim())
+          .filter(Boolean)
+      : [];
+    if (lp.length > 0) ensurePath(lp, 0);
+  }
+  const getTuple = (blk) => {
+    const lp = Array.isArray(blk?.layerPath)
+      ? blk.layerPath
+      : blk?.layer
+      ? String(blk.layer)
+          .split(".")
+          .map((s) => s.trim())
+          .filter(Boolean)
+      : [];
+    if (lp.length === 0) return [];
+    const tid = blk?.layerTree ? treeIds.get(blk.layerTree) : 0;
+    const tuple = [];
+    let cur = mergedTree;
+    for (const seg of lp) {
+      const key = seg.startsWith("__anon_") && tid ? `${seg}__t${tid}` : seg;
+      const child = cur?.children.get(key);
+      if (!child) {
+        tuple.push(-1);
+        cur = null;
+      } else {
+        tuple.push(child.orderIndex);
+        cur = child;
+      }
+    }
+    return tuple;
+  };
+  return (candBlk, refBlk) => {
+    const a = getTuple(candBlk);
+    const b = getTuple(refBlk);
+    const minLen = Math.min(a.length, b.length);
+    for (let i = 0; i < minLen; i++) {
+      if (a[i] !== b[i]) return a[i] > b[i] ? 1 : -1;
+    }
+    if (a.length === b.length) return 0;
+    return a.length < b.length ? 1 : -1;
+  };
+}
+
 export function createFocusSafetyChecker(cssBlocks, externalBlocks = []) {
   const combinedFocusBlocks = [...cssBlocks, ...(Array.isArray(externalBlocks) ? externalBlocks : [])];
+  const compareCascadeLayerOrder = createCascadeLayerComparator([
+    ...(Array.isArray(externalBlocks) ? externalBlocks : []),
+    ...cssBlocks,
+  ]);
   const SKIP_FOCUS_RE =
     /(?:^|[\s,])(?:#(?:main|content|main-content|app)|main|\[tabindex\s*=\s*["']?-1["']?\])(?::focus(?:-visible)?)?$/i;
   const WRAPPER_FOCUS_RE =
@@ -2991,37 +3598,7 @@ export function createFocusSafetyChecker(cssBlocks, externalBlocks = []) {
       hasApplyFocusOrFvRemoval,
     };
   };
-  const getBorderSuppressionForRule = (selBranch, blk = null, srcBlk = null) => {
-    const base = collapseFocusFv(stripNotPseudo(String(selBranch || "")))
-      .replace(/(?<!\\):focus(?:-visible|-within)?\s*$/i, "")
-      .trim();
-    const tuple = {
-      style: { state: null, imp: false },
-      width: { state: null, imp: false },
-      color: { state: null, imp: false },
-      sawBorder: false,
-    };
-    const relevant = combinedFocusBlocks
-      .filter((cand) => {
-        if (!conditionsCover(cand, blk)) return false;
-        if (cand === blk) return false;
-        if (srcBlk && cand === srcBlk) return true;
-        if (!base) return false;
-        const candOrder = typeof cand.bodyStart === "number" ? cand.bodyStart : -1;
-        const blkOrder = typeof blk?.bodyStart === "number" ? blk.bodyStart : Infinity;
-        if (candOrder > blkOrder) return false;
-        return getBlockBranches(cand).some((cb) => collapseFocusFv(stripNotPseudo(cb.trim())) === base);
-      })
-      .sort((a, b) => (a.bodyStart ?? 0) - (b.bodyStart ?? 0));
-    for (const cand of relevant) {
-      collectBorderTupleState(maskCssQuotedStringsPreservingLines(cand.body || ""), tuple);
-    }
-    if (!tuple.sawBorder) return { borderSuppressedProps: [], borderImportantSuppressedProps: [] };
-    return {
-      borderSuppressedProps: ["style", "width", "color"].filter((c) => tuple[c].state === "invisible"),
-      borderImportantSuppressedProps: ["style", "width", "color"].filter((c) => tuple[c].state === "invisible" && tuple[c].imp),
-    };
-  };
+  const getBlockOrder = (b) => (typeof b?.docBodyStart === "number" ? b.docBodyStart : typeof b?.bodyStart === "number" ? b.bodyStart : null);
   const splitSelectorCompounds = (sel) => {
     const comps = [];
     let p = 0, b = 0, q = null, start = 0;
@@ -3048,6 +3625,296 @@ export function createFocusSafetyChecker(cssBlocks, externalBlocks = []) {
     const tail = str.slice(start).trim();
     if (tail) comps.push(tail);
     return comps;
+  };
+  const selectorCoversBranchChain = (broadBase, narrowBase) => {
+    const bSegs = splitSelectorCompounds(broadBase);
+    const nSegs = splitSelectorCompounds(narrowBase);
+    if (bSegs.length === 0 || nSegs.length < bSegs.length) return false;
+    if (!branchSubjectsCoversTarget(bSegs[bSegs.length - 1], nSegs[nSegs.length - 1])) return false;
+    if (bSegs.length === 1) return true;
+    let ni = 0;
+    for (let bi = 0; bi < bSegs.length - 1; bi++) {
+      let matched = false;
+      while (ni < nSegs.length - 1) {
+        if (branchSubjectsCoversTarget(bSegs[bi], nSegs[ni])) {
+          ni++;
+          matched = true;
+          break;
+        }
+        ni++;
+      }
+      if (!matched) return false;
+    }
+    return true;
+  };
+  const hasTwFocusApply = (b) => /(?<![a-zA-Z0-9_$-])@apply\s+[^;{}]*:focus(?:-visible)?\b/i.test(String(b?.body || ""));
+  const maskSelectorBrackets = (sel) => {
+    let out = "";
+    let br = 0;
+    let q = null;
+    for (let i = 0; i < sel.length; i++) {
+      const ch = sel[i];
+      if (q) {
+        if (ch === "\\" && i + 1 < sel.length) {
+          out += "  ";
+          i++;
+          continue;
+        }
+        if (ch === q) q = null;
+        out += " ";
+        continue;
+      }
+      if (ch === "\\" && i + 1 < sel.length) {
+        out += ch + sel[i + 1];
+        i++;
+        continue;
+      }
+      if (ch === '"' || ch === "'") {
+        q = ch;
+        out += " ";
+        continue;
+      }
+      if (ch === "[") br++;
+      else if (ch === "]" && br > 0) br--;
+      out += br > 0 || ch === "]" ? " " : ch;
+    }
+    return out;
+  };
+  const stripFocusPseudosOutsideBrackets = (sel) => {
+    const masked = maskSelectorBrackets(sel);
+    const re = /(?<!\\):focus(?:-visible|-within)?(?![a-zA-Z0-9_-])/gi;
+    let out = "";
+    let last = 0;
+    let m;
+    while ((m = re.exec(masked)) !== null) {
+      out += sel.slice(last, m.index);
+      last = m.index + m[0].length;
+    }
+    out += sel.slice(last);
+    return out.trim();
+  };
+  const parseFocusMeta = (branchSel) => {
+    const noNot = collapseFocusFv(stripNotPseudo(String(branchSel || "")));
+    const outerNoNot = maskSelectorBrackets(noNot);
+    const hasFv = /(?<!\\):focus-visible(?![a-z-])/i.test(outerNoNot);
+    const hasFocus = /(?<!\\):focus(?![a-z-])/i.test(outerNoNot) && !hasFv;
+    const hasFw = /(?<!\\):focus-within(?![a-z-])/i.test(outerNoNot);
+    const hasHover = /(?<!\\):hover(?![a-zA-Z0-9_-])/i.test(outerNoNot);
+    const hasActive = /(?<!\\):active(?![a-zA-Z0-9_-])/i.test(outerNoNot);
+    const base = stripFocusPseudosOutsideBrackets(noNot);
+    const spec = computeSelectorSpecificity(branchSel);
+    return { noNot, hasFv, hasFocus, hasFw, hasHover, hasActive, base, spec };
+  };
+  const parseBoxShadowDecls = (candBody) => {
+    const out = [];
+    for (const bm of candBody.matchAll(/(?<![a-zA-Z0-9_$-])box-shadow\s*:\s*((?:[^#;{}]|#\{[^{}]*\}|#(?!\{))+)/gi)) {
+      const imp = /!\s*important\b/i.test(bm[1]);
+      const cleanBox = bm[1].replace(/!\s*important\b/gi, "").trim();
+      const vis = Boolean(
+        cleanBox &&
+          !/^(?:none|0|initial|inherit|unset)$/i.test(cleanBox) &&
+          splitTopLevelCommas(cleanBox).some((layer) => isBoxShadowLayerVisible(layer))
+      );
+      out.push({ vis, imp });
+    }
+    return out;
+  };
+  const getBorderSuppressionForRule = (selBranch, blk = null, srcBlk = null, isSubgroupCheck = false) => {
+    const blkMeta = parseFocusMeta(selBranch);
+    const base = blkMeta.base;
+    const blkOrder = getBlockOrder(blk) ?? 0;
+    const blkHasTwFocusApply = !blkMeta.hasFv && !blkMeta.hasFocus && !blkMeta.hasFw && hasTwFocusApply(blk);
+    const effBlkSpec = blkHasTwFocusApply ? [blkMeta.spec[0], blkMeta.spec[1] + 1, blkMeta.spec[2]] : blkMeta.spec;
+    const blkSubjHasPseudoEl = /(?<!\\)::[a-z-]/i.test(extractSubjectSelector(stripNotPseudo(selBranch)));
+
+    const exactCands = [];
+    const narrowerFocusCands = [];
+    for (const cand of combinedFocusBlocks) {
+      if (!conditionsCover(cand, blk)) continue;
+      if (cand === blk) continue;
+      const isForcedSrc = Boolean(srcBlk && cand === srcBlk);
+      const candOrder = getBlockOrder(cand) ?? 0;
+      const layerCmp = compareCascadeLayerOrder(cand, blk);
+      const branches = getBlockBranches(cand);
+      let bestExact = null;
+      let fallbackForced = null;
+      const bestNarrowBySubBase = new Map();
+      for (const cbRaw of branches) {
+        const cbSubjNoNot = extractSubjectSelector(stripNotPseudo(cbRaw));
+        if (!blkSubjHasPseudoEl && /(?<!\\)::[a-z-]/i.test(cbSubjNoNot)) continue;
+        if (/(?:disabled\b|aria-disabled\s*=\s*["']?true)/i.test(cbRaw)) continue;
+        if (blkMeta.hasFv && /(?<!\\):not\(:focus-visible\)/i.test(cbRaw)) continue;
+        const cbMeta = parseFocusMeta(cbRaw);
+        if (!isForcedSrc && isPointerGatedCandidate(cbMeta.noNot, blkMeta.hasHover, blkMeta.hasActive)) continue;
+        const isBaseRule = !cbMeta.hasFv && !cbMeta.hasFocus && !cbMeta.hasFw;
+        const focusCovers =
+          (blkMeta.hasFv && (cbMeta.hasFv || cbMeta.hasFocus)) ||
+          (blkMeta.hasFocus && (cbMeta.hasFocus || cbMeta.hasFv)) ||
+          (blkMeta.hasFw && cbMeta.hasFw) ||
+          (blkHasTwFocusApply && (cbMeta.hasFv || cbMeta.hasFocus));
+        const specCmp = compareSpecificity(cbMeta.spec, cbMeta.hasFv || cbMeta.hasFocus ? effBlkSpec : blkMeta.spec);
+        const orderCmp = candOrder - blkOrder;
+        const candWinsNormal = layerCmp > 0 || (layerCmp === 0 && (specCmp > 0 || (specCmp === 0 && orderCmp > 0)));
+        const candWinsImportant = layerCmp < 0 || (layerCmp === 0 && (specCmp > 0 || (specCmp === 0 && orderCmp > 0)));
+        const item = { cand, cbRaw, cbMeta, candOrder, layerCmp, specCmp, orderCmp, candWinsNormal, candWinsImportant };
+        if (base && cbMeta.base === base && (isBaseRule || focusCovers)) {
+          if (
+            !bestExact ||
+            item.specCmp > bestExact.specCmp ||
+            (item.specCmp === bestExact.specCmp && compareSpecificity(item.cbMeta.spec, bestExact.cbMeta.spec) > 0)
+          ) {
+            bestExact = item;
+          }
+        } else if (isForcedSrc && !fallbackForced) {
+          fallbackForced = item;
+        }
+        if (
+          !isSubgroupCheck &&
+          base &&
+          cbMeta.base &&
+          cbMeta.base !== base &&
+          focusCovers &&
+          (candWinsNormal || candWinsImportant) &&
+          selectorCoversBranchChain(base, cbMeta.base)
+        ) {
+          const prev = bestNarrowBySubBase.get(cbMeta.base);
+          if (!prev || compareSpecificity(item.cbMeta.spec, prev.cbMeta.spec) > 0) {
+            bestNarrowBySubBase.set(cbMeta.base, item);
+          }
+        }
+      }
+      const chosenExact = bestExact || fallbackForced;
+      if (chosenExact) exactCands.push(chosenExact);
+      for (const nItem of bestNarrowBySubBase.values()) narrowerFocusCands.push(nItem);
+    }
+
+    const ascNormalCmp = (a, b) => a.layerCmp - b.layerCmp || compareSpecificity(a.cbMeta.spec, b.cbMeta.spec) || a.candOrder - b.candOrder;
+    const ascImpCmp = (a, b) => -compareCascadeLayerOrder(a.cand, b.cand) || compareSpecificity(a.cbMeta.spec, b.cbMeta.spec) || a.candOrder - b.candOrder;
+
+    const inheritedBorder = collectBorderTupleState("");
+    for (const item of exactCands.filter((x) => !x.candWinsNormal).sort(ascNormalCmp)) {
+      const candBody = maskAtApplyDeclsPreservingLines(maskCssQuotedStringsPreservingLines(item.cand.body || ""));
+      collectBorderTupleState(candBody, inheritedBorder, 0, "normal-only");
+    }
+
+    const overridingBorder = collectBorderTupleState("");
+    let overridingWinBox = null;
+    for (const item of exactCands.filter((x) => x.candWinsNormal).sort(ascNormalCmp)) {
+      const candBody = maskAtApplyDeclsPreservingLines(maskCssQuotedStringsPreservingLines(item.cand.body || ""));
+      collectBorderTupleState(candBody, overridingBorder, 0, "normal-only");
+      for (const bd of parseBoxShadowDecls(candBody)) {
+        if (!bd.imp) overridingWinBox = bd;
+      }
+    }
+
+    const impBorder = collectBorderTupleState("");
+    let winBoxImp = null;
+    for (const item of [...exactCands].sort(ascImpCmp)) {
+      const candBody = maskAtApplyDeclsPreservingLines(maskCssQuotedStringsPreservingLines(item.cand.body || ""));
+      collectBorderTupleState(candBody, impBorder, 0, "important-only", { candWinsImportant: item.candWinsImportant });
+      for (const bd of parseBoxShadowDecls(candBody)) {
+        if (bd.imp) winBoxImp = { ...bd, candWinsImportant: item.candWinsImportant };
+      }
+    }
+
+    const borderSupSet = new Set(["style", "width", "color"].filter((c) => inheritedBorder[c].state === "invisible"));
+    const borderImpSupSet = new Set(["style", "width", "color"].filter((c) => overridingBorder[c].state === "invisible"));
+    const borderUnrecovSet = new Set();
+    for (const c of ["style", "width", "color"]) {
+      if (impBorder[c].state === "invisible") {
+        borderImpSupSet.add(c);
+        if (impBorder[c].candWinsImportant) borderUnrecovSet.add(c);
+      }
+    }
+    let boxShadowImportantSuppressed = Boolean((overridingWinBox && !overridingWinBox.vis) || (winBoxImp && !winBoxImp.vis));
+    let boxShadowUnrecoverable = Boolean(winBoxImp && !winBoxImp.vis && winBoxImp.candWinsImportant);
+
+    if (!isSubgroupCheck && narrowerFocusCands.length > 0) {
+      const refBlk = srcBlk || blk;
+      const { suppressedProps: refSupProps, importantSuppressedProps: refImpSupProps } = getBlkOutlineSuppression(refBlk);
+      const refHasImpSup = refImpSupProps.length > 0;
+      const refOrder = getBlockOrder(refBlk) ?? 0;
+      const bySubBase = new Map();
+      for (const item of narrowerFocusCands) {
+        const list = bySubBase.get(item.cbMeta.base) || [];
+        list.push(item);
+        bySubBase.set(item.cbMeta.base, list);
+      }
+      for (const subItems of bySubBase.values()) {
+        const subHasOwnFocus = subItems.some((subItem) => {
+          const refLayerCmp = compareCascadeLayerOrder(subItem.cand, refBlk);
+          const refSpecCmp = compareSpecificity(subItem.cbMeta.spec, parseFocusMeta(subItem.cbRaw).base ? computeSelectorSpecificity(refBlk?.resolvedSelector || refBlk?.selector || selBranch) : blkMeta.spec);
+          const refOrderCmp = subItem.candOrder - refOrder;
+          const subRequireImpOutline = refHasImpSup || refLayerCmp < 0 || (refLayerCmp === 0 && (refSpecCmp < 0 || (refSpecCmp === 0 && refOrderCmp < 0)));
+          const subOutlineUnrecov = refHasImpSup && (refLayerCmp > 0 || (refLayerCmp === 0 && (refSpecCmp < 0 || (refSpecCmp === 0 && refOrderCmp <= 0))));
+          const subBorderSupp = getBorderSuppressionForRule(subItem.cbRaw, subItem.cand, null, true);
+          return hasVisibleFocusIndicator(subItem.cand.body, subItem.cbRaw, {
+            suppressedProps: refSupProps,
+            importantSuppressedProps: refImpSupProps,
+            requireImportantOutlineOnly: subRequireImpOutline,
+            outlineUnrecoverable: subOutlineUnrecov,
+            ...subBorderSupp,
+          });
+        });
+        if (subHasOwnFocus) continue;
+
+        const subNormBorder = collectBorderTupleState("");
+        let subNormBox = null;
+        for (const item of [...subItems].sort(ascNormalCmp)) {
+          if (!item.candWinsNormal) continue;
+          const candBody = maskAtApplyDeclsPreservingLines(maskCssQuotedStringsPreservingLines(item.cand.body || ""));
+          collectBorderTupleState(candBody, subNormBorder, 0, "normal-only");
+          for (const bd of parseBoxShadowDecls(candBody)) {
+            if (!bd.imp) subNormBox = bd;
+          }
+        }
+        const subImpBorder = collectBorderTupleState("");
+        let subImpBox = null;
+        for (const item of [...subItems].sort(ascImpCmp)) {
+          const candBody = maskAtApplyDeclsPreservingLines(maskCssQuotedStringsPreservingLines(item.cand.body || ""));
+          collectBorderTupleState(candBody, subImpBorder, 0, "important-only", { candWinsImportant: item.candWinsImportant });
+          for (const bd of parseBoxShadowDecls(candBody)) {
+            if (bd.imp) subImpBox = { ...bd, candWinsImportant: item.candWinsImportant };
+          }
+        }
+        for (const c of ["style", "width", "color"]) {
+          if (subNormBorder[c].state === "invisible") borderImpSupSet.add(c);
+          if (subImpBorder[c].state === "invisible") {
+            borderImpSupSet.add(c);
+            if (subImpBorder[c].candWinsImportant) borderUnrecovSet.add(c);
+          }
+        }
+        if (subNormBox && !subNormBox.vis) boxShadowImportantSuppressed = true;
+        if (subImpBox && !subImpBox.vis) {
+          boxShadowImportantSuppressed = true;
+          if (subImpBox.candWinsImportant) boxShadowUnrecoverable = true;
+        }
+      }
+    }
+
+    let boxShadowSuppressedBySrc = false;
+    let borderSuppressedBySrc = false;
+    if (srcBlk && srcBlk !== blk) {
+      const srcBody = maskAtApplyDeclsPreservingLines(maskCssQuotedStringsPreservingLines(srcBlk.body || ""));
+      const srcBorder = collectBorderTupleState(srcBody);
+      borderSuppressedBySrc =
+        srcBorder.sawBorder &&
+        ["style", "width", "color"].some((c) => srcBorder[c].state === "invisible");
+      let srcWinBox = null;
+      for (const bd of parseBoxShadowDecls(srcBody)) {
+        if (!srcWinBox || bd.imp || !srcWinBox.imp) srcWinBox = bd;
+      }
+      boxShadowSuppressedBySrc = Boolean(srcWinBox && !srcWinBox.vis);
+    }
+    return {
+      borderSuppressedProps: [...borderSupSet],
+      borderImportantSuppressedProps: [...borderImpSupSet],
+      borderUnrecoverableProps: [...borderUnrecovSet],
+      boxShadowImportantSuppressed,
+      boxShadowUnrecoverable,
+      boxShadowSuppressedBySrc,
+      borderSuppressedBySrc,
+    };
   };
   const replaceFocusOutsideNot = (part, repSuffix) => {
     const str = String(part || "");
@@ -3100,29 +3967,36 @@ export function createFocusSafetyChecker(cssBlocks, externalBlocks = []) {
     const rawSubj = extractSubjectSelector(p);
     const pSubj = stripNotPseudo(rawSubj);
     const pNoNot = stripNotPseudo(p);
+    const hasFvInBranch = /(?<!\\):focus-visible(?![a-z-])/i.test(pNoNot);
     const hasSubjFocus = /(?<!\\):focus(?![a-z-])/i.test(pSubj) && !/(?<!\\):focus-visible(?![a-z-])/i.test(pSubj);
-    const hasFocusInBranch = /(?<!\\):focus(?![a-z-])/i.test(pNoNot) && !/(?<!\\):focus-visible(?![a-z-])/i.test(pNoNot);
+    const hasFocusInBranch = /(?<!\\):focus(?![a-z-])/i.test(pNoNot) && !hasFvInBranch;
     const isPlainFocus = hasFocusInBranch;
     const prefixPart = p.slice(0, p.length - rawSubj.length);
     const targetSel = collapseFocusFv(
-      hasSubjFocus
+      hasFvInBranch
+        ? p.trim()
+        : hasSubjFocus
         ? `${prefixPart}${rawSubj.replace(/(?<!\\):focus(?![a-z-])/gi, ":focus-visible")}`
         : hasFocusInBranch
         ? `${replaceFocusOutsideNot(prefixPart, ":focus-visible")}${rawSubj}`
         : `${p.replace(/(?<!\\):focus(?:-visible)?\s*$/i, "").trim()}:focus-visible`
     );
     const { suppressedProps, importantSuppressedProps, hasApplyFocusOrFvRemoval } = getBlkOutlineSuppression(blk);
+    const blkOrder = getBlockOrder(blk);
+    const blkHasImportantSup = importantSuppressedProps.length > 0;
     return cssBlocks.some((other) => {
+      if (other === blk) return false;
       if (!conditionsCover(other, blk)) return false;
-      if (
-        (isPlainFocus || hasApplyFocusOrFvRemoval) &&
-        blk &&
-        typeof other.bodyStart === "number" &&
-        typeof blk.bodyStart === "number" &&
-        other.bodyStart <= blk.bodyStart
-      ) {
-        return false;
-      }
+      const layerCmp = compareCascadeLayerOrder(other, blk);
+      const otherOrder = getBlockOrder(other);
+      const sameLayerEarlier =
+        layerCmp === 0 &&
+        (isPlainFocus || hasFvInBranch || hasApplyFocusOrFvRemoval) &&
+        otherOrder !== null &&
+        blkOrder !== null &&
+        otherOrder <= blkOrder;
+      const outlineUnrecoverable = blkHasImportantSup && (layerCmp > 0 || sameLayerEarlier);
+      const requireImportantOutlineOnly = !blkHasImportantSup && (layerCmp < 0 || sameLayerEarlier);
       return getBlockBranches(other).some((os) => {
         const trimSel = os.trim();
         return (
@@ -3130,6 +4004,8 @@ export function createFocusSafetyChecker(cssBlocks, externalBlocks = []) {
           hasVisibleFocusIndicator(other.body, trimSel, {
             suppressedProps,
             importantSuppressedProps,
+            requireImportantOutlineOnly,
+            outlineUnrecoverable,
             ...getBorderSuppressionForRule(trimSel, other, blk),
           })
         );
@@ -3391,17 +4267,25 @@ export function createFocusSafetyChecker(cssBlocks, externalBlocks = []) {
       ? `^${escBase}(?::focus-within\\b|:has\\(\\s*(?:[>*]+\\s*)*:focus(?:-visible)?\\s*\\))$`
       : `^${escBase}:focus-within\\b$`;
     const wrapRe = new RegExp(wrapPat, "i");
+    const blkOrder = getBlockOrder(blk);
+    const blkHasImportantSup = importantSuppressedProps.length > 0;
+    const externalSet = new Set(Array.isArray(externalBlocks) ? externalBlocks : []);
     return combinedFocusBlocks.some(
-      (other) =>
-        conditionsCover(other, blk) &&
-        !(
+      (other) => {
+        if (!conditionsCover(other, blk)) return false;
+        const layerCmp = compareCascadeLayerOrder(other, blk);
+        const isOtherExternal = externalSet.has(other);
+        const otherOrder = getBlockOrder(other);
+        const sameLayerEarlier =
+          layerCmp === 0 &&
+          !isOtherExternal &&
           (isPlainFocus || hasApplyFocusOrFvRemoval) &&
-          blk &&
-          typeof other.bodyStart === "number" &&
-          typeof blk.bodyStart === "number" &&
-          other.bodyStart <= blk.bodyStart
-        ) &&
-        getBlockBranches(other).some((os) => {
+          otherOrder !== null &&
+          blkOrder !== null &&
+          otherOrder <= blkOrder;
+        const outlineUnrecoverable = blkHasImportantSup && (layerCmp > 0 || sameLayerEarlier);
+        const requireImportantOutlineOnly = !blkHasImportantSup && (layerCmp < 0 || sameLayerEarlier);
+        return getBlockBranches(other).some((os) => {
           const s = os.trim();
           const cleanS = stripNotPseudo(s);
           if (isPointerGatedCandidate(cleanS, pHasHover, pHasActive)) return false;
@@ -3410,11 +4294,14 @@ export function createFocusSafetyChecker(cssBlocks, externalBlocks = []) {
             hasVisibleFocusIndicator(other.body, s, {
               suppressedProps,
               importantSuppressedProps,
+              requireImportantOutlineOnly,
+              outlineUnrecoverable,
               forWrapperChildFocus: true,
               ...getBorderSuppressionForRule(s, other, blk),
             })
           );
-        })
+        });
+      }
     );
   };
   const checker = (selStr, blk = null, opts = {}) => {
@@ -3432,24 +4319,53 @@ export function createFocusSafetyChecker(cssBlocks, externalBlocks = []) {
       }
       if (!hasDirectFvOnSubj && WRAPPER_FOCUS_RE.test(rawSubj)) return true;
       if (!hasDirectFvOnSubj && isBranchTargetOnlySafe(p, blk, false)) return true;
-      if (!hasDirectFvOnSubj && hasBranchSiblingFocusVisible(p, blk)) return true;
+      if (hasBranchSiblingFocusVisible(p, blk)) return true;
       if (hasBranchParentFocusWithin(p, blk)) return true;
       if (hasBranchItemHighlightRule(p, blk)) return true;
       return false;
     });
   };
-  checker.getBorderSuppression = (selStr, blk = null) => {
+  checker.getBorderSuppression = (selStr, blk = null, srcBlk = null) => {
     const parts = splitTopLevelCommas(selStr);
-    if (parts.length === 0) return { borderSuppressedProps: [], borderImportantSuppressedProps: [] };
+    if (parts.length === 0) {
+      return {
+        borderSuppressedProps: [],
+        borderImportantSuppressedProps: [],
+        borderUnrecoverableProps: [],
+        boxShadowImportantSuppressed: false,
+        boxShadowUnrecoverable: false,
+        boxShadowSuppressedBySrc: false,
+        borderSuppressedBySrc: false,
+      };
+    }
     const supSet = new Set();
     const impSet = new Set();
+    const unrecovSet = new Set();
+    let boxShadowImportantSuppressed = false;
+    let boxShadowUnrecoverable = false;
+    let boxShadowSuppressedBySrc = false;
+    let borderSuppressedBySrc = false;
     for (const p of parts) {
-      const res = getBorderSuppressionForRule(p, blk, null);
+      const res = getBorderSuppressionForRule(p, blk, srcBlk);
       for (const s of res.borderSuppressedProps) supSet.add(s);
       for (const s of res.borderImportantSuppressedProps) impSet.add(s);
+      for (const s of res.borderUnrecoverableProps || []) unrecovSet.add(s);
+      if (res.boxShadowImportantSuppressed) boxShadowImportantSuppressed = true;
+      if (res.boxShadowUnrecoverable) boxShadowUnrecoverable = true;
+      if (res.boxShadowSuppressedBySrc) boxShadowSuppressedBySrc = true;
+      if (res.borderSuppressedBySrc) borderSuppressedBySrc = true;
     }
-    return { borderSuppressedProps: [...supSet], borderImportantSuppressedProps: [...impSet] };
+    return {
+      borderSuppressedProps: [...supSet],
+      borderImportantSuppressedProps: [...impSet],
+      borderUnrecoverableProps: [...unrecovSet],
+      boxShadowImportantSuppressed,
+      boxShadowUnrecoverable,
+      boxShadowSuppressedBySrc,
+      borderSuppressedBySrc,
+    };
   };
+  checker.compareLayerOrder = compareCascadeLayerOrder;
   return checker;
 }
 
@@ -3737,8 +4653,9 @@ export function scanUiContent(raw, filePath, options = {}) {
   const checkCssDeclsFloor = (body, baseOff, effSelector, blk, isSelectorSafeForOutlineNone) => {
     const inKeyframes = Boolean(blk?.inKeyframes);
     const maskedBody = maskCssQuotedStringsPreservingLines(body);
+    const cssDeclBody = maskAtApplyDeclsPreservingLines(maskedBody);
     // 1 & 2. Floor: transition: all & layout-reflow transitions (width, height, top, left) scoped inside declaration bodies
-    for (const m of maskedBody.matchAll(/(?<![a-zA-Z0-9_$-])transition(?:-property)?\s*:\s*((?:[^#;{}]|#\{[^{}]*\}|#(?!\{))*)/gi)) {
+    for (const m of cssDeclBody.matchAll(/(?<![a-zA-Z0-9_$-])transition(?:-property)?\s*:\s*((?:[^#;{}]|#\{[^{}]*\}|#(?!\{))*)/gi)) {
       const declOffset = baseOff + m.index;
       const strippedTrans = stripCssParens(m[1]);
       if (/(?<![a-zA-Z0-9_$-])all(?![a-zA-Z0-9_-])/i.test(strippedTrans)) {
@@ -3765,7 +4682,7 @@ export function scanUiContent(raw, filePath, options = {}) {
     }
 
     // 3. Floor: 100vw horizontal overflow trap (width / inline-size & CSS math functions; excludes @media & CSS custom prop names)
-    for (const m of maskedBody.matchAll(/(?<![a-zA-Z0-9_$-])((?:min-|max-)?(?:width|inline-size))\s*:\s*((?:[^#;{}]|#\{[^{}]*\}|#(?!\{))+)/gi)) {
+    for (const m of cssDeclBody.matchAll(/(?<![a-zA-Z0-9_$-])((?:min-|max-)?(?:width|inline-size))\s*:\s*((?:[^#;{}]|#\{[^{}]*\}|#(?!\{))+)/gi)) {
       const cleanVwVal = m[2].replace(/--[a-zA-Z0-9_-]+/g, " ");
       if (/(?:^|[\s,(*/+-])100vw(?=$|[\s,)*/+-]|!\s*important)/i.test(cleanVwVal)) {
         findings.push({
@@ -3788,9 +4705,8 @@ export function scanUiContent(raw, filePath, options = {}) {
         appText: applyMaskedBody.slice(appRelStart, appRelStart + am[1].length),
       };
     });
-    const twVwUtilityCore = `(?:(?:min-|max-)?(?:w|size)-\\[[^\\]\\s\`;]*?(?<![a-zA-Z0-9]|[a-zA-Z0-9]-)100vw(?![a-zA-Z0-9]|-[a-zA-Z])[^\\]\\s\`;]*\\]|\\[(?:min-|max-)?(?:width|inline-size):[^\\]\\s\`;]*?(?<![a-zA-Z0-9]|[a-zA-Z0-9]-)100vw(?![a-zA-Z0-9]|-[a-zA-Z])[^\\]\\s\`;]*\\])`;
-    const applyTransRe = new RegExp(`(?<=^|\\s)!?(?:${TW_VARIANT_SEG})*!?transition-all!?(?=$|[\\s;])`, "g");
-    const applyVwRe = new RegExp(`(?<=^|\\s)!?(?:${TW_VARIANT_SEG})*!?${twVwUtilityCore}!?(?=$|[\\s;])`, "g");
+    const applyTransRe = new RegExp(`(?<=^|\\s)!?(?:${TW_VARIANT_SEG})*!?${TW_TRANS_ALL_CORE}!?(?=$|[\\s;])`, "g");
+    const applyVwRe = new RegExp(`(?<=^|\\s)!?(?:${TW_VARIANT_SEG})*!?${TW_VW_CORE}!?(?=$|[\\s;])`, "g");
     for (let amIdx = 0; amIdx < applyMatches.length; amIdx++) {
       const { appBase, appText } = applyMatches[amIdx];
       const afterApplyText = applyMatches
@@ -3808,7 +4724,7 @@ export function scanUiContent(raw, filePath, options = {}) {
           ruleId: "dsaf/no-transition-all",
           tier: "floor",
           severity: "error",
-          message: "Disallowed Tailwind `@apply transition-all`; use `transition-colors` or `transition-transform`.",
+          message: `Disallowed Tailwind \`@apply ${tm[0].trim()}\`; use \`transition-colors\` or \`transition-transform\`.`,
         });
       }
       for (const vm of appText.matchAll(applyVwRe)) {
@@ -3845,7 +4761,7 @@ export function scanUiContent(raw, filePath, options = {}) {
     }
 
     // 4. Floor: outline: none / 0 / style: none / width: 0 / transparent without visible replacement
-    const outRemovals = !inKeyframes ? findOutlineRemovals(maskedBody) : [];
+    const outRemovals = !inKeyframes ? findOutlineRemovals(cssDeclBody) : [];
     if (outRemovals.length > 0) {
       const outMatch = outRemovals[outRemovals.length - 1];
       const borderSupp = isSelectorSafeForOutlineNone.getBorderSuppression ? isSelectorSafeForOutlineNone.getBorderSuppression(effSelector, blk) : {};
@@ -3889,7 +4805,10 @@ export function scanUiContent(raw, filePath, options = {}) {
   };
 
   if (includeFloor) {
-    const parsedSlices = cssSlices.map((slice) => ({ slice, cssBlocks: extractCssRuleBlocks(slice.text) }));
+    const parsedSlices = cssSlices.map((slice) => ({
+      slice,
+      cssBlocks: extractCssRuleBlocks(slice.text).map((b) => ({ ...b, docBodyStart: slice.baseOffset + b.bodyStart })),
+    }));
     const allUnscopedDocBlocks = parsedSlices.filter((p) => !p.slice.isScoped).flatMap((p) => p.cssBlocks);
     const allScopedDocBlocks = parsedSlices.filter((p) => p.slice.isScoped).flatMap((p) => p.cssBlocks);
     const externalBlocks = Array.isArray(options.externalCssBlocks) ? options.externalCssBlocks : [];
@@ -3913,8 +4832,8 @@ export function scanUiContent(raw, filePath, options = {}) {
     const inTagSpan = (idx, spans) => spans.some(([ss, se]) => idx >= ss && idx < se);
     const isRealOpenTagAttrPos = (idx) => ciIsRealOpenTagAttrPos(markupCtx, idx);
     const tailwindSpans = extractTailwindClassSpans(nonStyleClean, { ...markupOpts, markupCtx, includeAllCvaArgs: true });
-    // 1b. Tailwind transition-all
-    const twSpanTransRe = new RegExp(`(?<=^|\\s)(!?(?:${TW_VARIANT_SEG})*!?)transition-all(!?)(?=$|[\\s;])`, "g");
+    // 1b. Tailwind transition-all / transition-[all] / [transition:all]
+    const twSpanTransRe = new RegExp(`(?<=^|\\s)(!?(?:${TW_VARIANT_SEG})*!?${TW_TRANS_ALL_CORE})(!?)(?=$|[\\s;])`, "g");
     const seenTransOffsets = new Set();
     for (const span of tailwindSpans) {
       const maskedSpan = maskCssQuotedStringsPreservingLines(span.content, "_");
@@ -3933,8 +4852,7 @@ export function scanUiContent(raw, filePath, options = {}) {
       }
     }
     // 3b. Tailwind w-[100vw] / math 100vw / [inline-size:100vw]
-    const twSpanVwCore = `(?:(?:min-|max-)?(?:w|size)-\\[[^\\]\\s\`;]*?(?<![a-zA-Z0-9]|[a-zA-Z0-9]-)100vw(?![a-zA-Z0-9]|-[a-zA-Z])[^\\]\\s\`;]*\\]|\\[(?:min-|max-)?(?:width|inline-size):[^\\]\\s\`;]*?(?<![a-zA-Z0-9]|[a-zA-Z0-9]-)100vw(?![a-zA-Z0-9]|-[a-zA-Z])[^\\]\\s\`;]*\\])`;
-    const twSpanVwRe = new RegExp(`(?<=^|\\s)(!?(?:${TW_VARIANT_SEG})*!?${twSpanVwCore})(!?)(?=$|[\\s;])`, "g");
+    const twSpanVwRe = new RegExp(`(?<=^|\\s)(!?(?:${TW_VARIANT_SEG})*!?${TW_VW_CORE})(!?)(?=$|[\\s;])`, "g");
     const seenVwOffsets = new Set();
     for (const span of tailwindSpans) {
       const maskedSpan = maskCssQuotedStringsPreservingLines(span.content, "_");
@@ -4056,10 +4974,8 @@ export function scanUiContent(raw, filePath, options = {}) {
         }
         arr.push({ cls: dir.cls, rhs: dir.rhs, index: dir.index });
       }
-      const twSpanVwNameRe = /^(?:(?:min-|max-)?(?:w|size)-\[[^\]]*(?<![a-zA-Z0-9]|[a-zA-Z0-9]-)100vw(?![a-zA-Z0-9]|-[a-zA-Z])[^\]]*\]|\[(?:min-|max-)?(?:width|inline-size):[^\]]*(?<![a-zA-Z0-9]|[a-zA-Z0-9]-)100vw(?![a-zA-Z0-9]|-[a-zA-Z])[^\]]*\])$/;
-      const dirTwSpanVwCore = `(?:(?:min-|max-)?(?:w|size)-\\[[^\\]]*(?<![a-zA-Z0-9]|[a-zA-Z0-9]-)100vw(?![a-zA-Z0-9]|-[a-zA-Z])[^\\]]*\\]|\\[(?:min-|max-)?(?:width|inline-size):[^\\]]*(?<![a-zA-Z0-9]|[a-zA-Z0-9]-)100vw(?![a-zA-Z0-9]|-[a-zA-Z])[^\\]]*\\])`;
-      const dirTwVwRe = new RegExp(`^!?(?:${TW_VARIANT_SEG})*!?${dirTwSpanVwCore}!?(?:$|\\s)`, "i");
-      const dirTwTransRe = new RegExp(`^!?(?:${TW_VARIANT_SEG})*!?transition-all!?$`);
+      const dirTwVwRe = new RegExp(`^!?(?:${TW_VARIANT_SEG})*!?${TW_VW_CORE}!?(?:$|\\s)`, "i");
+      const dirTwTransRe = new RegExp(`^!?(?:${TW_VARIANT_SEG})*!?${TW_TRANS_ALL_CORE}!?$`);
       for (const [enc, dirs] of svelteClassDirsByTag.entries()) {
         for (const dir of dirs) {
           if (isTwOutlineRemoval(dir.cls)) {
@@ -4094,7 +5010,7 @@ export function scanUiContent(raw, filePath, options = {}) {
               severity: "error",
               message: "Disallowed Svelte `class:transition-all`; transition explicit composited properties instead.",
             });
-          } else if (twSpanVwNameRe.test(dir.cls) || dirTwVwRe.test(dir.cls)) {
+          } else if (dirTwVwRe.test(dir.cls)) {
             findings.push({
               file: filePath,
               line: offsetToLine(nonStyleClean, dir.index),
@@ -5948,6 +6864,7 @@ export function scanUiContent(raw, filePath, options = {}) {
         }
       }
       for (const attrMatch of surface.matchAll(/(?<![a-zA-Z0-9_:-])style\s*=\s*(?:"([^"]*)"|'([^']*)')/gi)) {
+        if (!ciIsRealOpenTagAttrPos(reflexSurfCtx, attrMatch.index)) continue;
         const val = attrMatch[1] !== undefined ? attrMatch[1] : attrMatch[2];
         const qChar = attrMatch[1] !== undefined ? '"' : "'";
         const attrStart = attrMatch.index + attrMatch[0].indexOf(qChar) + 1;
@@ -5956,9 +6873,11 @@ export function scanUiContent(raw, filePath, options = {}) {
           nvChars[attrStart + k] = attrRep[k];
         }
       }
-      for (const sd of findSvelteStyleDirectives(surface)) {
-        if (sd.isCustomProp) {
-          maskRangePreservingLines(nvChars, sd.valStart, sd.valEnd);
+      if (ext === ".svelte") {
+        for (const sd of findSvelteStyleDirectives(surface)) {
+          if (sd.isCustomProp && ciIsRealOpenTagAttrPos(reflexSurfCtx, sd.start)) {
+            maskRangePreservingLines(nvChars, sd.valStart, sd.valEnd);
+          }
         }
       }
       const nvBase = blankStyledTemplateCustomPropsPreservingLines(nvChars.join(""));
@@ -6015,14 +6934,29 @@ export function scanUiContent(raw, filePath, options = {}) {
       }
       nonVars = nvOutChars.join("");
     }
-    const nonTwHex = nonVars.replace(
-      new RegExp(`(?<=^|[\\s"'\`:!])${TW_ARB_COLOR_PREFIX_RE}-\\[#[^\\]\\s]+\\]!?`, "g"),
-      (seg) => seg.replace(/[^\n]/g, " ")
+    const styleTagRanges = [];
+    if (!isStyle) {
+      const twSurfCtx = reflexSurfCtx || (surface === cleanComments ? fullMarkupCtx : scanMarkupContexts(surface, markupOpts));
+      for (const blk of extractRealStyleBlocks(surface, twSurfCtx, markupOpts)) {
+        styleTagRanges.push([blk.bodyStart, blk.bodyEnd]);
+      }
+    }
+    const twSurface = buildTailwindScanSurfacePreservingLines(surface, isStyle, markupOpts, styleTagRanges);
+    const twArbColorRe = new RegExp(
+      `(?<=^|[\\s"'\`:!])(${TW_ARB_COLOR_PREFIX_RE}-\\[(?:color:)?(?:#[^\\]\\s]+|(?:rgba?|hsla?|oklch|oklab|hwb|lab|lch)\\([^\\]\\s]+\\))\\]!?|\\[(?:color|background-color|background|border-color|outline-color|fill|stroke|accent-color|caret-color):(?:#[0-9a-fA-F]{3,8}|(?:rgba?|hsla?|oklch|oklab|hwb|lab|lch)\\([^\\]\\s]+\\))\\]!?)`,
+      "g"
     );
+    const twArbSpaceRe =
+      /(?<=^|[\s"'`:!])(-?(?:p|px|py|pt|pr|pb|pl|ps|pe|m|mx|my|mt|mr|mb|ml|ms|me|gap|gap-x|gap-y|space-x|space-y|rounded(?:-[a-z]+)?|(?:min-|max-)?(?:w|h|size)|inset(?:-[xy])?|top|right|bottom|left|start|end)-\[-?\d+(?:\.\d+)?px\]!?|\[(?:padding|margin|gap|row-gap|column-gap|width|height|min-width|max-width|min-height|max-height|inset|top|right|bottom|left|border-radius)(?:-(?:top|right|bottom|left|inline|block)(?:-(?:start|end))?)?:\s*-?\d+(?:\.\d+)?px\]!?)/g;
+    const nonTwChars = nonVars.split("");
+    for (const m of twSurface.matchAll(twArbColorRe)) {
+      maskRangePreservingLines(nonTwChars, m.index, m.index + m[0].length);
+    }
+    const nonTwHex = nonTwChars.join("");
     if (isStyle) {
       const chars = nonTwHex.split("");
-      for (const um of nonTwHex.matchAll(/\burl\(\s*[^)]*#[^)]*\)/gi)) {
-        maskRangePreservingLines(chars, um.index, um.index + um[0].length);
+      for (const um of nonTwHex.matchAll(/\burl\(\s*(?:"(?:\\[\s\S]|[^"\\])*"|'(?:\\[\s\S]|[^'\\])*'|[^)]*)\)/gi)) {
+        if (um[0].includes("#")) maskRangePreservingLines(chars, um.index, um.index + um[0].length);
       }
       let hStart = 0;
       let q = null;
@@ -6083,20 +7017,17 @@ export function scanUiContent(raw, filePath, options = {}) {
         message: "Disallowed `!important` override outside spec rules.",
       });
     }
-    const styleTagRanges = [];
-    if (!isStyle) {
-      const twSurfCtx = reflexSurfCtx || (surface === cleanComments ? fullMarkupCtx : scanMarkupContexts(surface, markupOpts));
-      for (const blk of extractRealStyleBlocks(surface, twSurfCtx, markupOpts)) {
-        styleTagRanges.push([blk.bodyStart, blk.bodyEnd]);
-      }
+    for (const m of twSurface.matchAll(twArbColorRe)) {
+      findings.push({
+        file: filePath,
+        line: offsetToLine(twSurface, m.index),
+        ruleId: "dsaf/tailwind-arbitrary",
+        tier: "reflex",
+        severity: "warning",
+        message: `Tailwind arbitrary bracket utility \`${m[1]}\`; bind to theme tokens.`,
+      });
     }
-    const twSurface = buildTailwindScanSurfacePreservingLines(surface, isStyle, markupOpts, styleTagRanges);
-    for (const m of twSurface.matchAll(
-      new RegExp(
-        `(?<=^|[\\s"'\`:!])(${TW_ARB_COLOR_PREFIX_RE}-\\[#[^\\]\\s]+\\]!?|-?(?:p|px|py|pt|pr|pb|pl|ps|pe|m|mx|my|mt|mr|mb|ml|ms|me|gap|gap-x|gap-y|space-x|space-y|rounded(?:-[a-z]+)?)-\\[\\d+(?:\\.\\d+)?px\\]!?)`,
-        "g"
-      )
-    )) {
+    for (const m of twSurface.matchAll(twArbSpaceRe)) {
       findings.push({
         file: filePath,
         line: offsetToLine(twSurface, m.index),
@@ -8003,6 +8934,529 @@ function runSelfTest() {
       ).counts.floor,
       1,
       "R30 A2-L6: <style scoped> must NOT cover unscoped <style> focus removal"
+    );
+
+    // Round 31 regressions (A2-H1 async generic, A2-M4 masked tw tpl comparison, A2-M6 cross-<style> docBodyStart, A2-M8 non-zero ring-opacity)
+    assert.equal(
+      scanUiContent(
+        'export const A = ({ v }: { v: string }) => <div className={`btn ${v === "bg-[#ef4444]" ? "bg-surface" : ""}`} />;\n',
+        "r31m4a.tsx",
+        { tier: "all" }
+      ).counts.reflex,
+      0,
+      "R31 A2-M4: comparison string inside template expression must not trigger dsaf/tailwind-arbitrary"
+    );
+    assert.equal(
+      scanUiContent(
+        'export const B = ({ ok }: { ok: boolean }) => <div className={`btn ${ok ? "bg-[#ef4444]" : ""}`} />;\n',
+        "r31m4b.tsx",
+        { tier: "all" }
+      ).counts.reflex,
+      1,
+      "R31 A2-M4: real ternary Tailwind arbitrary class inside template expression must still trigger"
+    );
+    assert.equal(isInvisibleTwFocusUtility("focus:ring-opacity-75"), false, "R31 A2-M8: ring-opacity-75 is visible");
+    assert.equal(isInvisibleTwFocusUtility("focus:ring-opacity-[0.5]"), false, "R31 A2-M8: ring-opacity-[0.5] is visible");
+    assert.equal(isInvisibleTwFocusUtility("focus:ring-opacity-0"), true, "R31 A2-M8: ring-opacity-0 is invisible");
+    assert.equal(isInvisibleTwFocusUtility("focus:ring-opacity-[0%]"), true, "R31 A2-M8: ring-opacity-[0%] is invisible");
+    assert.equal(isInvisibleTwFocusUtility("focus:ring-opacity-[0.0]"), true, "R31 A2-M8: ring-opacity-[0.0] is invisible");
+    assert.equal(
+      scanUiContent(
+        'const f = async <Foo>(x: Foo): Promise<Foo> => x;\nexport const B = () => cva("p-[13px]");\nexport const C = () => <Foo><span /></Foo>;\n',
+        "r31h1.tsx",
+        { tier: "all" }
+      ).counts.reflex,
+      1,
+      "R31 A2-H1: async generic + Promise return type must not pair with later <Foo></Foo>"
+    );
+    assert.equal(
+      scanUiContent(
+        `<style>\n/* ${"a".repeat(160)} */\n.btn:focus { outline: none; }\n</style>\n<style>.btn:focus-visible { outline: 2px solid blue; }</style>\n`,
+        "r31m6a.html",
+        { surfaceMode: "operate" }
+      ).counts.floor,
+      0,
+      "R31 A2-M6: short second <style> with smaller slice offset must still follow long first <style>"
+    );
+    assert.equal(
+      scanUiContent(
+        `<style>\n/* ${"a".repeat(160)} */\n.btn:focus-visible { outline: 2px solid blue; }\n</style>\n<style>.btn:focus { outline: none; }</style>\n`,
+        "r31m6b.html",
+        { surfaceMode: "operate" }
+      ).counts.floor,
+      1,
+      "R31 A2-M6: .btn:focus in second <style> must still override long first <style>"
+    );
+
+    // Round 32 regressions (A2-H1 @apply arbitrary syntax, A2-H2 Windows backslash HTML attrs, A2-M3 SFC <style> @theme/@property, A2-M4 url("#..."), A2-M5 TSX call-sig & style prose)
+    const r32ApplyRes = scanUiContent(
+      ".card { @apply [width:100vw] [transition:all] [outline:none]; }\n",
+      "r32h1.css",
+      { surfaceMode: "operate" }
+    );
+    assert.deepEqual(
+      r32ApplyRes.active.filter((f) => f.tier === "floor").map((f) => f.ruleId).sort(),
+      ["dsaf/no-100vw", "dsaf/no-outline-none-naked", "dsaf/no-transition-all"],
+      "R32 A2-H1: @apply arbitrary utilities must be scanned once via Tailwind @apply path without duplicate raw CSS matches"
+    );
+    assert.equal(
+      scanUiContent('<div data-win="\\" onclick="alert(1)"><button class="outline-none" /></div>', "r32h2.html", { surfaceMode: "operate" }).counts.floor,
+      1,
+      "R32 A2-H2: backslash before closing quote in HTML attribute must not escape quote"
+    );
+    assert.equal(
+      scanUiContent('export const A = () => <><div data-win="\\" /><button className="outline-none" /></>;', "r32h2.tsx", { surfaceMode: "operate" }).counts.floor,
+      1,
+      "R32 A2-H2: backslash before closing quote in JSX attribute must not escape quote"
+    );
+    assert.equal(
+      scanUiContent('<div style:color="\\" style:margin="x"><button class="outline-none" /></div>', "r32h2.svelte", { surfaceMode: "operate" }).counts.floor,
+      1,
+      "R32 A2-H2: backslash before closing quote in Svelte style directive must not escape quote"
+    );
+    assert.equal(
+      scanUiContent('<div data-win="\\" className="outline-none transition-all" /><video data-win="\\" autoPlay src="/x.mp4" /><svg data-win="\\"><path fill="#ff00aa" /></svg>', "r32h2b.tsx", { surfaceMode: "operate" }).counts.floor,
+      3,
+      "R32 A2-H2: trailing backslash before quote must not swallow outline-none, transition-all, or autoPlay"
+    );
+    assert.equal(
+      scanUiContent(
+        '<style>@theme { --color-brand: #ff00aa; @apply bg-[#ff00aa] p-[12px]; .nested { color: red !important; } } @property --glow { syntax: "<color>"; initial-value: #112233 !important; inherits: false; }</style>',
+        "r32m3a.vue",
+        { tier: "all" }
+      ).counts.reflex,
+      0,
+      "R32 A2-M3: @theme and @property inside Vue <style> must stay exempted"
+    );
+    assert.equal(
+      scanUiContent(
+        '<style>@theme { --color-brand: #112233; @apply bg-[#ff00aa]; } .a { color: red !important; @apply p-[13px]; }</style>',
+        "r32m3b.vue",
+        { tier: "all" }
+      ).counts.reflex,
+      2,
+      "R32 A2-M3: regular rules following @theme inside Vue <style> must still be scanned"
+    );
+    assert.equal(
+      scanUiContent('.a { background: url("foo#112233)bar.svg"); border-color: #445566; }\n', "r32m4.css", { tier: "all" }).counts.reflex,
+      1,
+      "R32 A2-M4: quoted url() containing ) after #hex must not prematurely end url() suppression"
+    );
+    const r32CallSigSrc =
+      'interface I { <Item>(x: Item): void; }\nexport const A = () => <div className="bg-surface">style="--x: 1" style:--y="2"</div>;\nexport const B = () => <div style={{ color: "red !important" }} />;\nexport const C = () => <Item><span /></Item>;\n';
+    assert.equal(
+      scanUiContent(r32CallSigSrc, "r32m5.tsx", { tier: "all" }).active.filter((f) => f.ruleId === "dsaf/important-override").length,
+      1,
+      "R32 A2-M5: interface call signature and prose style= / style:--y= text must not confuse TSX Reflex scanner"
+    );
+
+    // Round 33 regressions (A2-H2 transition-[all] + [transition:all] + _all_, A2-H3 @layer cascade, A2-M6 not-(:focus-visible) & shadow-[...])
+    assert.equal(
+      scanUiContent(
+        '<button class="transition-[all] [transition:all_200ms] transition-[color,_all]" /><Comp class:transition-[all]={x} />',
+        "r33h2.svelte",
+        { surfaceMode: "operate" }
+      ).counts.floor,
+      4,
+      "R33 A2-H2: must detect transition-[all], [transition:all_200ms], transition-[color,_all], and Svelte class:transition-[all]"
+    );
+    assert.equal(
+      scanUiContent(
+        '<button class="transition-[all-scroll] transition-colors" />',
+        "r33h2-neg.tsx",
+        { surfaceMode: "operate" }
+      ).counts.floor,
+      0,
+      "R33 A2-H2: transition-[all-scroll] must not false-positive"
+    );
+    assert.equal(
+      scanUiContent(
+        '@layer overrides, reset;\n@layer reset { button:focus { outline: none; } }\n@layer overrides { button:focus-visible { outline: 2px solid #005fcc; } }\n',
+        "r33h3-bad.css",
+        { surfaceMode: "operate" }
+      ).counts.floor,
+      1,
+      "R33 A2-H3: @layer reset (higher rank via @layer overrides, reset) must NOT be satisfied by earlier-declared lower-rank @layer overrides"
+    );
+    assert.equal(
+      scanUiContent(
+        '@layer base, overrides;\n@layer overrides { button:focus-visible { outline: 2px solid #005fcc; } }\n@layer base { button:focus { outline: none; } }\n',
+        "r33h3-good.css",
+        { surfaceMode: "operate" }
+      ).counts.floor,
+      0,
+      "R33 A2-H3: @layer overrides (higher rank) before @layer base satisfies focus-visible indicator"
+    );
+    assert.equal(
+      scanUiContent(
+        '<div class="not-(:focus-visible):outline-none [&_button:not(:focus-visible)]:outline-none" />\n<button class="outline-none focus-visible:shadow-[0_0_0_2px_#005fcc]" />\n<a class="outline-none focus-visible:[box-shadow:0_0_0_2px_var(--focus)]" />\n',
+        "r33m6-good.tsx",
+        { surfaceMode: "operate" }
+      ).counts.floor,
+      0,
+      "R33 A2-M6: not-(:focus-visible), [&_button:not(:focus-visible)], and visible focus-visible shadow-[...] must be allowed"
+    );
+    assert.equal(
+      scanUiContent(
+        '<div class="not-focus-visible:[&_button]:outline-none" />\n<div class="[&:not(:focus-visible)_button]:outline-none" />\n<button class="outline-none focus-visible:shadow-none" />\n<button class="outline-none focus-visible:shadow-[0_0_0_0_transparent]" />\n<button class="outline-none focus-visible:shadow-[0_0_0_2px_#005fcc] focus-visible:shadow-none" />\n',
+        "r33m6-bad.tsx",
+        { surfaceMode: "operate" }
+      ).counts.floor,
+      5,
+      "R33 A2-M6: parent-guarded target selectors & invisible/cancelled shadow focus rings must still fail Floor"
+    );
+
+    // Round 34 (A2-M1 hierarchical CSS @layer sub-layers/parent-child, A2-M2 Vue :class & Astro class:list siblings, A2-L3 extended tailwind-arbitrary & [color:#...], A2-L4 w-screen):
+    assert.equal(
+      scanUiContent(
+        "@layer base, utilities;\n@layer utilities.sub { .btn:focus-visible { outline: 2px solid blue; } }\n@layer base.sub { .btn:focus { outline: none; } }\n",
+        "r34-layer-sub-ok.css",
+        { surfaceMode: "operate" }
+      ).counts.floor,
+      0,
+      "R34 A2-M1: @layer utilities.sub must outrank @layer base.sub when @layer base, utilities;"
+    );
+    assert.equal(
+      scanUiContent(
+        "@layer base {\n  @layer sub { .btn:focus { outline: none; } }\n  .btn:focus-visible { outline: 2px solid blue; }\n}\n",
+        "r34-layer-parent-ok.css",
+        { surfaceMode: "operate" }
+      ).counts.floor,
+      0,
+      "R34 A2-M1: parent @layer base rule must outrank child @layer base.sub"
+    );
+    assert.equal(
+      scanUiContent(
+        "@layer base {\n  @layer sub { .btn:focus-visible { outline: 2px solid blue; } }\n  .btn:focus { outline: none; }\n}\n",
+        "r34-layer-parent-bad.css",
+        { surfaceMode: "operate" }
+      ).counts.floor,
+      1,
+      "R34 A2-M1: parent @layer base :focus { outline: none } must fail when overriding @layer base.sub :focus-visible"
+    );
+    assert.equal(
+      scanUiContent("<template><button class=\"outline-none\" :class=\"['focus-visible:ring-2']\">Hi</button></template>", "r34-vue1.vue").counts.floor,
+      0,
+      "R34 A2-M2: Vue :class array unconditional literal must share siblingClasses with class"
+    );
+    assert.equal(
+      scanUiContent("<template><button class=\"outline-none\" v-bind:class=\"['focus-visible:ring-2']\">Hi</button></template>", "r34-vue2.vue").counts.floor,
+      0,
+      "R34 A2-M2: Vue v-bind:class unconditional literal must share siblingClasses with class"
+    );
+    assert.equal(
+      scanUiContent("<button class=\"outline-none\" class:list={['focus-visible:ring-2']}>Hi</button>", "r34-astro.astro").counts.floor,
+      0,
+      "R34 A2-M2: Astro class:list unconditional literal must share siblingClasses with class"
+    );
+    assert.equal(
+      scanUiContent("<template><button class=\"outline-none\" :class=\"{ 'focus-visible:ring-2': isReady }\">Hi</button></template>", "r34-vue-cond.vue").counts.floor,
+      1,
+      "R34 A2-M2: Vue conditional object :class must NOT satisfy static class outline-none"
+    );
+    const r34ArbRes = scanUiContent(
+      'export const A = () => <div className="text-[oklch(0.6_0.2_250)] [color:#ff00aa] [padding:13px] w-[317px] size-[24px] m-[-5px]" />;',
+      "r34-arb.tsx",
+      { tier: "all" }
+    );
+    assert.equal(r34ArbRes.counts.reflex, 6, "R34 A2-L3: extended tailwind-arbitrary color/property/sizing/negative px");
+    const r34CssApplyColor = scanUiContent(".a { @apply [color:#ff00aa] [padding:13px]; }\n", "r34-apply-col.css", { tier: "all" });
+    assert.deepEqual(
+      r34CssApplyColor.active.map((f) => f.ruleId).sort(),
+      ["dsaf/tailwind-arbitrary", "dsaf/tailwind-arbitrary"],
+      "R34 A2-L3: @apply [color:#ff00aa] must emit tailwind-arbitrary without hardcoded-color double-count"
+    );
+    assert.equal(
+      scanUiContent('export const A = () => <div className="w-screen min-w-screen max-w-screen w-screen-md" />;', "r34-wscreen.tsx").counts.floor,
+      3,
+      "R34 A2-L4: w-screen, min-w-screen, max-w-screen fail Floor while w-screen-md passes"
+    );
+
+    // Round 36 (R35-A2-H1..H4 & M2 focus/layer/box-shadow/variant-kill regressions):
+    assert.equal(
+      scanUiContent(
+        "@layer base, components;\n@layer base { .btn:focus-visible { outline: 2px solid blue; box-shadow: none !important; } }\n@layer components { .btn:focus { outline: none; } }\n",
+        "r36-h1-bad.css",
+        { surfaceMode: "operate" }
+      ).counts.floor,
+      1,
+      "R36 A2-H1: unrelated box-shadow: none !important in lower @layer must NOT waive higher @layer outline: none"
+    );
+    assert.equal(
+      scanUiContent(
+        "@layer base, components;\n@layer base { .btn:focus-visible { outline: 2px solid blue !important; } }\n@layer components { .btn:focus { outline: none; } }\n",
+        "r36-h1-good.css",
+        { surfaceMode: "operate" }
+      ).counts.floor,
+      0,
+      "R36 A2-H1: genuine outline !important in lower @layer must satisfy higher @layer normal outline: none"
+    );
+    assert.equal(
+      scanUiContent(
+        "@layer base, components;\n@layer components { .card:focus { outline: none; } }\n@layer base { .card:focus-within { outline: 2px solid blue; } }\n",
+        "r36-h2-bad.css",
+        { surfaceMode: "operate" }
+      ).counts.floor,
+      1,
+      "R36 A2-H2: lower @layer base :focus-within must NOT waive higher @layer components :focus outline: none"
+    );
+    assert.equal(
+      scanUiContent(
+        "@layer components, base;\n@layer components { .card:focus { outline: none; } }\n@layer base { .card:focus-within { outline: 2px solid blue; } }\n",
+        "r36-h2-good.css",
+        { surfaceMode: "operate" }
+      ).counts.floor,
+      0,
+      "R36 A2-H2: higher @layer base :focus-within must waive lower @layer components :focus outline: none"
+    );
+    assert.equal(
+      scanUiContent(
+        ".btn:focus { outline: none; box-shadow: none !important; }\n.btn:focus-visible { box-shadow: 0 0 0 2px blue; }\n",
+        "r36-h3.css",
+        { surfaceMode: "operate" }
+      ).counts.floor,
+      1,
+      "R36 A2-H3: box-shadow: none !important on :focus must invalidate non-important :focus-visible box-shadow"
+    );
+    assert.equal(
+      analyzeTailwindOutline("focus:outline-none focus-visible:ring-2 dark:focus-visible:ring-0").naked,
+      true,
+      "R36 A2-H4: dark:focus-visible:ring-0 conditional killer must fail unconditional focus-visible:ring-2"
+    );
+    assert.equal(
+      analyzeTailwindOutline("dark:focus:outline-none focus-visible:ring-2 dark:focus-visible:ring-0").naked,
+      true,
+      "R36 A2-H4: dark:focus:outline-none must fail when dark:focus-visible:ring-0 cancels ring-2"
+    );
+    assert.equal(
+      analyzeTailwindOutline("focus:outline-none focus-visible:ring-2 dark:focus-visible:ring-0 dark:focus-visible:outline-2").naked,
+      false,
+      "R36 A2-H4: dark fallback outline-2 restores dark mode alongside light focus-visible:ring-2"
+    );
+    const r36ExtDir = join(scratch, "r36-ext-layer");
+    mkdirSync(r36ExtDir, { recursive: true });
+    writeFileSync(join(r36ExtDir, "ds.css"), "@layer reset, components;\n@layer reset { .list:focus-within { outline: 2px solid blue; } }\n");
+    writeFileSync(join(r36ExtDir, "app.css"), "@layer components { .list:focus { outline: none; } }\n");
+    const r36ExtCheck = checkTarget(join(r36ExtDir, "app.css"), { dsCss: [join(r36ExtDir, "ds.css")] });
+    assert.equal(
+      r36ExtCheck.counts.floor,
+      1,
+      "R36 A2-M2: external DS @layer reset must NOT outrank local @layer components"
+    );
+
+    // Round 37 (R36-A2-M2 @layer/sibling :focus-visible override + R36-A2-M1 Vue TS cast):
+    assert.equal(
+      scanUiContent(
+        "@layer reset, components;\n@layer reset { .btn:focus-visible { outline: none; } }\n@layer components { .btn:focus-visible { outline: 2px solid blue; } }\n",
+        "r37-layer-ok.css",
+        { surfaceMode: "operate" }
+      ).counts.floor,
+      0,
+      "R37 A2-M2: higher @layer components :focus-visible outline must satisfy lower @layer reset :focus-visible"
+    );
+    assert.equal(
+      scanUiContent(
+        "@layer components, reset;\n@layer reset { .btn:focus-visible { outline: none; } }\n@layer components { .btn:focus-visible { outline: 2px solid blue; } }\n",
+        "r37-layer-bad.css",
+        { surfaceMode: "operate" }
+      ).counts.floor,
+      1,
+      "R37 A2-M2: lower @layer components without !important must fail @layer reset :focus-visible suppression"
+    );
+    assert.equal(
+      scanUiContent(
+        ".b, .b:focus-visible { outline: none; }\n.b:focus-visible { outline: 2px solid blue; }\n",
+        "r37-grouped-ok.css",
+        { surfaceMode: "operate" }
+      ).counts.floor,
+      0,
+      "R37 A2-M2: grouped reset restoring :focus-visible on later rule must pass"
+    );
+    assert.equal(
+      scanUiContent(
+        ".b:focus-visible { outline: 2px solid blue; }\n.b:focus-visible { outline: none; }\n",
+        "r37-order-bad.css",
+        { surfaceMode: "operate" }
+      ).counts.floor,
+      1,
+      "R37 A2-M2: earlier non-important :focus-visible must NOT satisfy later same-layer suppression"
+    );
+    assert.equal(
+      scanUiContent(
+        ".b:focus-visible { outline: 2px solid blue !important; }\n.b:focus-visible { outline: none; }\n",
+        "r37-imp-ok.css",
+        { surfaceMode: "operate" }
+      ).counts.floor,
+      0,
+      "R37 A2-M2: earlier !important :focus-visible must still satisfy later non-important suppression"
+    );
+    const r37VueRes = scanUiContent(
+      [
+        '<script setup lang="ts">',
+        'const el = <HTMLElement>document.getElementById("x");',
+        "const B = styled.button`outline: none; transition: all 200ms;`;",
+        "</script>",
+        '<template><div class="ok">ok</div></template>',
+      ].join("\n"),
+      "App.vue",
+      { surfaceMode: "operate" }
+    );
+    assert.equal(r37VueRes.counts.floor, 2, "R37 A2-M1: SFC <script lang='ts'> cast must not mask styled.button Floor violations");
+
+    // Round 38 (R37-A2-H1 @apply ring killers + R37-A2-M1 box-shadow/border unaffected by :focus outline:none):
+    assert.equal(
+      scanUiContent(".btn { @apply outline-none focus-visible:ring-2 !ring-0; }", "r38-h1-imp.css", { surfaceMode: "operate" }).counts.floor,
+      1,
+      "R38 A2-H1: @apply outline-none focus-visible:ring-2 !ring-0 must fail dsaf/no-outline-none-naked"
+    );
+    assert.equal(
+      scanUiContent(".btn { @apply outline-none focus-visible:ring-2 ring-transparent; }", "r38-h1-trans.css", { surfaceMode: "operate" }).counts.floor,
+      1,
+      "R38 A2-H1: @apply outline-none focus-visible:ring-2 ring-transparent must fail dsaf/no-outline-none-naked"
+    );
+    assert.equal(
+      scanUiContent(".btn { @apply outline-none focus-visible:ring-2 dark:focus-visible:ring-0; }", "r38-h1-dark.css", { surfaceMode: "operate" }).counts.floor,
+      1,
+      "R38 A2-H1: @apply outline-none focus-visible:ring-2 dark:focus-visible:ring-0 must fail dsaf/no-outline-none-naked"
+    );
+    assert.equal(
+      scanUiContent(".btn:focus-visible { box-shadow: 0 0 0 3px #1d4ed8; }\n.btn:focus { outline: none; }\n", "r38-m1-order.css", { surfaceMode: "operate" }).counts.floor,
+      0,
+      "R38 A2-M1: earlier :focus-visible box-shadow satisfies later :focus { outline: none }"
+    );
+    assert.equal(
+      scanUiContent("@layer components { .btn:focus-visible { box-shadow: 0 0 0 3px #1d4ed8; } }\n.btn:focus { outline: none; }\n", "r38-m1-layer.css", { surfaceMode: "operate" }).counts.floor,
+      0,
+      "R38 A2-M1: lower-layer :focus-visible box-shadow satisfies unlayered :focus { outline: none }"
+    );
+    assert.equal(
+      scanUiContent(".btn:focus-visible { box-shadow: 0 0 0 3px #1d4ed8; }\n.btn:focus { outline: none; box-shadow: none; }\n", "r38-m1-suppressed.css", { surfaceMode: "operate" }).counts.floor,
+      1,
+      "R38 A2-M1: later :focus { box-shadow: none } still suppresses earlier non-important :focus-visible box-shadow"
+    );
+    assert.equal(
+      scanUiContent(".btn { box-shadow: none; }\n.btn:focus-visible { box-shadow: 0 0 0 3px #1d4ed8; }\n.btn:focus { outline: none; }\n", "r38-m1-base-reset.css", { surfaceMode: "operate" }).counts.floor,
+      0,
+      "R38 A2-M1: base .btn { box-shadow: none } overridden by :focus-visible box-shadow satisfies :focus { outline: none }"
+    );
+
+    // Round 39 (R38-A2-H1 @apply border/shadow resets & R38-A2-H2 later/higher-spec/important suppressions):
+    assert.equal(
+      scanUiContent(".btn { border: 0 !important; outline: none; }\n.btn:focus-visible { @apply border-2 border-blue-500; }\n", "r39-h1a.css", { surfaceMode: "operate" }).counts.floor,
+      1,
+      "R39 A2-H1: inherited border: 0 !important must block non-important @apply border-2"
+    );
+    assert.equal(
+      scanUiContent(".btn:focus-visible { outline: none; border: 0 !important; @apply border-2; }\n", "r39-h1b.css", { surfaceMode: "operate" }).counts.floor,
+      1,
+      "R39 A2-H1: same-rule border: 0 !important must block non-important @apply border-2"
+    );
+    assert.equal(
+      scanUiContent(".btn:focus-visible { outline: none; box-shadow: none !important; @apply ring-2; }\n", "r39-h1c.css", { surfaceMode: "operate" }).counts.floor,
+      1,
+      "R39 A2-H1: same-rule box-shadow: none !important must block non-important @apply ring-2"
+    );
+    assert.equal(
+      scanUiContent(".btn { border: 0 !important; outline: none; }\n.btn:focus-visible { @apply !border !border-solid !border-blue-500; }\n", "r39-h1d.css", { surfaceMode: "operate" }).counts.floor,
+      0,
+      "R39 A2-H1: !important @apply border/solid/color overrides base border: 0 !important"
+    );
+    assert.equal(
+      scanUiContent(".btn:focus-visible { outline: none; box-shadow: 0 0 0 2px #00f; }\n.btn:focus-visible { box-shadow: none; }\n", "r39-h2a.css", { surfaceMode: "operate" }).counts.floor,
+      1,
+      "R39 A2-H2: later :focus-visible box-shadow: none suppresses earlier box-shadow focus indicator"
+    );
+    assert.equal(
+      scanUiContent(".btn:focus-visible { outline: none; border: 2px solid #00f; }\n.btn:focus-visible { border: 0; }\n", "r39-h2b.css", { surfaceMode: "operate" }).counts.floor,
+      1,
+      "R39 A2-H2: later :focus-visible border: 0 suppresses earlier border focus indicator"
+    );
+    assert.equal(
+      scanUiContent(".btn:focus-visible { outline: none; @apply ring-2; }\n#app .btn:focus-visible { box-shadow: none; }\n", "r39-h2c.css", { surfaceMode: "operate" }).counts.floor,
+      1,
+      "R39 A2-H2: higher-specificity #app .btn:focus-visible box-shadow: none suppresses .btn:focus-visible @apply ring-2"
+    );
+    assert.equal(
+      scanUiContent(".btn:focus-visible { outline: none; @apply ring-2; }\n#app .btn:focus-visible { box-shadow: none; outline: 2px solid #00f; }\n", "r39-h2d.css", { surfaceMode: "operate" }).counts.floor,
+      0,
+      "R39 A2-H2: higher-specificity #app .btn:focus-visible with its own outline keeps Floor 0"
+    );
+    assert.equal(
+      scanUiContent(".btn:focus-visible { border: 0 !important; }\n.btn:focus-visible { outline: none; border: 2px solid #00f; }\n", "r39-h2e.css", { surfaceMode: "operate" }).counts.floor,
+      1,
+      "R39 A2-H2: earlier :focus-visible border: 0 !important suppresses later non-important border"
+    );
+    assert.equal(
+      scanUiContent(".btn:focus { outline: none; }\n.btn:focus-visible { border: 2px solid #00f; }\n.btn:focus-visible { border: 0; }\n", "r39-h2f.css", { surfaceMode: "operate" }).counts.floor,
+      1,
+      "R39 A2-H2: sibling :focus-visible overridden by later border: 0 fails Floor"
+    );
+    assert.equal(
+      scanUiContent(".btn:focus-visible { outline: none; box-shadow: 0 0 0 2px #00f; }\n.btn:focus:not(:focus-visible) { box-shadow: none; }\n", "r39-h2g.css", { surfaceMode: "operate" }).counts.floor,
+      0,
+      "R39 A2-H2: mouse-only :focus:not(:focus-visible) box-shadow: none must not suppress :focus-visible"
+    );
+
+    // Round 40 (R39-A2-H1 quoted @apply strings, H2 comma-selector branch order, M3 non-trailing :focus*, M4 bracket/alpha '/', M5 focusRank > media):
+    assert.equal(
+      scanUiContent('.btn { outline: none; @apply before:content-["a focus-visible:ring-2 b"]; }\n', "r40-h1-ring.css", { surfaceMode: "operate" }).counts.floor,
+      1,
+      "R40 A2-H1: quoted focus-visible:ring-2 inside before:content-[...] must not satisfy outline: none"
+    );
+    assert.equal(
+      scanUiContent('.btn { outline: none; @apply before:content-["a focus-visible:outline-2 b"]; }\n', "r40-h1-outline.css", { surfaceMode: "operate" }).counts.floor,
+      1,
+      "R40 A2-H1: quoted focus-visible:outline-2 inside before:content-[...] must not satisfy outline: none"
+    );
+    assert.equal(
+      scanUiContent('.btn { outline: none; @apply focus-visible:ring-2 before:content-["a focus-visible:ring-0 b"]; }\n', "r40-h1-killer.css", { surfaceMode: "operate" }).counts.floor,
+      0,
+      "R40 A2-H1: quoted focus-visible:ring-0 inside before:content-[...] must not cancel valid focus-visible:ring-2"
+    );
+    assert.equal(
+      scanUiContent("#app .btn:focus-visible { outline: none; box-shadow: 0 0 0 2px blue; }\n#app .btn, #app .btn:focus-visible { box-shadow: none; }\n", "r40-h2-comma.css", { surfaceMode: "operate" }).counts.floor,
+      1,
+      "R40 A2-H2: comma-selector with second :focus-visible branch suppressing box-shadow must fail regardless of comma order"
+    );
+    assert.equal(
+      scanUiContent('.btn:focus-visible[data-open="true"] { outline: none; box-shadow: 0 0 0 2px blue; }\n.btn[data-open="true"] { box-shadow: none !important; }\n', "r40-m3-attr.css", { surfaceMode: "operate" }).counts.floor,
+      1,
+      "R40 A2-M3: :focus-visible followed by [data-open='true'] must still match suppression on .btn[data-open='true']"
+    );
+    assert.equal(
+      analyzeTailwindOutline("outline-none focus-visible:outline-[2px_solid_oklch(0.6_0.2_250/0.8)]").naked,
+      false,
+      "R40 A2-M4: arbitrary outline-[...oklch(.../0.8)] slash alpha inside brackets must pass"
+    );
+    assert.equal(
+      analyzeTailwindOutline("outline-none focus-visible:ring-[2px_rgb(0_0_0/0.5)]").naked,
+      false,
+      "R40 A2-M4: arbitrary ring-[...rgb(.../0.5)] slash alpha inside brackets must pass"
+    );
+    assert.equal(
+      analyzeTailwindOutline("outline-none focus-visible:border-[2px_solid_hsl(220_90%_50%/0.8)]").naked,
+      false,
+      "R40 A2-M4: arbitrary border-[...hsl(.../0.8)] slash alpha inside brackets must pass"
+    );
+    assert.equal(
+      analyzeTailwindOutline("outline-none focus-visible:ring-2 md:ring-0").naked,
+      false,
+      "R40 A2-M5: base media variant md:ring-0 must not override focus-visible:ring-2"
+    );
+    assert.equal(
+      analyzeTailwindOutline("outline-none md:ring-0 focus-visible:ring-2").naked,
+      false,
+      "R40 A2-M5: leading md:ring-0 must not override focus-visible:ring-2"
+    );
+    assert.equal(
+      analyzeTailwindOutline("outline-none focus-visible:ring-2 md:focus-visible:ring-0").naked,
+      true,
+      "R40 A2-M5: md:focus-visible:ring-0 at same focusRank must still fail focus-visible:ring-2"
+    );
+    assert.equal(
+      analyzeTailwindOutline("outline-none focus-visible:ring-2 md:!ring-0").naked,
+      true,
+      "R40 A2-M5: important md:!ring-0 must still override focus-visible:ring-2"
     );
 
     console.log("DSAF_HOOK_SELF_TEST_PASSED (Floor/Reflex rules + waiver rejection + stdin hook + idempotent install)");

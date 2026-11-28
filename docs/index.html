@@ -71,7 +71,7 @@
             <span class="badge badge--mono">Quick Start</span>
             <button type="button" class="copy-btn" data-copy-target="hero-cmd">Copy</button>
           </div>
-          <pre tabindex="0" aria-label="Quick start commands"><code id="hero-cmd"># 1. Scan any project directory
+          <pre tabindex="0" role="region" aria-label="Quick start commands"><code id="hero-cmd"># 1. Scan any project directory
 npx @zintaen/dsaf check .
 
 # 2. Install AI skill + MCP tool config
@@ -139,7 +139,7 @@ npx @zintaen/dsaf audit . --html report.html</code></pre>
                   <span class="badge badge--mono">Terminal</span>
                   <button type="button" class="copy-btn" data-copy-target="cmd-check">Copy</button>
                 </div>
-                <pre tabindex="0" aria-label="Quick check CLI commands"><code id="cmd-check">npx @zintaen/dsaf check .
+                <pre tabindex="0" role="region" aria-label="Quick check CLI commands"><code id="cmd-check">npx @zintaen/dsaf check .
 npx @zintaen/dsaf audit . --html audit-report.html --out ./audit-output
 npx @zintaen/dsaf update . --check
 npx @zintaen/dsaf runtime https://your-site.example.com --live</code></pre>
@@ -156,7 +156,7 @@ npx @zintaen/dsaf runtime https://your-site.example.com --live</code></pre>
                   <span class="badge badge--mono">Setup &amp; MCP</span>
                   <button type="button" class="copy-btn" data-copy-target="cmd-agent">Copy</button>
                 </div>
-                <pre tabindex="0" aria-label="Agent skill and MCP setup commands"><code id="cmd-agent"># Claude, Cursor, Codex, Antigravity, or all at once
+                <pre tabindex="0" role="region" aria-label="Agent skill and MCP setup commands"><code id="cmd-agent"># Claude, Cursor, Codex, Antigravity, or all at once
 npx @zintaen/dsaf setup --agent all --scope user
 
 # Or install only the MCP server entry into the current project
@@ -174,7 +174,7 @@ npx @zintaen/dsaf mcp install --agent cursor --scope project</code></pre>
                   <span class="badge badge--mono">.github/workflows/dsaf-gate.yml</span>
                   <button type="button" class="copy-btn" data-copy-target="cmd-ci">Copy</button>
                 </div>
-                <pre tabindex="0" aria-label="GitHub Actions DSAF workflow"><code id="cmd-ci">name: DSAF Gate
+                <pre tabindex="0" role="region" aria-label="GitHub Actions DSAF workflow"><code id="cmd-ci">name: DSAF Gate
 on: [pull_request]
 permissions:
   contents: read
@@ -204,7 +204,7 @@ jobs:
                   <span class="badge badge--mono">Fix, Setup &amp; Update</span>
                   <button type="button" class="copy-btn" data-copy-target="cmd-fix">Copy</button>
                 </div>
-                <pre tabindex="0" aria-label="Fix, setup, and update CLI commands"><code id="cmd-fix">npx @zintaen/dsaf fix src --dry-run
+                <pre tabindex="0" role="region" aria-label="Fix, setup, and update CLI commands"><code id="cmd-fix">npx @zintaen/dsaf fix src --dry-run
 npx @zintaen/dsaf fix src --apply --backup
 npx @zintaen/dsaf setup . --with-hook --with-ci --with-auto-update
 npx @zintaen/dsaf update .</code></pre>

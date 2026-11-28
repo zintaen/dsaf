@@ -325,6 +325,7 @@ export function analyzeDirectory(inputDir) {
     return new RegExp(`^${esc}/package\\.json$`);
   };
   const positiveWs = wsGlobs.filter((g) => g && !String(g).trim().startsWith("!"));
+  const negativeWs = wsGlobs.filter((g) => g && String(g).trim().startsWith("!"));
   const pkgPaths = new Set(
     positiveWs.length > 0
       ? relFiles.filter((r) => r === "package.json")
@@ -332,7 +333,7 @@ export function analyzeDirectory(inputDir) {
           (r) => r === "package.json" || /^[^/]+\/package\.json$/.test(r) || /^(apps|packages|libs|modules|sites|web|workspaces)\/[^/]+\/package\.json$/.test(r)
         )
   );
-  for (const rawGlob of wsGlobs) {
+  for (const rawGlob of [...positiveWs, ...negativeWs]) {
     const gStr = String(rawGlob || "").trim();
     if (!gStr) continue;
     const isNeg = gStr.startsWith("!");
@@ -535,7 +536,7 @@ export function analyzeDirectory(inputDir) {
 
   const stack = {
     frameworks: [...deps].filter((d) =>
-      ["react", "react-dom", "next", "vue", "nuxt", "svelte", "@sveltejs/kit", "astro", "tailwindcss", "@capacitor/core", "vite", "tauri", "@tauri-apps/api", "@tauri-apps/cli", "electron", "expo", "react-native"].includes(d)
+      ["react", "react-dom", "next", "vue", "nuxt", "svelte", "@sveltejs/kit", "astro", "tailwindcss", "@tailwindcss/vite", "@tailwindcss/postcss", "@tailwindcss/cli", "@capacitor/core", "vite", "tauri", "@tauri-apps/api", "@tauri-apps/cli", "electron", "expo", "react-native"].includes(d)
     ),
     designSystemPackages: dsDeps,
     hasShadcnMarkers,
@@ -1148,6 +1149,31 @@ function runSelfTest() {
     const r29WsRes = analyzeDirectory(r29WsProj);
     assert.equal(r29WsRes.counts.packages, 2, "R29 A2-L11: !packages/ignored must be excluded from package count");
     assert.deepEqual(r29WsRes.stack.frameworks, ["react"], "R29 A2-L11: excluded workspace deps must not pollute frameworks");
+
+    // Round 31 (A2-L11): Tailwind v4 plugin packages (@tailwindcss/vite, @tailwindcss/postcss, @tailwindcss/cli) must appear in stack.frameworks
+    for (const twPkg of ["@tailwindcss/vite", "@tailwindcss/postcss", "@tailwindcss/cli"]) {
+      const r31TwProj = join(scratch, `r31-${twPkg.replace(/[^a-z0-9]/gi, "-")}`);
+      mkdirSync(r31TwProj, { recursive: true });
+      writeFileSync(join(r31TwProj, "package.json"), JSON.stringify({ name: "r31-tw4", devDependencies: { [twPkg]: "^4.0.0" } }));
+      const r31TwRes = analyzeDirectory(r31TwProj);
+      assert.ok(r31TwRes.stack.frameworks.includes(twPkg), `R31 A2-L11: ${twPkg} must appear in stack.frameworks`);
+    }
+
+    // Round 32 (A2-L6): leading !negated workspace glob before positive glob must still exclude matching package
+    const r32WsProj = join(scratch, "r32-ws-neg-first");
+    mkdirSync(join(r32WsProj, "packages/ui"), { recursive: true });
+    mkdirSync(join(r32WsProj, "packages/ignored"), { recursive: true });
+    writeFileSync(join(r32WsProj, "package.json"), JSON.stringify({ name: "ws-neg", private: true, workspaces: ["!packages/ignored", "packages/*"] }));
+    writeFileSync(join(r32WsProj, "packages/ui/package.json"), JSON.stringify({ name: "@app/ui", dependencies: { react: "^18.0.0" } }));
+    writeFileSync(
+      join(r32WsProj, "packages/ignored/package.json"),
+      JSON.stringify({ name: "@app/ignored", dependencies: { vue: "^3.0.0", "@mui/material": "^5.0.0", firebase: "^10.0.0" } })
+    );
+    const r32WsRes = analyzeDirectory(r32WsProj);
+    assert.equal(r32WsRes.counts.packages, 2, "R32 A2-L6: leading !packages/ignored must still exclude ignored package");
+    assert.deepEqual(r32WsRes.stack.frameworks, ["react"]);
+    assert.deepEqual(r32WsRes.stack.designSystemPackages, []);
+    assert.equal(r32WsRes.t2MockRequired, false);
 
     console.log("RECON_SELF_TEST_PASSED (Mode S/C/P + Surface Modes + @theme + auth/hidden-dir exclusion + URL safety)");
     return 0;

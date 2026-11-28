@@ -12,7 +12,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
-import { assertWritableOutputFile, isDirectCliEntry } from "./ci-report.mjs";
+import { assertWritableOutputFile, escMdCell, formatMdCodeSpan, isDirectCliEntry } from "./ci-report.mjs";
 
 export const DIFF_VERSION = "0.9.3";
 
@@ -40,6 +40,9 @@ export function diffScorecards(baseline, current, currentPhase = "before") {
     throw new Error("Invalid current scorecard: expected dsaf-scores/2 object.");
   }
   const baseTotal = baseline.phases.before.total;
+  if (baseTotal !== undefined && baseTotal !== null && (typeof baseTotal !== "number" || !Number.isFinite(baseTotal))) {
+    throw new Error("Invalid baseline phase total: expected finite number or null.");
+  }
   const curPhases = isPlainObject(current.phases) ? current.phases : null;
   const curCriteriaRoot = isPlainObject(current.criteria) ? current.criteria : null;
   const hasPhase = Boolean(curPhases && Object.prototype.hasOwnProperty.call(curPhases, currentPhase));
@@ -49,32 +52,96 @@ export function diffScorecards(baseline, current, currentPhase = "before") {
   if (!isPlainObject(curPhaseObj) || !isPlainObject(curCriteria)) {
     throw new Error(`Phase '${currentPhase}' does not exist in current scorecard.`);
   }
+  const curTotal = curPhaseObj.total;
+  if (curTotal !== undefined && curTotal !== null && (typeof curTotal !== "number" || !Number.isFinite(curTotal))) {
+    throw new Error("Invalid current phase total: expected finite number or null.");
+  }
   const baseCriteria = baseline.criteria.before;
 
+  const ALLOWED_TYPES = new Set(["usability", "visual", "system"]);
+  if (typeof baseline.type !== "string" || !ALLOWED_TYPES.has(baseline.type)) {
+    throw new Error(`Invalid baseline audit type: ${JSON.stringify(baseline.type)}. Expected 'usability', 'visual', or 'system'.`);
+  }
+  if (typeof current.type !== "string" || !ALLOWED_TYPES.has(current.type)) {
+    throw new Error(`Invalid current audit type: ${JSON.stringify(current.type)}. Expected 'usability', 'visual', or 'system'.`);
+  }
   if (baseline.type !== current.type) {
     throw new Error(`Cannot compare differing audit types: ${baseline.type} vs ${current.type}`);
   }
+  const normProfile = (prof, label) => {
+    if (prof === undefined || prof === null) return "";
+    if (typeof prof !== "string" || !prof.trim()) {
+      throw new Error(`Invalid ${label} profile: expected a non-empty string.`);
+    }
+    return prof.trim();
+  };
+  const baseProf = normProfile(baseline.profile, "baseline");
+  const curProf = normProfile(current.profile, "current");
+  if (baseProf && curProf && baseProf !== curProf) {
+    throw new Error(`Cannot compare differing weight profiles: ${baseProf} vs ${curProf}`);
+  }
+  const validateWeightsObj = (w, label) => {
+    if (w === undefined || w === null) return null;
+    if (!isPlainObject(w)) {
+      throw new Error(`Invalid ${label} weights: expected an object mapping pillar IDs to finite numbers.`);
+    }
+    for (const [k, v] of Object.entries(w)) {
+      if (typeof v !== "number" || !Number.isFinite(v)) {
+        throw new Error(`Invalid ${label} weight for '${k}': expected finite number.`);
+      }
+    }
+    return w;
+  };
+  const baseWeights = validateWeightsObj(baseline.weights, "baseline");
+  const curWeights = validateWeightsObj(current.weights, "current");
+  if (baseWeights && curWeights) {
+    const bKeys = Object.keys(baseWeights).sort();
+    const cKeys = Object.keys(curWeights).sort();
+    const sameWeights =
+      bKeys.length === cKeys.length &&
+      bKeys.every((k, idx) => k === cKeys[idx] && Math.abs(baseWeights[k] - curWeights[k]) <= 1e-6);
+    if (!sameWeights) {
+      throw new Error("Cannot compare scorecards with differing pillar weights.");
+    }
+  }
 
+  const normVol = (v, label, cid) => {
+    if (v === undefined || v === null) return "FIXED";
+    if (typeof v !== "string") {
+      throw new Error(`Invalid ${label} volatility for criterion '${cid}': expected 'FIXED' or 'DYNAMIC'.`);
+    }
+    const s = v.trim().toUpperCase();
+    if (!s) return "FIXED";
+    if (s !== "FIXED" && s !== "DYNAMIC") {
+      throw new Error(`Invalid ${label} volatility for criterion '${cid}': expected 'FIXED' or 'DYNAMIC', got ${JSON.stringify(v)}.`);
+    }
+    return s;
+  };
+  const isValidScore = (s) => s === "N/A" || s === 0 || s === 1 || s === 2;
   const majorMismatch = majorOf(baseline.engine_version) !== majorOf(current.engine_version);
   const improvements = [];
   const regressions = [];
 
   for (const [cid, curEntry] of Object.entries(curCriteria)) {
+    if (!isPlainObject(curEntry) || !isValidScore(curEntry.score)) {
+      throw new Error(`Invalid current score for criterion '${cid}': expected 0, 1, 2, or 'N/A'.`);
+    }
+    normVol(curEntry.volatility, "current", cid);
     if (!Object.prototype.hasOwnProperty.call(baseCriteria, cid)) continue;
     const baseEntry = baseCriteria[cid];
     if (!isPlainObject(baseEntry)) {
       throw new Error(`Invalid baseline entry for criterion '${cid}': expected object.`);
     }
-    if (baseEntry.score !== "N/A" && (typeof baseEntry.score !== "number" || !Number.isFinite(baseEntry.score))) {
-      throw new Error(`Invalid baseline score for criterion '${cid}': expected finite number or 'N/A'.`);
+    if (!isValidScore(baseEntry.score)) {
+      throw new Error(`Invalid baseline score for criterion '${cid}': expected 0, 1, 2, or 'N/A'.`);
     }
-    if (!isPlainObject(curEntry) || (curEntry.score !== "N/A" && (typeof curEntry.score !== "number" || !Number.isFinite(curEntry.score)))) {
-      throw new Error(`Invalid current score for criterion '${cid}': expected finite number or 'N/A'.`);
-    }
+    const baseVol = normVol(baseEntry.volatility, "baseline", cid);
     if (baseEntry.score === "N/A") continue;
-    const volatility = baseEntry.volatility === "FIXED" ? "FIXED" : (curEntry.volatility || baseEntry.volatility || "FIXED");
+    const hasCurVol = curEntry.volatility !== undefined && curEntry.volatility !== null;
+    const volatility = baseVol === "FIXED" ? "FIXED" : normVol(hasCurVol ? curEntry.volatility : baseVol, "current", cid);
     if (curEntry.score === "N/A") {
-      regressions.push({ id: cid, volatility, pre: baseEntry.score, post: "N/A", delta: -baseEntry.score, reason: "Converted numeric score to N/A" });
+      const naDelta = baseEntry.score === 0 ? 0 : -baseEntry.score;
+      regressions.push({ id: cid, volatility, pre: baseEntry.score, post: "N/A", delta: naDelta, reason: "Converted numeric score to N/A" });
       continue;
     }
     const delta = curEntry.score - baseEntry.score;
@@ -85,26 +152,31 @@ export function diffScorecards(baseline, current, currentPhase = "before") {
     if (!isPlainObject(baseEntry)) {
       throw new Error(`Invalid baseline entry for criterion '${cid}': expected object.`);
     }
-    if (baseEntry.score !== "N/A" && (typeof baseEntry.score !== "number" || !Number.isFinite(baseEntry.score))) {
-      throw new Error(`Invalid baseline score for criterion '${cid}': expected finite number or 'N/A'.`);
+    if (!isValidScore(baseEntry.score)) {
+      throw new Error(`Invalid baseline score for criterion '${cid}': expected 0, 1, 2, or 'N/A'.`);
     }
+    const baseVol = normVol(baseEntry.volatility, "baseline", cid);
     if (baseEntry.score !== "N/A" && !Object.prototype.hasOwnProperty.call(curCriteria, cid)) {
+      const omitDelta = baseEntry.score === 0 ? 0 : -baseEntry.score;
       regressions.push({
         id: cid,
-        volatility: baseEntry.volatility || "FIXED",
+        volatility: baseVol,
         pre: baseEntry.score,
         post: "missing",
-        delta: -baseEntry.score,
+        delta: omitDelta,
         reason: "Criterion omitted in current scorecard",
       });
     }
   }
 
-  const normBlockers = (arr) => [
-    ...new Set((Array.isArray(arr) ? arr : []).filter((x) => typeof x === "string").map((x) => x.trim()).filter(Boolean)),
-  ];
-  const baseBlockers = new Set(normBlockers(baseline.phases.before.hard_floor_blockers));
-  const newBlockers = normBlockers(curPhaseObj.hard_floor_blockers).filter((b) => !baseBlockers.has(b));
+  const normBlockers = (arr, label) => {
+    if (arr !== undefined && arr !== null && !Array.isArray(arr)) {
+      throw new Error(`Invalid ${label}: expected an array.`);
+    }
+    return [...new Set((arr || []).filter((x) => typeof x === "string").map((x) => x.trim()).filter(Boolean))];
+  };
+  const baseBlockers = new Set(normBlockers(baseline.phases.before.hard_floor_blockers, "baseline hard_floor_blockers"));
+  const newBlockers = normBlockers(curPhaseObj.hard_floor_blockers, "current hard_floor_blockers").filter((b) => !baseBlockers.has(b));
   for (const nb of newBlockers) {
     regressions.push({
       id: `BLOCKER:${nb}`,
@@ -131,7 +203,6 @@ export function diffScorecards(baseline, current, currentPhase = "before") {
 }
 
 export function renderDiffMarkdown(diff) {
-  const escMdCell = (v) => String(v ?? "").replace(/\r?\n/g, " ").replace(/\|/g, "\\|");
   const lines = [
     "# DSAF No-Silent-Regression Diff",
     "",
@@ -142,8 +213,8 @@ export function renderDiffMarkdown(diff) {
   lines.push(
     `| Metric | Baseline | Current |`,
     `|---|---|---|`,
-    `| Audit Type | \`${escMdCell(diff.type)}\` | \`${escMdCell(diff.type)}\` |`,
-    `| Total Score | ${diff.baselineTotal ?? "N/A"} | ${diff.currentTotal ?? "N/A"} |`,
+    `| Audit Type | ${formatMdCodeSpan(diff.type, true)} | ${formatMdCodeSpan(diff.type, true)} |`,
+    `| Total Score | ${escMdCell(diff.baselineTotal ?? "N/A")} | ${escMdCell(diff.currentTotal ?? "N/A")} |`,
     `| Grade / Maturity | ${escMdCell(diff.baselineGrade)} | ${escMdCell(diff.currentGrade)} |`,
     "",
     `- Improvements: ${diff.improvements.length}`,
@@ -152,7 +223,7 @@ export function renderDiffMarkdown(diff) {
   );
   if (diff.improvements.length > 0) {
     lines.push("## Improvements", "", "| Criterion | Pre | Post | Delta |", "|---|---:|---:|---:|");
-    for (const r of diff.improvements) lines.push(`| \`${escMdCell(r.id)}\` | ${escMdCell(r.pre)} | ${escMdCell(r.post)} | +${r.delta} |`);
+    for (const r of diff.improvements) lines.push(`| ${formatMdCodeSpan(r.id, true)} | ${escMdCell(r.pre)} | ${escMdCell(r.post)} | +${r.delta} |`);
     lines.push("");
   }
   if (diff.regressions.length > 0) {
@@ -161,10 +232,10 @@ export function renderDiffMarkdown(diff) {
     for (const r of diff.regressions) {
       const note =
         r.reason ||
-        (r.volatility === "DYNAMIC"
+        (String(r.volatility || "").trim().toUpperCase() === "DYNAMIC"
           ? "DYNAMIC: `rubric-tightened` (`D-RT`) valid only if external standard shifted."
           : "FIXED: requires explicit override (`OVRD-*`) or rollback.");
-      lines.push(`| \`${escMdCell(r.id)}\` | ${escMdCell(r.pre)} | ${escMdCell(r.post)} | ${r.delta} | unresolved | null | ${date} | UNRESOLVED | ${escMdCell(note)} |`);
+      lines.push(`| ${formatMdCodeSpan(r.id, true)} | ${escMdCell(r.pre)} | ${escMdCell(r.post)} | ${r.delta} | unresolved | null | ${date} | UNRESOLVED | ${escMdCell(note)} |`);
     }
     lines.push("");
   }
@@ -304,6 +375,139 @@ function runSelfTest() {
   const r28Md = renderDiffMarkdown(r28Diff);
   assert.ok(r28Md.includes("\\| pipe break"), "R28 A4-L4: pipe and newline in blocker note must be escaped");
   assert.ok(!r28Md.includes("\nbreak"), "R28 A4-L4: raw newline inside table row must not split row");
+
+  // Round 32 (A4-L1): non-finite baselineTotal/currentTotal rejected by diffScorecards + total escaped in renderDiffMarkdown
+  const r32BadTotalBase = {
+    schema: "dsaf-scores/2",
+    type: "system",
+    engine_version: DIFF_VERSION,
+    phases: { before: { total: "80 | evil\n| broken", grade: "L3" } },
+    criteria: { before: { DS01: { score: 2, volatility: "FIXED" } } },
+  };
+  const r32GoodCur = makeDoc({ DS01: { score: 2, volatility: "FIXED" } }, DIFF_VERSION, []);
+  assert.throws(() => diffScorecards(r32BadTotalBase, r32GoodCur, "before"), /Invalid baseline phase total/i);
+  assert.throws(() => diffScorecards(r32GoodCur, { ...r32GoodCur, phases: { before: { total: Infinity, grade: "L3" } } }, "before"), /Invalid current phase total/i);
+  const r32EscMd = renderDiffMarkdown({
+    ...r28Diff,
+    baselineTotal: "80 | evil\n| broken",
+    currentTotal: "90 | ok",
+  });
+  const totalRow = r32EscMd.split("\n").find((l) => l.startsWith("| Total Score |"));
+  assert.ok(totalRow && !totalRow.includes("\n"), "R32 A4-L1: Total Score row must not split across lines");
+  assert.match(totalRow, /80 \\\| evil \\\| broken \| 90 \\\| ok/, "R32 A4-L1: pipes in totals must be escaped");
+
+  // Round 33 (A4-L3 lowercase dynamic volatility normalization & A4-L4 profile/weights mismatch rejection)
+  const r33VolDiff = diffScorecards(
+    makeDoc({ DS01: { score: 2, volatility: " dynamic " } }, DIFF_VERSION, []),
+    makeDoc({ DS01: { score: 1, volatility: "Dynamic" } }, DIFF_VERSION, []),
+    "before"
+  );
+  assert.equal(r33VolDiff.regressions[0].volatility, "DYNAMIC", "R33 A4-L3: lowercase/padded volatility must normalize to DYNAMIC");
+  assert.ok(renderDiffMarkdown(r33VolDiff).includes("DYNAMIC: `rubric-tightened`"));
+
+  assert.throws(
+    () =>
+      diffScorecards(
+        { ...makeDoc({ DS01: { score: 2 } }), profile: "balanced" },
+        { ...makeDoc({ DS01: { score: 2 } }), profile: "strict" },
+        "before"
+      ),
+    /profile/i,
+    "R33 A4-L4: differing weight profiles must reject"
+  );
+  assert.throws(
+    () =>
+      diffScorecards(
+        { ...makeDoc({ DS01: { score: 2 } }), weights: { P1: 40, P2: 20, P3: 20, P4: 20 } },
+        { ...makeDoc({ DS01: { score: 2 } }), weights: { P1: 25, P2: 25, P3: 25, P4: 25 } },
+        "before"
+      ),
+    /weights/i,
+    "R33 A4-L4: differing pillar weights must reject"
+  );
+
+  // Round 34 (A4-L3 whitespace volatility normalization & A4-L4 non-array hard_floor_blockers rejection):
+  const r34WsVol = diffScorecards(
+    makeDoc({ DS01: { score: 2, volatility: "   " } }, DIFF_VERSION, []),
+    makeDoc({ DS01: { score: 1, volatility: "DYNAMIC" } }, DIFF_VERSION, []),
+    "before"
+  );
+  assert.equal(r34WsVol.regressions[0].volatility, "FIXED", "R34 A4-L3: whitespace-only baseline volatility must normalize to FIXED");
+
+  assert.throws(
+    () =>
+      diffScorecards(
+        makeDoc({ DS01: { score: 2 } }, DIFF_VERSION, []),
+        { ...makeDoc({ DS01: { score: 2 } }, DIFF_VERSION, []), phases: { before: { total: 80, grade: "L4", hard_floor_blockers: "F-NEW" } } },
+        "before"
+      ),
+    /Invalid current hard_floor_blockers/i,
+    "R34 A4-L4: malformed string hard_floor_blockers must throw"
+  );
+  assert.throws(
+    () =>
+      diffScorecards(
+        { ...makeDoc({ DS01: { score: 2 } }, DIFF_VERSION, []), phases: { before: { total: 80, grade: "L4", hard_floor_blockers: {} } } },
+        makeDoc({ DS01: { score: 2 } }, DIFF_VERSION, []),
+        "before"
+      ),
+    /Invalid baseline hard_floor_blockers/i,
+    "R34 A4-L4: malformed object hard_floor_blockers must throw"
+  );
+
+  // Round 36 (R35-A4-M2 invalid type/weights/profile, R35-A4-L1 out-of-range scores, extra curCriteria validation, zero-to-N/A delta):
+  assert.throws(
+    () => diffScorecards({ ...makeDoc({ DS01: { score: 2 } }), type: undefined }, { ...makeDoc({ DS01: { score: 2 } }), type: undefined }),
+    /Invalid baseline audit type/i
+  );
+  assert.throws(
+    () => diffScorecards({ ...makeDoc({ DS01: { score: 2 } }), weights: { P1: 100 } }, { ...makeDoc({ DS01: { score: 2 } }), weights: [] }),
+    /Invalid current weights/i
+  );
+  assert.throws(
+    () => diffScorecards({ ...makeDoc({ DS01: { score: 2 } }), profile: ["balanced"] }, makeDoc({ DS01: { score: 2 } })),
+    /Invalid baseline profile/i
+  );
+  for (const badScore of [-5, 99, 1.5]) {
+    assert.throws(() => diffScorecards(makeDoc({ DS01: { score: badScore } }), makeDoc({ DS01: { score: 2 } })), /Invalid baseline score/i);
+  }
+  assert.throws(
+    () => diffScorecards(makeDoc({ DS01: { score: 2 } }), makeDoc({ DS01: { score: 2 }, EXTRA: null })),
+    /Invalid current score/i
+  );
+  const zeroToNa = diffScorecards(makeDoc({ DS01: { score: 0 } }), makeDoc({ DS01: { score: "N/A" } }));
+  assert.ok(Object.is(zeroToNa.regressions[0].delta, 0), "R36 A4-L1: 0 -> N/A regression delta must be signed +0 rather than -0");
+
+  // Round 39 (R38-A4-L2 reject invalid volatility strings and non-strings while keeping whitespace->FIXED):
+  for (const badVol of ["BOGUS", "maybe", 123, {}]) {
+    assert.throws(
+      () => diffScorecards(makeDoc({ DS01: { score: 2, volatility: badVol } }), makeDoc({ DS01: { score: 1 } })),
+      /Invalid baseline volatility/i
+    );
+    assert.throws(
+      () => diffScorecards(makeDoc({ DS01: { score: 2, volatility: "FIXED" } }), makeDoc({ DS01: { score: 1, volatility: badVol } })),
+      /Invalid current volatility/i
+    );
+  }
+
+  // Round 40 (R39-A4-M2 Markdown backslash-before-pipe, standalone CR, and multi-backtick code-span fencing):
+  const r40Md = renderDiffMarkdown({
+    ...r28Diff,
+    type: "system`test",
+    baselineGrade: "A\\|B\rNext",
+    currentGrade: "C\\|D\r\nRow",
+    improvements: [{ id: "U`01\\|x\rline", pre: "0", post: "2", delta: 1.5 }],
+    regressions: [{ id: "DS``02\\|y\rrow", pre: "2", post: "1", delta: -1, volatility: "DYNAMIC" }],
+  });
+  for (const line of r40Md.split("\n").filter((l) => l.startsWith("|"))) {
+    assert.equal(line.includes("\r"), false, "Table rows must not contain raw carriage returns");
+  }
+  const r40ImpRow = r40Md.split("\n").find((l) => l.includes("U`01"));
+  assert.ok(r40ImpRow && r40ImpRow.includes("``U`01\\\\\\|x line``"), `Improvement ID must use multi-backtick fence and escaped \\\\|: ${r40ImpRow}`);
+  const r40RegRow = r40Md.split("\n").find((l) => l.includes("DS``02"));
+  assert.ok(r40RegRow && r40RegRow.includes("```DS``02\\\\\\|y row```"), `Regression ID must use 3-backtick fence and escaped \\\\|: ${r40RegRow}`);
+  const r40GradeRow = r40Md.split("\n").find((l) => l.startsWith("| Grade / Maturity |"));
+  assert.ok(r40GradeRow && r40GradeRow.includes("A\\\\\\|B Next") && r40GradeRow.includes("C\\\\\\|D Row"), `Grade row must escape \\| and CR: ${r40GradeRow}`);
 
   console.log("AUDIT_DIFF_SELF_TEST_PASSED (improvements + regression lock + override log)");
   return 0;

@@ -1,6 +1,6 @@
 # Sample Mode C Conformance & Drift Report (`v0.9.3`)
 
-Reproducible walkthrough against the synthetic fixture `fixtures/synthetic/mode-c-app` demonstrating **Step 0 Fast Recon**, deterministic token drift scanning, **2-vertex / 3-vertex Figma triangulation status**, weighted scorecard calculation (`dsaf-scores/2`), and executable `+SG` CI guardrails.
+Reproducible walkthrough against the synthetic fixture `fixtures/synthetic/mode-c-app` demonstrating **Step 0 Fast Recon**, deterministic token drift scanning, **2-vertex / 3-vertex triangulation status reporting**, weighted scorecard calculation (`dsaf-scores/2`), and executable `+SG` CI guardrails.
 
 ---
 
@@ -13,7 +13,7 @@ node bin/dsaf.mjs recon fixtures/synthetic/mode-c-app
 - **Detected Topology & Maturity:** `Mode C — Product-on-DS Conformance & Drift` · `tier_2_baseline`
 - **Frameworks & DS Dependencies:** `react` + `@radix-ui/react-dialog`, `acme-design-system`
 - **Environment & Isolation Tier:** `T2` (`t2MockRequired: false`)
-- **3-Vertex Triangulation Status:** `2-vertex Defined <-> Shipped verified; Designed (Figma MCP / Code Connect): not tested (not supplied)`
+- **3-Vertex Triangulation Status:** `Static-only fixture — Defined (tokens/CSS) scanned via audit-tokens.mjs; Shipped (runtime computedVars via audit-runtime.mjs + audit-figma-diff.mjs --runtime): not tested (no HTML entry point or dev server); Designed (Figma MCP / Code Connect): not tested (not supplied)`
 
 ---
 

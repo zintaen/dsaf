@@ -6,7 +6,7 @@ branding:
 
 inputs:
   target:
-    description: "Target directory or package path to audit"
+    description: "Target directory or package path to audit (subdirectories inside repo root automatically anchor to . via --scope)"
     required: false
     default: "."
   scope:
@@ -18,7 +18,7 @@ inputs:
     required: false
     default: "dsaf-audit-output"
   sarif-file:
-    description: "Output SARIF 2.1.0 file path (relative to out-dir or repo root)"
+    description: "Output SARIF 2.1.0 file path (resolved relative to repo root / CWD; e.g. dsaf-audit-output/dsaf.sarif)"
     required: false
     default: "dsaf.sarif"
   fail-on-floor:
@@ -87,27 +87,72 @@ runs:
         SUMMARY_JSON="${DSAF_OUT_DIR}/audit-summary.json"
         SUMMARY_MD="${DSAF_OUT_DIR}/audit-summary.md"
         rm -f "$SUMMARY_JSON" "$SUMMARY_MD"
-        ARGS=(audit "$DSAF_TARGET" --out "$DSAF_OUT_DIR" --github --report-unused-ignores)
-        if [ -n "$DSAF_SARIF_FILE" ]; then
-          rm -f "$DSAF_SARIF_FILE"
-          if [[ "$DSAF_SARIF_FILE" != /* ]]; then
-            rm -f "${DSAF_OUT_DIR}/${DSAF_SARIF_FILE}"
+        SCOPE_JSON=$(node -e '
+          const fs = require("node:fs");
+          const path = require("node:path");
+          const repoRoot = fs.realpathSync(process.cwd());
+          const rawTarget = (process.env.DSAF_TARGET || ".").trim() || ".";
+          const rawScope = (process.env.DSAF_SCOPE || "").trim();
+          const norm = (p) => (process.platform === "darwin" || process.platform === "win32" ? p.toLowerCase() : p);
+          const isWithin = (root, child) => {
+            const r = path.relative(norm(root), norm(child));
+            return r === "" || (r !== ".." && !r.startsWith(".." + path.sep) && !path.isAbsolute(r));
+          };
+          const absTarget = path.resolve(repoRoot, rawTarget);
+          let cliTarget = rawTarget;
+          let cliScope = rawScope;
+          if (fs.existsSync(absTarget) && fs.statSync(absTarget).isDirectory()) {
+            const realTarget = fs.realpathSync(absTarget);
+            const relTarget = path.relative(repoRoot, realTarget).replace(/\\/g, "/");
+            if (isWithin(repoRoot, realTarget) && relTarget !== "" && !relTarget.startsWith("..")) {
+              cliTarget = ".";
+              if (rawScope) {
+                const absScope = path.resolve(realTarget, rawScope);
+                if (!isWithin(realTarget, absScope)) {
+                  console.error(`ERROR: Input '\''scope'\'' ('\''${rawScope}'\'') escapes target '\''${rawTarget}'\''.`);
+                  process.exit(2);
+                }
+                const effScope = fs.existsSync(absScope) ? fs.realpathSync(absScope) : absScope;
+                if (!isWithin(realTarget, effScope)) {
+                  console.error(`ERROR: Resolved input '\''scope'\'' ('\''${rawScope}'\'') escapes target '\''${rawTarget}'\'' via symlink.`);
+                  process.exit(2);
+                }
+                cliScope = path.relative(repoRoot, effScope).replace(/\\/g, "/") || relTarget;
+              } else {
+                cliScope = relTarget;
+              }
+            }
+          }
+          process.stdout.write(JSON.stringify([cliTarget, cliScope]));
+        ')
+        SCOPE_PARSE_EXIT=$?
+        if [ "$SCOPE_PARSE_EXIT" -eq 0 ]; then
+          EFFECTIVE_TARGET=$(node -e 'process.stdout.write(JSON.parse(process.argv[1])[0])' "$SCOPE_JSON")
+          EFFECTIVE_SCOPE=$(node -e 'process.stdout.write(JSON.parse(process.argv[1])[1])' "$SCOPE_JSON")
+          ARGS=(audit "$EFFECTIVE_TARGET" --out "$DSAF_OUT_DIR" --github --report-unused-ignores)
+          if [ -n "$DSAF_SARIF_FILE" ]; then
+            rm -f "$DSAF_SARIF_FILE"
+            if [[ "$DSAF_SARIF_FILE" != /* ]]; then
+              rm -f "${DSAF_OUT_DIR}/${DSAF_SARIF_FILE}"
+            fi
+            ARGS+=(--sarif "$DSAF_SARIF_FILE")
           fi
-          ARGS+=(--sarif "$DSAF_SARIF_FILE")
-        fi
-        if [ -n "$DSAF_SCOPE" ]; then
-          ARGS+=(--scope "$DSAF_SCOPE")
-        fi
-        CLI_CMD=()
-        if [ -n "${DSAF_CLI_BIN:-}" ] && [ -f "${DSAF_CLI_BIN}" ]; then
-          CLI_CMD=(node "$DSAF_CLI_BIN")
-        elif [ "$DSAF_VERSION" = "bundled" ] || [ -z "$DSAF_VERSION" ]; then
-          CLI_CMD=(node "${DSAF_ACTION_PATH}/bin/dsaf.mjs")
+          if [ -n "$EFFECTIVE_SCOPE" ]; then
+            ARGS+=(--scope "$EFFECTIVE_SCOPE")
+          fi
+          CLI_CMD=()
+          if [ -n "${DSAF_CLI_BIN:-}" ] && [ -f "${DSAF_CLI_BIN}" ]; then
+            CLI_CMD=(node "$DSAF_CLI_BIN")
+          elif [ "$DSAF_VERSION" = "bundled" ] || [ -z "$DSAF_VERSION" ]; then
+            CLI_CMD=(node "${DSAF_ACTION_PATH}/bin/dsaf.mjs")
+          else
+            CLI_CMD=(npx --yes "@zintaen/dsaf@${DSAF_VERSION}")
+          fi
+          "${CLI_CMD[@]}" "${ARGS[@]}"
+          AUDIT_EXIT=$?
         else
-          CLI_CMD=(npx --yes "@zintaen/dsaf@${DSAF_VERSION}")
+          AUDIT_EXIT=$SCOPE_PARSE_EXIT
         fi
-        "${CLI_CMD[@]}" "${ARGS[@]}"
-        AUDIT_EXIT=$?
         set -e
 
         SARIF_PATH=""
@@ -186,18 +231,63 @@ runs:
         mkdir -p "$DSAF_OUT_DIR"
         DOCTOR_JSON="${DSAF_OUT_DIR}/doctor.json"
         rm -f "$DOCTOR_JSON"
-        DOCTOR_ARGS=(doctor "$DSAF_TARGET" --out "$DOCTOR_JSON")
-        if [ -n "$DSAF_SCOPE" ]; then
-          DOCTOR_ARGS+=(--scope "$DSAF_SCOPE")
-        fi
-        if [ -n "${DSAF_CLI_BIN:-}" ] && [ -f "${DSAF_CLI_BIN}" ]; then
-          node "$DSAF_CLI_BIN" "${DOCTOR_ARGS[@]}"
-        elif [ "$DSAF_VERSION" = "bundled" ] || [ -z "$DSAF_VERSION" ]; then
-          node "${DSAF_ACTION_PATH}/bin/dsaf.mjs" "${DOCTOR_ARGS[@]}"
+        DOC_SCOPE_JSON=$(node -e '
+          const fs = require("node:fs");
+          const path = require("node:path");
+          const repoRoot = fs.realpathSync(process.cwd());
+          const rawTarget = (process.env.DSAF_TARGET || ".").trim() || ".";
+          const rawScope = (process.env.DSAF_SCOPE || "").trim();
+          const norm = (p) => (process.platform === "darwin" || process.platform === "win32" ? p.toLowerCase() : p);
+          const isWithin = (root, child) => {
+            const r = path.relative(norm(root), norm(child));
+            return r === "" || (r !== ".." && !r.startsWith(".." + path.sep) && !path.isAbsolute(r));
+          };
+          const absTarget = path.resolve(repoRoot, rawTarget);
+          let cliTarget = rawTarget;
+          let cliScope = rawScope;
+          if (fs.existsSync(absTarget) && fs.statSync(absTarget).isDirectory()) {
+            const realTarget = fs.realpathSync(absTarget);
+            const relTarget = path.relative(repoRoot, realTarget).replace(/\\/g, "/");
+            if (isWithin(repoRoot, realTarget) && relTarget !== "" && !relTarget.startsWith("..")) {
+              cliTarget = ".";
+              if (rawScope) {
+                const absScope = path.resolve(realTarget, rawScope);
+                if (!isWithin(realTarget, absScope)) {
+                  console.error(`ERROR: Input '\''scope'\'' ('\''${rawScope}'\'') escapes target '\''${rawTarget}'\''.`);
+                  process.exit(2);
+                }
+                const effScope = fs.existsSync(absScope) ? fs.realpathSync(absScope) : absScope;
+                if (!isWithin(realTarget, effScope)) {
+                  console.error(`ERROR: Resolved input '\''scope'\'' ('\''${rawScope}'\'') escapes target '\''${rawTarget}'\'' via symlink.`);
+                  process.exit(2);
+                }
+                cliScope = path.relative(repoRoot, effScope).replace(/\\/g, "/") || relTarget;
+              } else {
+                cliScope = relTarget;
+              }
+            }
+          }
+          process.stdout.write(JSON.stringify([cliTarget, cliScope]));
+        ')
+        DOC_SCOPE_EXIT=$?
+        if [ "$DOC_SCOPE_EXIT" -eq 0 ]; then
+          DOC_EFFECTIVE_TARGET=$(node -e 'process.stdout.write(JSON.parse(process.argv[1])[0])' "$DOC_SCOPE_JSON")
+          DOC_EFFECTIVE_SCOPE=$(node -e 'process.stdout.write(JSON.parse(process.argv[1])[1])' "$DOC_SCOPE_JSON")
+          DOCTOR_ARGS=(doctor "$DOC_EFFECTIVE_TARGET" --out "$DOCTOR_JSON")
+          if [ -n "$DOC_EFFECTIVE_SCOPE" ]; then
+            DOCTOR_ARGS+=(--scope "$DOC_EFFECTIVE_SCOPE")
+          fi
+          if [ -n "${DSAF_CLI_BIN:-}" ] && [ -f "${DSAF_CLI_BIN}" ]; then
+            node "$DSAF_CLI_BIN" "${DOCTOR_ARGS[@]}"
+          elif [ "$DSAF_VERSION" = "bundled" ] || [ -z "$DSAF_VERSION" ]; then
+            node "${DSAF_ACTION_PATH}/bin/dsaf.mjs" "${DOCTOR_ARGS[@]}"
+          else
+            npx --yes "@zintaen/dsaf@${DSAF_VERSION}" "${DOCTOR_ARGS[@]}"
+          fi
+          DOCTOR_EXIT=$?
         else
-          npx --yes "@zintaen/dsaf@${DSAF_VERSION}" "${DOCTOR_ARGS[@]}"
+          DOCTOR_EXIT=$DOC_SCOPE_EXIT
         fi
-        DOCTOR_EXIT=$?
         set -e
         echo "doctor-exit=${DOCTOR_EXIT}" >> "$GITHUB_OUTPUT"
         if [ "$DOCTOR_EXIT" -ge 2 ] || { [ "$DOCTOR_EXIT" -ne 0 ] && [ ! -f "$DOCTOR_JSON" ]; }; then

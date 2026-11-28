@@ -440,8 +440,7 @@ export function computeEffectiveHitArea(rect, beforeStyle, afterStyle, hostStyle
   const hostScale = parseTransformScale(hostStyle);
   const layoutW = hostScale.sx > 0 ? baseW / hostScale.sx : baseW;
   const layoutH = hostScale.sy > 0 ? baseH / hostScale.sy : baseH;
-  let maxW = baseW;
-  let maxH = baseH;
+  const candidates = [{ width: baseW, height: baseH }];
   const toPx = (val, refPx) => {
     const s = String(val || "").trim().toLowerCase();
     if (!s || s === "auto" || s === "none") return 0;
@@ -457,19 +456,20 @@ export function computeEffectiveHitArea(rect, beforeStyle, afterStyle, hostStyle
     const s = String(ov || "").toLowerCase();
     return s === "hidden" || s === "clip" || s === "auto" || s === "scroll";
   };
-  const hostIsCb = Boolean(
-    hostStyle &&
-      ((hostStyle.position && String(hostStyle.position).toLowerCase() !== "static") ||
-        (hostStyle.transform && hostStyle.transform !== "none") ||
-        (hostStyle.translate && hostStyle.translate !== "none") ||
-        (hostStyle.scale && hostStyle.scale !== "none") ||
-        (hostStyle.rotate && hostStyle.rotate !== "none") ||
-        (hostStyle.filter && hostStyle.filter !== "none") ||
-        (hostStyle.perspective && hostStyle.perspective !== "none") ||
-        (hostStyle.backdropFilter && hostStyle.backdropFilter !== "none") ||
-        /\b(?:transform|translate|scale|rotate|filter|perspective)\b/.test(hostStyle.willChange || "") ||
-        /\b(?:paint|layout|strict|content)\b/.test(hostStyle.contain || ""))
-  );
+  const hostIsCb = hostStyle
+    ? Boolean(
+        (hostStyle.position && String(hostStyle.position).toLowerCase() !== "static") ||
+          (hostStyle.transform && hostStyle.transform !== "none") ||
+          (hostStyle.translate && hostStyle.translate !== "none") ||
+          (hostStyle.scale && hostStyle.scale !== "none") ||
+          (hostStyle.rotate && hostStyle.rotate !== "none") ||
+          (hostStyle.filter && hostStyle.filter !== "none") ||
+          (hostStyle.perspective && hostStyle.perspective !== "none") ||
+          (hostStyle.backdropFilter && hostStyle.backdropFilter !== "none") ||
+          /\b(?:transform|translate|scale|rotate|filter|perspective)\b/.test(hostStyle.willChange || "") ||
+          /\b(?:paint|layout|strict|content)\b/.test(hostStyle.contain || "")
+      )
+    : true;
   const resolveEdgeExtra = (ps, refPx) => {
     const parseShorthand4 = (rawStr) => {
       const toks = String(rawStr || "").trim().split(/\s+/).filter(Boolean);
@@ -485,15 +485,16 @@ export function computeEffectiveHitArea(rect, beforeStyle, afterStyle, hostStyle
     const padB = Math.max(0, toPx(ps.paddingBottom ?? shPB, refPx));
     const padL = Math.max(0, toPx(ps.paddingLeft ?? shPL, refPx));
     const [shBT, shBR, shBB, shBL] = parseShorthand4(ps.borderWidth);
-    const borderSide = (wVal, shW, sVal) => {
-      const bSt = String(sVal ?? ps.borderStyle ?? "").trim().toLowerCase();
-      if (bSt === "none" || bSt === "hidden") return 0;
+    const [shBST, shBSR, shBSB, shBSL] = parseShorthand4(ps.borderStyle);
+    const borderSide = (wVal, shW, sVal, shS) => {
+      const bSt = String(sVal ?? shS ?? "").trim().toLowerCase();
+      if (!bSt || bSt === "none" || bSt === "hidden") return 0;
       return Math.max(0, toPx(wVal ?? shW, refPx));
     };
-    const bT = borderSide(ps.borderTopWidth, shBT, ps.borderTopStyle);
-    const bR = borderSide(ps.borderRightWidth, shBR, ps.borderRightStyle);
-    const bB = borderSide(ps.borderBottomWidth, shBB, ps.borderBottomStyle);
-    const bL = borderSide(ps.borderLeftWidth, shBL, ps.borderLeftStyle);
+    const bT = borderSide(ps.borderTopWidth, shBT, ps.borderTopStyle, shBST);
+    const bR = borderSide(ps.borderRightWidth, shBR, ps.borderRightStyle, shBSR);
+    const bB = borderSide(ps.borderBottomWidth, shBB, ps.borderBottomStyle, shBSB);
+    const bL = borderSide(ps.borderLeftWidth, shBL, ps.borderLeftStyle, shBSL);
     return { extraW: padL + padR + bL + bR, extraH: padT + padB + bT + bB };
   };
   for (const ps of [beforeStyle, afterStyle]) {
@@ -503,32 +504,40 @@ export function computeEffectiveHitArea(rect, beforeStyle, afterStyle, hostStyle
     if (String(ps.position || "") !== "absolute") continue;
     if (String(ps.display || "").toLowerCase() === "none" || String(ps.display || "").toLowerCase() === "contents" || String(ps.visibility || "").toLowerCase() === "hidden") continue;
     if (String(ps.pointerEvents || "").toLowerCase() === "none") continue;
+    const hasAnyInset =
+      (ps.top !== undefined && ps.top !== "auto") ||
+      (ps.right !== undefined && ps.right !== "auto") ||
+      (ps.bottom !== undefined && ps.bottom !== "auto") ||
+      (ps.left !== undefined && ps.left !== "auto");
+    if (!hostIsCb && hasAnyInset) continue;
     const psScale = parseTransformScale(ps);
     const hasExplicitW = isExplicitSize(ps.width);
     const hasExplicitH = isExplicitSize(ps.height);
-    const minW = toPx(ps.minWidth, layoutW);
-    const minH = toPx(ps.minHeight, layoutH);
-    const pw = Math.max(hasExplicitW ? toPx(ps.width, layoutW) : 0, minW);
-    const ph = Math.max(hasExplicitH ? toPx(ps.height, layoutH) : 0, minH);
+    const refW = hostIsCb ? layoutW : 0;
+    const refH = hostIsCb ? layoutH : 0;
+    const minW = toPx(ps.minWidth, refW);
+    const minH = toPx(ps.minHeight, refH);
+    const pw = Math.max(hasExplicitW ? toPx(ps.width, refW) : 0, minW);
+    const ph = Math.max(hasExplicitH ? toPx(ps.height, refH) : 0, minH);
     const isContentBox = String(ps.boxSizing || "content-box").toLowerCase() !== "border-box";
-    const { extraW, extraH } = resolveEdgeExtra(ps, layoutW);
+    const { extraW, extraH } = resolveEdgeExtra(ps, refW);
     const hasHorizPair =
       ps.left !== undefined && ps.left !== "auto" && ps.right !== undefined && ps.right !== "auto";
     const hasVertPair =
       ps.top !== undefined && ps.top !== "auto" && ps.bottom !== undefined && ps.bottom !== "auto";
     const insetW =
-      !hasExplicitW && hasHorizPair && rect?.width != null
+      hostIsCb && !hasExplicitW && hasHorizPair && rect?.width != null
         ? Math.max(0, layoutW - toPx(ps.left, layoutW) - toPx(ps.right, layoutW))
         : 0;
     const insetH =
-      !hasExplicitH && hasVertPair && rect?.height != null
+      hostIsCb && !hasExplicitH && hasVertPair && rect?.height != null
         ? Math.max(0, layoutH - toPx(ps.top, layoutH) - toPx(ps.bottom, layoutH))
         : 0;
     const boxW = hasExplicitW ? pw + (isContentBox ? extraW : 0) : Math.max(insetW, minW + (isContentBox ? extraW : 0), extraW);
     const boxH = hasExplicitH ? ph + (isContentBox ? extraH : 0) : Math.max(insetH, minH + (isContentBox ? extraH : 0), extraH);
     let effW = boxW * psScale.sx * hostScale.sx;
     let effH = boxH * psScale.sy * hostScale.sy;
-    if (hostIsCb) {
+    if (hostIsCb && hostStyle) {
       const containClips = /\b(?:paint|strict|content)\b/.test(hostStyle.contain || "");
       const ovParts = String(hostStyle.overflow || "").trim().split(/\s+/).filter(Boolean);
       const ovX = hostStyle.overflowX || ovParts[0] || "";
@@ -536,12 +545,25 @@ export function computeEffectiveHitArea(rect, beforeStyle, afterStyle, hostStyle
       if (containClips || clipsOv(ovX)) effW = Math.min(effW, baseW);
       if (containClips || clipsOv(ovY)) effH = Math.min(effH, baseH);
     }
-    const allowsWidthExpand = effH >= Math.min(baseH, 44);
-    const allowsHeightExpand = effW >= Math.min(baseW, 44);
-    if (allowsWidthExpand && effW > maxW) maxW = effW;
-    if (allowsHeightExpand && effH > maxH) maxH = effH;
+    if (effH >= Math.min(baseH, 44) && effW >= Math.min(baseW, 44)) {
+      candidates.push({ width: effW, height: effH });
+    }
   }
-  return { width: Number(maxW.toFixed(1)), height: Number(maxH.toFixed(1)) };
+  let best = candidates[0];
+  for (const cand of candidates.slice(1)) {
+    const candPass = cand.width >= 43.99 && cand.height >= 43.99;
+    const bestPass = best.width >= 43.99 && best.height >= 43.99;
+    if (candPass !== bestPass) {
+      if (candPass) best = cand;
+      continue;
+    }
+    const candMin = Math.min(cand.width, cand.height);
+    const bestMin = Math.min(best.width, best.height);
+    if (candMin > bestMin + 0.01 || (Math.abs(candMin - bestMin) <= 0.01 && cand.width * cand.height > best.width * best.height)) {
+      best = cand;
+    }
+  }
+  return { width: Number(best.width.toFixed(1)), height: Number(best.height.toFixed(1)) };
 }
 
 export function evaluateLayoutHealth({
@@ -613,6 +635,26 @@ export const OVERLAY_SELECTORS = [
   '[id*="cookie-banner" i]',
 ];
 
+const BROAD_OVERLAY_TOKENS_RE = /(?:banner|modal|dialog|popup|overlay|drawer|notice|toast|bar|wall|backdrop|filter|window|sdk)/i;
+
+export function isConsentOverlayElement(meta) {
+  if (!meta) return false;
+  const tag = String(meta.tagName || "").toUpperCase();
+  const role = String(meta.role || "").toLowerCase();
+  const pos = String(meta.position || "").toLowerCase();
+  const isPositionedOverlay = pos === "fixed" || pos === "sticky" || pos === "absolute";
+  const isDialog = role === "dialog" || role === "alertdialog" || tag === "DIALOG";
+  if (tag === "HTML" || tag === "BODY") return false;
+  if (meta.containsAppShell) return false;
+  if (["MAIN", "HEADER", "NAV", "ARTICLE", "SECTION"].includes(tag) && !isDialog && pos !== "fixed" && pos !== "sticky") {
+    return false;
+  }
+  const matchedSpecific = Boolean(meta.matchedSpecific);
+  if (matchedSpecific) return true;
+  const attrStr = `${meta.id || ""} ${meta.className || ""} ${meta.ariaLabel || ""} ${meta.dataTestId || ""}`;
+  return isPositionedOverlay || isDialog || BROAD_OVERLAY_TOKENS_RE.test(attrStr);
+}
+
 export function normalizeCdpEndpoint(raw) {
   const s = String(raw || "").trim();
   if (!s) return "";
@@ -640,9 +682,13 @@ const RTL_LANG_RE = /^(?:ar|he|fa|ur|ps|ckb|yi|ug|sd|dv)(?:-|$)/i;
 
 export function evaluateRtlDiagnostics(snapshot) {
   const htmlDir = String(snapshot?.htmlDir || "").trim().toLowerCase();
+  const bodyDir = String(snapshot?.bodyDir || "").trim().toLowerCase();
+  const effectiveDir = String(snapshot?.effectiveDir || htmlDir || bodyDir).trim().toLowerCase();
   const htmlLang = String(snapshot?.htmlLang || "").trim();
-  const missingDirRtl = Boolean(htmlLang && RTL_LANG_RE.test(htmlLang) && htmlDir !== "rtl");
-  const applicable = htmlDir === "rtl" || missingDirRtl;
+  const missingDirRtl = Boolean(htmlLang && RTL_LANG_RE.test(htmlLang) && effectiveDir !== "rtl");
+  const elements = Array.isArray(snapshot?.elements) ? snapshot.elements : [];
+  const hasRtlElements = Boolean(snapshot?.hasEmbeddedRtl) || elements.some((e) => String(e.elDir || "").toLowerCase() === "rtl");
+  const applicable = effectiveDir === "rtl" || missingDirRtl || hasRtlElements;
   if (!applicable) {
     return {
       applicable: false,
@@ -655,18 +701,28 @@ export function evaluateRtlDiagnostics(snapshot) {
       passed: true,
     };
   }
-  const elements = Array.isArray(snapshot?.elements) ? snapshot.elements : [];
-  const spacingBad = elements.filter((e) => e.hasRtlScriptText && Math.abs(Number(e.letterSpacingPx) || 0) > 0.05);
-  const leftAlignBad = htmlDir === "rtl" ? elements.filter((e) => e.hasRtlScriptText && String(e.textAlign || "").toLowerCase() === "left") : [];
+  const spacingBad = elements.filter(
+    (e) => (e.hasCursiveRtlText !== undefined ? e.hasCursiveRtlText : e.hasRtlScriptText) && Math.abs(Number(e.letterSpacingPx) || 0) > 0.05
+  );
+  const leftAlignBad = elements.filter(
+    (e) =>
+      e.hasRtlScriptText &&
+      (effectiveDir === "rtl" || String(e.elDir || "").toLowerCase() === "rtl") &&
+      String(e.textAlign || "").toLowerCase() === "left"
+  );
+  const rtlSamples = [
+    ...spacingBad.map((s) => ({ ...s, issue: "cursive-letter-spacing" })),
+    ...leftAlignBad.map((s) => ({ ...s, issue: "physical-left-align" })),
+  ];
   return {
     applicable: true,
-    htmlDir,
+    htmlDir: htmlDir || effectiveDir,
     htmlLang,
     missingDirRtl,
     arabicLetterSpacingViolations: spacingBad.length,
     physicalLeftAlignViolations: leftAlignBad.length,
-    samples: spacingBad.slice(0, 8),
-    passed: !missingDirRtl && spacingBad.length === 0,
+    samples: rtlSamples.slice(0, 8),
+    passed: !missingDirRtl && spacingBad.length === 0 && leftAlignBad.length === 0,
   };
 }
 
@@ -976,7 +1032,9 @@ async function resolveStorybookUrls(storybookArg, maxStories) {
     }
     baseUrl = pathToFileURL(dirname(absJson)).href;
   }
-  const entries = Object.values(indexData.entries || indexData.stories || {}).filter((e) => (e.type || "story") === "story");
+  const entries = Object.values(indexData.entries || indexData.stories || {}).filter(
+    (e) => e && typeof e === "object" && (e.type || "story") === "story"
+  );
   const picked = entries.slice(0, maxStories);
   if (!baseUrl) return picked.map((e) => e.id);
   return picked.map((e) => `${baseUrl}/iframe.html?id=${encodeURIComponent(e.id)}&viewMode=story`);
@@ -1296,7 +1354,7 @@ export function validateSimulatedViewportSnapshot(viewport, snap) {
     failures.push(`Simulated ${viewport}: missing .uxs-canvas container`);
     return failures;
   }
-  if (snap.activeViewport && snap.activeViewport !== viewport) {
+  if (snap.activeViewport !== viewport) {
     failures.push(`Clicking [data-viewport="${viewport}"] set data-uxs-viewport="${snap.activeViewport}"`);
   }
   for (const s of snap.spills || []) {
@@ -1423,9 +1481,15 @@ async function auditLiveInteractions(page, themeToggleSelector = null) {
     await page.waitForTimeout(40);
   }
 
-  // 2. Probe first collapsed <details> summary
-  const detSummary = await page.$("details:not([open]) > summary");
-  if (detSummary && (await detSummary.isVisible().catch(() => false))) {
+  // 2. Probe first visible collapsed <details> summary
+  let detSummary = null;
+  for (const h of await page.$$("details:not([open]) > summary")) {
+    if (await h.isVisible().catch(() => false)) {
+      detSummary = h;
+      break;
+    }
+  }
+  if (detSummary) {
     try {
       await detSummary.click({ timeout: 1500 });
       await page.waitForTimeout(60);
@@ -1528,6 +1592,7 @@ async function auditShellContract(page) {
   const initialAttrs = await page.evaluate(() => ({
     view: document.documentElement.getAttribute("data-uxs-view"),
     viewport: document.documentElement.getAttribute("data-uxs-viewport"),
+    pins: document.documentElement.getAttribute("data-uxs-pins"),
   }));
   try {
   const check = await page.evaluate(() => {
@@ -1561,46 +1626,69 @@ async function auditShellContract(page) {
     const active = await page.evaluate(() => document.documentElement.getAttribute("data-uxs-view"));
     if (active !== v) check.failures.push(`Clicking [data-view="${v}"] set data-uxs-view="${active}"`);
   }
-  const pinsBtn = await page.$("#uxs-pins-btn");
+  const pinsBtn = await page.$('#uxs-pins-btn, [data-uxs-group="pins"] button');
+  let initialPinsOn = false;
   if (pinsBtn) {
-    const initialPinsOn = (await page.evaluate(() => document.documentElement.getAttribute("data-uxs-pins"))) === "on";
+    initialPinsOn = (await page.evaluate(() => document.documentElement.getAttribute("data-uxs-pins"))) === "on";
     if (!initialPinsOn) {
       await pinsBtn.click();
       const pinsOn = await page.evaluate(() => document.documentElement.getAttribute("data-uxs-pins"));
-      if (pinsOn !== "on") check.failures.push("Clicking #uxs-pins-btn did not toggle pins on");
+      if (pinsOn !== "on") check.failures.push("Clicking pins button did not toggle pins on");
     }
+  }
 
-    // Verify simulated viewport toggles (tablet 768px & mobile 390px) while Compare + Pins Drawer are both active
-    const desktopWidth = await page.evaluate(() => window.innerWidth);
-    for (const vp of ["tablet", "mobile"]) {
-      const vpBtn = await page.$(`[data-vp-btn="${vp}"], [data-viewport="${vp}"]`);
-      if (!vpBtn) {
-        if (desktopWidth >= 1120) check.failures.push(`Missing simulated viewport switcher button for '${vp}'`);
-        continue;
-      }
-      if (await vpBtn.isVisible().catch(() => false)) {
-        await vpBtn.click();
-        await page.waitForTimeout(80);
-        const snap = await page.evaluate(() => {
-          const canvas = document.querySelector(".uxs-canvas");
-          if (!canvas) return { canvasFound: false };
-          const cRect = canvas.getBoundingClientRect();
-          const spills = [];
-          const crushed = [];
-          const tableOverflows = [];
-          for (const el of canvas.querySelectorAll(".uxs-kpi, .uxs-card, .uxs-kpi-val, button, h1, h2, h3")) {
-            const r = el.getBoundingClientRect();
-            const cs = getComputedStyle(el);
-            if (r.width === 0 || r.height === 0 || cs.display === "none") continue;
-            if (r.right > cRect.right + 2) {
-              spills.push({
-                tag: el.tagName.toLowerCase(),
-                text: (el.innerText || "").trim().slice(0, 28),
-                right: Math.round(r.right),
-                canvasRight: Math.round(cRect.right),
-              });
+  // Verify simulated viewport toggles (tablet 768px & mobile 390px) while Compare + Pins Drawer are both active
+  const desktopWidth = await page.evaluate(() => window.innerWidth);
+  for (const vp of ["tablet", "mobile"]) {
+    const vpBtn = await page.$(`[data-vp-btn="${vp}"], [data-viewport="${vp}"]`);
+    if (!vpBtn) {
+      if (desktopWidth >= 1120) check.failures.push(`Missing simulated viewport switcher button for '${vp}'`);
+      continue;
+    }
+    if (await vpBtn.isVisible().catch(() => false)) {
+      await vpBtn.click();
+      await page.waitForTimeout(80);
+      const snap = await page.evaluate(() => {
+        const canvas = document.querySelector(".uxs-canvas");
+        if (!canvas) return { canvasFound: false };
+        const cRect = canvas.getBoundingClientRect();
+        const spills = [];
+        const crushed = [];
+        const tableOverflows = [];
+        for (const el of canvas.querySelectorAll(".uxs-kpi, .uxs-card, .uxs-kpi-val, button, h1, h2, h3")) {
+          const r = el.getBoundingClientRect();
+          const cs = getComputedStyle(el);
+          if (r.width === 0 || r.height === 0 || cs.display === "none") continue;
+          if (r.right > cRect.right + 2) {
+            spills.push({
+              tag: el.tagName.toLowerCase(),
+              text: (el.innerText || "").trim().slice(0, 28),
+              right: Math.round(r.right),
+              canvasRight: Math.round(cRect.right),
+            });
+          }
+          if (!["auto", "scroll"].includes(cs.overflowX) && el.scrollWidth > el.clientWidth + 2) {
+            let ignoreEmptyHitPseudo = false;
+            if (el.matches("button, a") && cs.overflowX === "visible") {
+              const isEmptyAbs = (ps) =>
+                ps && ps.position === "absolute" && (ps.content === '""' || ps.content === '" "' || ps.content === "''");
+              const isNonEmptyAbs = (ps) =>
+                ps && ps.position === "absolute" && ps.content && ps.content !== "none" && ps.content !== "normal" && !isEmptyAbs(ps);
+              const bPs = getComputedStyle(el, "::before");
+              const aPs = getComputedStyle(el, "::after");
+              if ((isEmptyAbs(bPs) || isEmptyAbs(aPs)) && !isNonEmptyAbs(bPs) && !isNonEmptyAbs(aPs)) {
+                const er = el.getBoundingClientRect();
+                const bL = parseFloat(cs.borderLeftWidth) || 0;
+                const bR = parseFloat(cs.borderRightWidth) || 0;
+                const rng = document.createRange();
+                rng.selectNodeContents(el);
+                const rr = rng.getBoundingClientRect();
+                if (rr.width === 0 || (rr.right <= er.right - bR + 1 && rr.left >= er.left + bL - 1)) {
+                  ignoreEmptyHitPseudo = true;
+                }
+              }
             }
-            if (!["auto", "scroll"].includes(cs.overflowX) && el.scrollWidth > el.clientWidth + 2) {
+            if (!ignoreEmptyHitPseudo) {
               crushed.push({
                 tag: el.tagName.toLowerCase(),
                 text: (el.innerText || "").trim().slice(0, 28),
@@ -1609,34 +1697,36 @@ async function auditShellContract(page) {
               });
             }
           }
-          for (const wrap of canvas.querySelectorAll(".uxs-table-wrap")) {
-            const tbl = wrap.querySelector("table");
-            if (!tbl) continue;
-            const wr = wrap.getBoundingClientRect();
-            if (wr.width > 0 && tbl.scrollWidth > wrap.clientWidth + 4) {
-              tableOverflows.push({ tableW: Math.round(tbl.scrollWidth), wrapW: Math.round(wrap.clientWidth) });
-            }
+        }
+        for (const wrap of canvas.querySelectorAll(".uxs-table-wrap")) {
+          const tbl = wrap.querySelector("table");
+          if (!tbl) continue;
+          const wr = wrap.getBoundingClientRect();
+          if (wr.width > 0 && tbl.scrollWidth > wrap.clientWidth + 4) {
+            tableOverflows.push({ tableW: Math.round(tbl.scrollWidth), wrapW: Math.round(wrap.clientWidth) });
           }
-          return {
-            canvasFound: true,
-            activeViewport: document.documentElement.getAttribute("data-uxs-viewport"),
-            spills: spills.slice(0, 6),
-            crushed: crushed.slice(0, 6),
-            tableOverflows: tableOverflows.slice(0, 6),
-          };
-        });
-        check.failures.push(...validateSimulatedViewportSnapshot(vp, snap));
-      }
+        }
+        return {
+          canvasFound: true,
+          activeViewport: document.documentElement.getAttribute("data-uxs-viewport"),
+          spills: spills.slice(0, 6),
+          crushed: crushed.slice(0, 6),
+          tableOverflows: tableOverflows.slice(0, 6),
+        };
+      });
+      check.failures.push(...validateSimulatedViewportSnapshot(vp, snap));
     }
-    const desktopBtn = await page.$('[data-vp-btn="desktop"], [data-viewport="desktop"]');
-    if (desktopBtn && (await desktopBtn.isVisible().catch(() => false))) await desktopBtn.click();
+  }
+  const desktopBtn = await page.$('[data-vp-btn="desktop"], [data-viewport="desktop"]');
+  if (desktopBtn && (await desktopBtn.isVisible().catch(() => false))) await desktopBtn.click();
+  if (pinsBtn) {
     if (initialPinsOn) {
       await pinsBtn.click();
       const pinsOff = await page.evaluate(() => document.documentElement.getAttribute("data-uxs-pins"));
-      if (pinsOff === "on") check.failures.push("Clicking #uxs-pins-btn did not toggle pins off");
+      if (pinsOff === "on") check.failures.push("Clicking pins button did not toggle pins off");
       await pinsBtn.click();
       const pinsRestored = await page.evaluate(() => document.documentElement.getAttribute("data-uxs-pins"));
-      if (pinsRestored !== "on") check.failures.push("Clicking #uxs-pins-btn did not restore pins on");
+      if (pinsRestored !== "on") check.failures.push("Clicking pins button did not restore pins on");
     } else {
       await pinsBtn.click();
     }
@@ -1657,6 +1747,15 @@ async function auditShellContract(page) {
         else document.documentElement.setAttribute("data-uxs-viewport", init.viewport);
       } else {
         document.documentElement.removeAttribute("data-uxs-viewport");
+      }
+      const curPins = document.documentElement.getAttribute("data-uxs-pins");
+      if (curPins !== init.pins) {
+        const pBtn = document.querySelector('#uxs-pins-btn, [data-uxs-group="pins"] button');
+        if (pBtn instanceof HTMLElement) pBtn.click();
+      }
+      if (document.documentElement.getAttribute("data-uxs-pins") !== init.pins) {
+        if (init.pins === null) document.documentElement.removeAttribute("data-uxs-pins");
+        else document.documentElement.setAttribute("data-uxs-pins", init.pins);
       }
     }, initialAttrs).catch(() => {});
     await restoreScrollPosition(page, savedScroll);
@@ -2118,14 +2217,22 @@ async function auditGeometryApcaInventoryAndSlop(page, isMobile) {
       ) {
         return false;
       }
-      if (cs.clipPath && cs.clipPath.includes("inset(50%)")) return false;
+      if (cs.clipPath && /inset\(\s*(?:50|100)%[^)]*\)/i.test(cs.clipPath)) return false;
+      if ((cs.position === "absolute" || cs.position === "fixed") && cs.clip && cs.clip !== "auto") {
+        const cm = /^rect\(\s*([-+]?[\d.]+)(?:px)?\s*,\s*([-+]?[\d.]+)(?:px)?\s*,\s*([-+]?[\d.]+)(?:px)?\s*,\s*([-+]?[\d.]+)(?:px)?\s*\)$/i.exec(
+          cs.clip.trim()
+        );
+        if (cm && (parseFloat(cm[2]) <= parseFloat(cm[4]) || parseFloat(cm[3]) <= parseFloat(cm[1]))) {
+          return false;
+        }
+      }
       if (r.width <= 1.5 && r.height <= 1.5 && cs.overflow === "hidden") return false;
       return true;
     };
 
     const vw = window.innerWidth;
     const docOverflow = Math.max(0, Math.round(document.documentElement.scrollWidth - vw));
-    const bodyOverflow = Math.max(0, Math.round(document.body.scrollWidth - vw));
+    const bodyOverflow = document.body ? Math.max(0, Math.round(document.body.scrollWidth - vw)) : 0;
 
     const childOverflows = [];
     const childOverflowEls = new Set();
@@ -2281,8 +2388,8 @@ async function auditGeometryApcaInventoryAndSlop(page, isMobile) {
           const hostSy = isSingleBox ? r.height / el.offsetHeight : fallbackHostScale.sy;
           const layoutW = isSingleBox ? el.offsetWidth : hostSx > 0 ? r.width / hostSx : r.width;
           const layoutH = isSingleBox ? el.offsetHeight : hostSy > 0 ? r.height / hostSy : r.height;
-          let effW = r.width;
-          let effH = r.height;
+          const candidates = [{ w: r.width, h: r.height }];
+          const hostIsCb = cs.position !== "static" || isFixedContainingBlock(cs);
           const toPseudoPx = (val, refPx) => {
             const s = String(val || "").trim().toLowerCase();
             if (!s || s === "auto" || s === "none") return 0;
@@ -2300,42 +2407,61 @@ async function auditGeometryApcaInventoryAndSlop(page, isMobile) {
             if (ps.position !== "absolute") continue;
             if (String(ps.display || "").toLowerCase() === "none" || String(ps.display || "").toLowerCase() === "contents" || String(ps.visibility || "").toLowerCase() === "hidden") continue;
             if (String(ps.pointerEvents || "").toLowerCase() === "none") continue;
+            const hasAnyInset = ps.top !== "auto" || ps.right !== "auto" || ps.bottom !== "auto" || ps.left !== "auto";
+            if (!hostIsCb && hasAnyInset) continue;
             const psScale = domTransformScale(ps);
             const hasExplicitW = isExplicitSize(ps.width);
             const hasExplicitH = isExplicitSize(ps.height);
-            const minW = toPseudoPx(ps.minWidth, layoutW);
-            const minH = toPseudoPx(ps.minHeight, layoutH);
-            const pw = Math.max(hasExplicitW ? toPseudoPx(ps.width, layoutW) : 0, minW);
-            const ph = Math.max(hasExplicitH ? toPseudoPx(ps.height, layoutH) : 0, minH);
+            const refW = hostIsCb ? layoutW : 0;
+            const refH = hostIsCb ? layoutH : 0;
+            const minW = toPseudoPx(ps.minWidth, refW);
+            const minH = toPseudoPx(ps.minHeight, refH);
+            const pw = Math.max(hasExplicitW ? toPseudoPx(ps.width, refW) : 0, minW);
+            const ph = Math.max(hasExplicitH ? toPseudoPx(ps.height, refH) : 0, minH);
             const isContentBox = String(ps.boxSizing || "content-box").toLowerCase() !== "border-box";
-            const padL = Math.max(0, toPseudoPx(ps.paddingLeft, layoutW));
-            const padR = Math.max(0, toPseudoPx(ps.paddingRight, layoutW));
-            const padT = Math.max(0, toPseudoPx(ps.paddingTop, layoutW));
-            const padB = Math.max(0, toPseudoPx(ps.paddingBottom, layoutW));
+            const padL = Math.max(0, toPseudoPx(ps.paddingLeft, refW));
+            const padR = Math.max(0, toPseudoPx(ps.paddingRight, refW));
+            const padT = Math.max(0, toPseudoPx(ps.paddingTop, refW));
+            const padB = Math.max(0, toPseudoPx(ps.paddingBottom, refW));
             const bW = (wProp, sProp) => {
               const bs = String(ps[sProp] || "").toLowerCase();
-              return bs === "none" || bs === "hidden" ? 0 : Math.max(0, toPseudoPx(ps[wProp], layoutW));
+              return bs === "none" || bs === "hidden" ? 0 : Math.max(0, toPseudoPx(ps[wProp], refW));
             };
             const extraW = padL + padR + bW("borderLeftWidth", "borderLeftStyle") + bW("borderRightWidth", "borderRightStyle");
             const extraH = padT + padB + bW("borderTopWidth", "borderTopStyle") + bW("borderBottomWidth", "borderBottomStyle");
             const hasHorizPair = ps.left !== "auto" && ps.right !== "auto";
             const hasVertPair = ps.top !== "auto" && ps.bottom !== "auto";
-            const insetW = !hasExplicitW && hasHorizPair ? Math.max(0, layoutW - toPseudoPx(ps.left, layoutW) - toPseudoPx(ps.right, layoutW)) : 0;
-            const insetH = !hasExplicitH && hasVertPair ? Math.max(0, layoutH - toPseudoPx(ps.top, layoutH) - toPseudoPx(ps.bottom, layoutH)) : 0;
+            const insetW = hostIsCb && !hasExplicitW && hasHorizPair ? Math.max(0, layoutW - toPseudoPx(ps.left, layoutW) - toPseudoPx(ps.right, layoutW)) : 0;
+            const insetH = hostIsCb && !hasExplicitH && hasVertPair ? Math.max(0, layoutH - toPseudoPx(ps.top, layoutH) - toPseudoPx(ps.bottom, layoutH)) : 0;
             const boxW = hasExplicitW ? pw + (isContentBox ? extraW : 0) : Math.max(insetW, minW + (isContentBox ? extraW : 0), extraW);
             const boxH = hasExplicitH ? ph + (isContentBox ? extraH : 0) : Math.max(insetH, minH + (isContentBox ? extraH : 0), extraH);
             let cEffW = boxW * psScale.sx * hostSx;
             let cEffH = boxH * psScale.sy * hostSy;
             const containClips = /\b(?:paint|strict|content)\b/.test(cs.contain || "");
-            if (cs.position !== "static" || isFixedContainingBlock(cs)) {
+            if (hostIsCb) {
               if (containClips || clipsChild(cs.overflowX)) cEffW = Math.min(cEffW, r.width);
               if (containClips || clipsChild(cs.overflowY)) cEffH = Math.min(cEffH, r.height);
             }
-            const allowsW = cEffH >= Math.min(r.height, 44);
-            const allowsH = cEffW >= Math.min(r.width, 44);
-            if (allowsW && cEffW > effW) effW = cEffW;
-            if (allowsH && cEffH > effH) effH = cEffH;
+            if (cEffH >= Math.min(r.height, 44) && cEffW >= Math.min(r.width, 44)) {
+              candidates.push({ w: cEffW, h: cEffH });
+            }
           }
+          let bestHit = candidates[0];
+          for (const cand of candidates.slice(1)) {
+            const candPass = cand.w >= 43.99 && cand.h >= 43.99;
+            const bestPass = bestHit.w >= 43.99 && bestHit.h >= 43.99;
+            if (candPass !== bestPass) {
+              if (candPass) bestHit = cand;
+              continue;
+            }
+            const candMin = Math.min(cand.w, cand.h);
+            const bestMin = Math.min(bestHit.w, bestHit.h);
+            if (candMin > bestMin + 0.01 || (Math.abs(candMin - bestMin) <= 0.01 && cand.w * cand.h > bestHit.w * bestHit.h)) {
+              bestHit = cand;
+            }
+          }
+          const effW = bestHit.w;
+          const effH = bestHit.h;
           if (effW < 43.99 || effH < 43.99) {
             smallTargets.push({
               tag: el.tagName.toLowerCase(),
@@ -2382,11 +2508,11 @@ async function auditGeometryApcaInventoryAndSlop(page, isMobile) {
               if (!selfHasBgImg && selfFillNode.bg && selfFillNode.bg.a > 0) {
                 selfBgCr = ratio(resolveIsolated(elChain, canvasBase), parentBg);
               } else if (selfHasBgImg && !/url\(/i.test(cs.backgroundImage || "")) {
-                const tokens = extractGradientColorTokens(cs.backgroundImage || "", false);
+                const tokens = extractGradientColorTokens(cs.backgroundImage || "", true);
                 const stops = [];
                 for (const tok of tokens) {
                   const c = parseColorToRgba(tok);
-                  if (c && c.a > 0) stops.push(c);
+                  if (c) stops.push(c);
                 }
                 if (stops.length > 0 && stops.every((c) => c.a >= 0.75)) {
                   selfBgCr = Math.min(
@@ -2481,45 +2607,131 @@ async function auditGeometryApcaInventoryAndSlop(page, isMobile) {
     }
 
     const getAccName = (el) => {
+      const collectAccText = (node, isRoot, visited = new Set(), excludeNode = null) => {
+        if (!node || (excludeNode && node === excludeNode)) return "";
+        if (node.nodeType === 3) return node.nodeValue || "";
+        if (node.nodeType !== 1) return "";
+        if (visited.has(node)) return "";
+        visited.add(node);
+        try {
+          const tag = String(node.tagName || "").toUpperCase();
+          if (tag === "SCRIPT" || tag === "STYLE" || tag === "TEMPLATE") return "";
+          if (!isRoot) {
+            if (node.getAttribute("aria-hidden") === "true") return "";
+            const ncs = getComputedStyle(node);
+            if (ncs.display === "none" || ncs.visibility === "hidden") return "";
+            const descLabelledBy = node.getAttribute("aria-labelledby");
+            if (descLabelledBy) {
+              const lbTxt = descLabelledBy
+                .split(/\s+/)
+                .map((id) => {
+                  const refEl = document.getElementById(id);
+                  if (!refEl) return "";
+                  const ra = (refEl.getAttribute("aria-label") || "").trim();
+                  return ra || collectAccText(refEl, true, visited);
+                })
+                .filter(Boolean)
+                .join(" ")
+                .trim();
+              if (lbTxt) return lbTxt;
+            }
+            const descAria = (node.getAttribute("aria-label") || "").trim();
+            if (descAria) return descAria;
+          }
+          if (tag === "IMG") {
+            const alt = (node.getAttribute("alt") || "").trim();
+            if (alt) return alt;
+          }
+          if (tag === "SVG") {
+            for (const ch of node.children || []) {
+              if (String(ch.tagName || "").toUpperCase() === "TITLE" && (ch.textContent || "").trim()) {
+                return ch.textContent.trim();
+              }
+            }
+          }
+          return Array.from(node.childNodes || [])
+            .map((ch) => collectAccText(ch, false, visited, excludeNode))
+            .filter(Boolean)
+            .join(" ");
+        } finally {
+          visited.delete(node);
+        }
+      };
       const aria = el.getAttribute("aria-label") || "";
       if (aria.trim()) return aria.trim();
       const labelledBy = el.getAttribute("aria-labelledby");
       if (labelledBy) {
+        const resolveRef = (refEl) => {
+          if (!refEl) return "";
+          const ra = (refEl.getAttribute("aria-label") || "").trim();
+          if (ra) return ra;
+          const rTag = String(refEl.tagName || "").toUpperCase();
+          if (rTag === "IMG") {
+            const alt = (refEl.getAttribute("alt") || "").trim();
+            if (alt) return alt;
+          }
+          if (rTag === "SVG") {
+            for (const ch of refEl.children || []) {
+              if (String(ch.tagName || "").toUpperCase() === "TITLE" && (ch.textContent || "").trim()) {
+                return ch.textContent.trim();
+              }
+            }
+          }
+          return collectAccText(refEl, true, new Set()).trim();
+        };
         const t = labelledBy
           .split(/\s+/)
-          .map((id) => document.getElementById(id)?.textContent || "")
+          .map((id) => resolveRef(document.getElementById(id)))
+          .filter(Boolean)
           .join(" ")
           .trim();
         if (t) return t;
       }
-      if (el.id) {
-        const lbl = document.querySelector(`label[for="${CSS.escape(el.id)}"]`);
-        if (lbl && (lbl.textContent || "").trim()) return lbl.textContent.trim();
+      const isLabelable =
+        (el.tagName === "INPUT" && (el.getAttribute("type") || "text").toLowerCase() !== "hidden") ||
+        ["SELECT", "TEXTAREA", "BUTTON", "METER", "OUTPUT", "PROGRESS"].includes(el.tagName);
+      if (isLabelable) {
+        if (el.id) {
+          const lbl = document.querySelector(`label[for="${CSS.escape(el.id)}"]`);
+          if (lbl) {
+            const lTxt = (lbl.getAttribute("aria-label") || "").trim() || collectAccText(lbl, true, new Set([el]), el).trim();
+            if (lTxt) return lTxt;
+          }
+        }
+        const wrapLabel = el.closest("label");
+        if (wrapLabel) {
+          const wTxt = (wrapLabel.getAttribute("aria-label") || "").trim() || collectAccText(wrapLabel, true, new Set([el]), el).trim();
+          if (wTxt) return wTxt;
+        }
       }
-      const wrapLabel = el.closest("label");
-      if (wrapLabel && (wrapLabel.textContent || "").trim()) return wrapLabel.textContent.trim();
       if (el.tagName === "SELECT") {
         return (el.getAttribute("title") || "").trim();
       }
       if (el.tagName === "INPUT" || el.tagName === "TEXTAREA") {
         const inpType = (el.getAttribute("type") || "text").toLowerCase();
         if (el.tagName === "INPUT" && inpType === "image") {
-          return (el.getAttribute("alt") || el.getAttribute("title") || el.value || "").trim();
+          return (el.getAttribute("alt") || "").trim() || (el.getAttribute("title") || "").trim() || (el.value || "").trim();
         }
         const isBtnInput = el.tagName === "INPUT" && ["button", "submit", "reset"].includes(inpType);
-        const text = (isBtnInput ? el.value : el.getAttribute("placeholder") || el.getAttribute("title") || "").trim();
+        const fallbackBtnText =
+          el.tagName === "INPUT" && !el.value && el.getAttribute("value") === null
+            ? inpType === "submit"
+              ? "Submit"
+              : inpType === "reset"
+              ? "Reset"
+              : ""
+            : "";
+        const text = isBtnInput ? (el.value || "").trim() || fallbackBtnText : (el.getAttribute("placeholder") || "").trim() || (el.getAttribute("title") || "").trim();
         return text;
       }
-      const text = (el.textContent || el.getAttribute("placeholder") || el.getAttribute("title") || "").trim();
+      const text = collectAccText(el, true, new Set()).trim() || (el.getAttribute("placeholder") || "").trim() || (el.getAttribute("title") || "").trim();
       if (text) return text;
-      const img = el.querySelector("img[alt]");
-      if (img && img.getAttribute("alt")?.trim()) return img.getAttribute("alt").trim();
       return "";
     };
 
     const focusableControls = [];
     for (const el of document.querySelectorAll(
-      'a[href], button:not([disabled]), input:not([disabled]):not([type="hidden"]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"]), [role="button"], [role="tab"]'
+      'a[href], button:not([disabled]), input:not([disabled]):not([type="hidden"]), select:not([disabled]), textarea:not([disabled]), details > summary, [tabindex]:not([tabindex="-1"]), [role="button"], [role="tab"]'
     )) {
       if (!visible(el) || el.hasAttribute("disabled") || el.closest("[inert], fieldset[disabled]")) continue;
       const tiAttr = el.getAttribute("tabindex");
@@ -2736,11 +2948,18 @@ async function auditGeometryApcaInventoryAndSlop(page, isMobile) {
         }
         if ((hitFixedOrSticky && window.scrollY > 4) || hitOpacity <= 0.2) continue;
         const tbg = parseColorToRgba(tcs.backgroundColor);
-        const isMediaCover =
-          hitEl.tagName === "IMG" ||
-          String(hitEl.tagName || "").toUpperCase() === "SVG" ||
-          Boolean(hitEl.closest("svg")) ||
-          hitEl.tagName === "CANVAS";
+        const hitTagUpper = String(hitEl.tagName || "").toUpperCase();
+        let isOpaqueSvgGraphic = false;
+        if (hitTagUpper !== "SVG" && hitEl.closest("svg")) {
+          const fillVal = String(tcs.fill || "").trim().toLowerCase();
+          if (fillVal && fillVal !== "none" && fillVal !== "transparent") {
+            const fCol = parseColorToRgba(fillVal);
+            const fOp = parseFloat(tcs.fillOpacity);
+            const effFillOp = (fCol ? fCol.a : 1) * (Number.isFinite(fOp) ? fOp : 1);
+            if (effFillOp >= 0.75) isOpaqueSvgGraphic = true;
+          }
+        }
+        const isMediaCover = hitEl.tagName === "IMG" || hitEl.tagName === "CANVAS" || isOpaqueSvgGraphic;
         const hasOpaqueBgImage = (bgImg) => {
           if (!bgImg || bgImg === "none") return false;
           if (/url\(/i.test(bgImg)) return true;
@@ -2773,19 +2992,33 @@ async function auditGeometryApcaInventoryAndSlop(page, isMobile) {
 
     const rtlElements = [];
     const htmlDir = document.documentElement.getAttribute("dir") || "";
+    const bodyDir = document.body?.getAttribute("dir") || "";
+    const rootCompDir = getComputedStyle(document.documentElement).direction || "";
+    const bodyCompDir = document.body ? getComputedStyle(document.body).direction || "" : "";
+    const effectiveDir = (
+      htmlDir ||
+      bodyDir ||
+      (bodyCompDir === "rtl" || rootCompDir === "rtl" ? "rtl" : "")
+    ).toLowerCase();
+    const hasEmbeddedRtl = Boolean(document.querySelector('[dir="rtl" i]'));
     const htmlLang = document.documentElement.getAttribute("lang") || "";
     for (const el of document.querySelectorAll("h1, h2, h3, p, a, button, label, span")) {
-      if (rtlElements.length >= 40 || !visible(el) || el.closest('[dir="ltr"]')) continue;
-      const txt = (el.textContent || "").trim();
-      if (!/[\u0590-\u08FF]/.test(txt)) continue;
+      if (rtlElements.length >= 40 || !visible(el)) continue;
+      const nearestDirEl = el.closest("[dir]");
+      const nearestDir = (nearestDirEl?.getAttribute("dir") || "").trim().toLowerCase();
       const cs = getComputedStyle(el);
+      if (nearestDir === "ltr" || (!nearestDir && cs.direction === "ltr" && !/^(?:ar|he|fa|ur|ps|ckb|yi|ug|sd|dv)(?:-|$)/i.test(htmlLang))) continue;
+      const txt = (el.textContent || "").trim();
+      if (!/[\u0590-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF]/.test(txt)) continue;
       const ls = cs.letterSpacing === "normal" ? 0 : parseFloat(cs.letterSpacing) || 0;
       rtlElements.push({
         tag: el.tagName.toLowerCase(),
         text: txt.slice(0, 24),
         letterSpacingPx: Number(ls.toFixed(2)),
         textAlign: cs.textAlign,
+        elDir: cs.direction,
         hasRtlScriptText: true,
+        hasCursiveRtlText: /[\u0610-\u061A\u0620-\u065F\u066E-\u06D3\u06D5-\u06EF\u06FA-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF]/.test(txt),
       });
     }
 
@@ -2805,7 +3038,7 @@ async function auditGeometryApcaInventoryAndSlop(page, isMobile) {
       hiddenAtRest,
       inlineHeightMismatches,
       coveredText,
-      rtlSnapshot: { htmlDir, htmlLang, elements: rtlElements },
+      rtlSnapshot: { htmlDir, bodyDir, effectiveDir, hasEmbeddedRtl, htmlLang, elements: rtlElements },
       focusableControls,
       buttonShapes,
       inputShapes,
@@ -2878,7 +3111,7 @@ async function captureComputedRootVars(page) {
         }
         const sel = rule.selectorText || "";
         const isRootSel = Boolean(
-          sel && /(:root|\bhtml\b|\[data-(?:uxs-)?theme|\[data-mode|\.(?:dark|light)\b)/i.test(sel)
+          sel && /(:root|(?<![a-zA-Z0-9_-])html(?![a-zA-Z0-9_-])|\[data-(?:uxs-)?theme|\[data-mode|\.(?:dark|light)(?![a-zA-Z0-9_-]))/i.test(sel)
         );
         const effectiveRoot = sel
           ? isRootSel || (inRoot && sel.split(",").some((part) => /^&(?:[:[.]|$)/.test(part.trim())))
@@ -3392,12 +3625,31 @@ async function runSelfTest() {
     assert.deepEqual(
       computeEffectiveHitArea(
         { width: 28, height: 28 },
-        { content: '""', position: "absolute", top: "-10px", bottom: "-10px", left: "-10px", right: "-10px" },
+        { content: '""', position: "absolute", width: "48px", height: "48px" },
         null,
         { position: "static", overflowX: "hidden", overflowY: "hidden" }
       ),
       { width: 48, height: 48 },
-      "position: static host overflow: hidden does not clip position: absolute ::before"
+      "position: static host overflow: hidden does not clip explicit position: absolute ::before"
+    );
+    assert.deepEqual(
+      computeEffectiveHitArea(
+        { width: 28, height: 28 },
+        { content: '""', position: "absolute", top: "-10px", bottom: "-10px", left: "-10px", right: "-10px" },
+        null,
+        { position: "static", overflowX: "hidden", overflowY: "hidden" }
+      ),
+      { width: 28, height: 28 },
+      "R36 A3-M7: position: static host must NOT claim ancestor-CB inset ::before expansion"
+    );
+    assert.deepEqual(
+      computeEffectiveHitArea(
+        { width: 20, height: 20 },
+        { content: '""', position: "absolute", width: "44px", height: "20px" },
+        { content: '""', position: "absolute", width: "20px", height: "44px" }
+      ),
+      { width: 44, height: 20 },
+      "R36 A3-M7: + shaped 44x20 ::before + 20x44 ::after must NOT merge into synthetic 44x44 box"
     );
 
     assert.throws(() => parseArgs(["page.html", "--unknown-flag"]), /Unknown option/i);
@@ -3882,6 +4134,123 @@ async function runSelfTest() {
       { width: 44, height: 44 },
       "R30 A3-L9: inset:-10px + 4px padding must remain 44x44 without double-counting"
     );
+
+    // Round 33 Pure-Node regression (A3-M5 Hebrew non-cursive vs Arabic cursive letter-spacing diagnostics)
+    const r33Heb = evaluateRtlDiagnostics({
+      htmlDir: "rtl",
+      htmlLang: "he",
+      elements: [{ tag: "p", text: "שלום עולם", letterSpacingPx: 2, textAlign: "right", hasRtlScriptText: true, hasCursiveRtlText: false }],
+    });
+    assert.equal(r33Heb.arabicLetterSpacingViolations, 0, "R33 A3-M5: Hebrew block script must not trigger cursive Arabic letter-spacing fail");
+    assert.equal(r33Heb.physicalLeftAlignViolations, 0);
+    assert.equal(r33Heb.passed, true);
+    const r34RtlLeft = evaluateRtlDiagnostics({
+      htmlDir: "rtl",
+      htmlLang: "ar",
+      elements: [{ tag: "p", text: "مرحبا بكم", letterSpacingPx: 0, textAlign: "left", hasRtlScriptText: true, hasCursiveRtlText: true }],
+    });
+    assert.equal(r34RtlLeft.physicalLeftAlignViolations, 1, "R34 A3-M6: physical text-align:left in RTL must flag");
+    assert.equal(r34RtlLeft.samples[0]?.issue, "physical-left-align");
+    assert.equal(r34RtlLeft.passed, false, "R34 A3-M6: physicalLeftAlignViolations > 0 must fail rtlChecks.passed");
+    const r33Ar = evaluateRtlDiagnostics({
+      htmlDir: "rtl",
+      htmlLang: "ar",
+      elements: [{ tag: "p", text: "مرحبا", letterSpacingPx: 2, textAlign: "right", hasRtlScriptText: true, hasCursiveRtlText: true }],
+    });
+    assert.equal(r33Ar.arabicLetterSpacingViolations, 1, "R33 A3-M5: Arabic cursive script must flag non-zero letter-spacing");
+    assert.equal(r33Ar.passed, false);
+
+    // Round 36 (R35-A3-H2 hideConsentOverlays guard + R35-A3-M8 bodyDir/embedded RTL & Arabic numerals):
+    assert.equal(
+      isConsentOverlayElement({ tagName: "BODY", className: "consent-granted", containsAppShell: true, matchedSpecific: false }),
+      false,
+      "R36 A3-H2: consent-granted on <body> must NEVER be hidden"
+    );
+    assert.equal(
+      isConsentOverlayElement({ tagName: "DIV", className: "cookie-consent-banner", position: "fixed", containsAppShell: false, matchedSpecific: false }),
+      true,
+      "R36 A3-H2: fixed cookie-consent-banner must be hidden"
+    );
+    const r36BodyRtl = evaluateRtlDiagnostics({
+      htmlDir: "",
+      bodyDir: "rtl",
+      htmlLang: "ar",
+      elements: [{ tag: "p", text: "مرحبا", letterSpacingPx: 0, textAlign: "left", elDir: "rtl", hasRtlScriptText: true, hasCursiveRtlText: true }],
+    });
+    assert.equal(r36BodyRtl.applicable, true, "R36 A3-M8: body[dir=rtl] must trigger RTL diagnostics");
+    assert.equal(r36BodyRtl.physicalLeftAlignViolations, 1);
+    assert.equal(r36BodyRtl.passed, false);
+    const r36DigitsRtl = evaluateRtlDiagnostics({
+      htmlDir: "rtl",
+      htmlLang: "ar",
+      elements: [{ tag: "span", text: "١٢٣٤", letterSpacingPx: 1, textAlign: "right", elDir: "rtl", hasRtlScriptText: true, hasCursiveRtlText: false }],
+    });
+    assert.equal(r36DigitsRtl.arabicLetterSpacingViolations, 0, "R36 A3-M8: Eastern Arabic numerals must pass letter-spacing");
+    assert.equal(r36DigitsRtl.passed, true);
+
+    // Round 38 (R37-A3-L2 computeEffectiveHitArea default/shorthand borderStyle):
+    assert.deepEqual(
+      computeEffectiveHitArea(
+        { width: 24, height: 24 },
+        { content: '""', position: "absolute", width: "24px", height: "24px", borderWidth: "10px", boxSizing: "content-box" },
+        null,
+        { position: "relative" }
+      ),
+      { width: 24, height: 24 },
+      "R38 A3-L2: omitted borderStyle defaults to CSS none and contributes 0 border width"
+    );
+    assert.deepEqual(
+      computeEffectiveHitArea(
+        { width: 24, height: 24 },
+        { content: '""', position: "absolute", width: "24px", height: "24px", borderWidth: "10px", borderStyle: "none solid", boxSizing: "content-box" },
+        null,
+        { position: "relative" }
+      ),
+      { width: 44, height: 24 },
+      "R38 A3-L2: multi-value borderStyle 'none solid' adds horizontal borders only"
+    );
+    assert.deepEqual(
+      computeEffectiveHitArea(
+        { width: 24, height: 24 },
+        { content: '""', position: "absolute", width: "24px", height: "24px", borderWidth: "10px", borderStyle: "solid", boxSizing: "content-box" },
+        null,
+        { position: "relative" }
+      ),
+      { width: 44, height: 44 },
+      "R38 A3-L2: explicit borderStyle 'solid' adds all four borders"
+    );
+
+    // Round 40 (R39-A3-M5 null/empty activeViewport fails, R39-A3-L3 null Storybook entry skipped, R39-A3-L5 % padding resolves against width):
+    assert.equal(
+      validateSimulatedViewportSnapshot("mobile", { canvasFound: true, activeViewport: null, spills: [], crushed: [], tableOverflows: [] }).length,
+      1,
+      "R40 A3-M5: null activeViewport must fail validateSimulatedViewportSnapshot"
+    );
+    assert.equal(
+      validateSimulatedViewportSnapshot("mobile", { canvasFound: true, activeViewport: "", spills: [], crushed: [], tableOverflows: [] }).length,
+      1,
+      "R40 A3-M5: empty activeViewport must fail validateSimulatedViewportSnapshot"
+    );
+    try {
+      globalThis.fetch = async () => ({
+        ok: true,
+        json: async () => ({ entries: { broken: null, "btn--ok": { id: "btn--ok", type: "story" } } }),
+      });
+      const safeSbUrls = await resolveStorybookUrls("https://sb.example.com/null-entry-index.json", 4);
+      assert.deepEqual(safeSbUrls, ["https://sb.example.com/iframe.html?id=btn--ok&viewMode=story"]);
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+    assert.deepEqual(
+      computeEffectiveHitArea(
+        { width: 48, height: 10 },
+        { content: '""', position: "absolute", width: "48px", height: "20px", paddingTop: "25%", paddingBottom: "25%", boxSizing: "content-box" },
+        null,
+        { position: "relative" }
+      ),
+      { width: 48, height: 44 },
+      "R40 A3-L5: percentage vertical padding on pseudo-element must resolve against containing block width (25% * 48 * 2 + 20 = 44)"
+    );
   } finally {
     rmSync(scratch, { recursive: true, force: true });
   }
@@ -3892,11 +4261,42 @@ async function runSelfTest() {
 
 async function hideConsentOverlays(page) {
   return page.evaluate((selectors) => {
+    const SPECIFIC = new Set([
+      "#onetrust-banner-sdk",
+      ".onetrust-pc-dark-filter",
+      "#CybotCookiebotDialog",
+      ".cc-window",
+      "[data-consent-banner]",
+    ]);
+    const BROAD_TOKENS_RE = /(?:banner|modal|dialog|popup|overlay|drawer|notice|toast|bar|wall|backdrop|filter|window|sdk)/i;
+    const appShell = document.querySelector("main, #app, #root, #__next");
+    const matchedSpecificSet = new Set();
+    for (const spSel of SPECIFIC) {
+      for (const node of document.querySelectorAll(spSel)) matchedSpecificSet.add(node);
+    }
     let hidden = 0;
+    const seen = new Set();
     for (const sel of selectors) {
       for (const el of document.querySelectorAll(sel)) {
+        if (seen.has(el)) continue;
+        seen.add(el);
+        const tag = String(el.tagName || "").toUpperCase();
+        if (tag === "HTML" || tag === "BODY") continue;
+        if (appShell && (el === appShell || el.contains(appShell))) continue;
         const cs = getComputedStyle(el);
         if (cs.display === "none" || cs.visibility === "hidden") continue;
+        const pos = String(cs.position || "").toLowerCase();
+        const role = String(el.getAttribute("role") || "").toLowerCase();
+        const isDialog = role === "dialog" || role === "alertdialog" || tag === "DIALOG";
+        if (["MAIN", "HEADER", "NAV", "ARTICLE", "SECTION"].includes(tag) && !isDialog && pos !== "fixed" && pos !== "sticky") {
+          continue;
+        }
+        const matchedSpecific = matchedSpecificSet.has(el);
+        if (!matchedSpecific) {
+          const isPos = pos === "fixed" || pos === "sticky" || pos === "absolute";
+          const attrStr = `${el.id || ""} ${typeof el.className === "string" ? el.className : ""} ${el.getAttribute("aria-label") || ""} ${el.getAttribute("data-testid") || ""}`;
+          if (!isPos && !isDialog && !BROAD_TOKENS_RE.test(attrStr)) continue;
+        }
         if (!Object.prototype.hasOwnProperty.call(el.dataset, "dsafOrigSaved")) {
           el.dataset.dsafOrigSaved = "1";
           el.dataset.dsafOrigVis = el.style.getPropertyValue("visibility");
@@ -4147,13 +4547,35 @@ async function main() {
         : await browser.newPage({ viewport: { width: 1440, height: 900 } });
       const onPageError = (err) => pageErrors.push(err.message || String(err));
       page.on("pageerror", onPageError);
+      const findVisibleEl = async (sel) => {
+        for (const h of await page.$$(sel)) {
+          if (await h.isVisible().catch(() => false)) return h;
+        }
+        return null;
+      };
+      let cdpThemeToggleClicked = false;
+      let cdpShellThemeClicked = false;
+      let cdpDomChangedOnClick = false;
+      let cdpToggleClicks = 0;
       const cdpInitialDomTheme = isCdpAttached
         ? await page
             .evaluate(() => {
               const root = document.documentElement;
               const body = document.body;
+              const appShell = document.querySelector("#app, #root, #__next") || document.querySelector("main");
               const meta = document.querySelector('meta[name="color-scheme"]');
+              const getDataAttrs = (el) => {
+                if (!el) return null;
+                const entries = [];
+                for (const a of el.attributes) {
+                  if (a.name.startsWith("data-")) entries.push([a.name, a.value]);
+                }
+                entries.sort((a, b) => a[0].localeCompare(b[0]));
+                return Object.fromEntries(entries);
+              };
               return {
+                rootClassName: root.getAttribute("class"),
+                rootDataAttrs: getDataAttrs(root),
                 rootDataTheme: root.getAttribute("data-theme"),
                 rootDataUxsTheme: root.getAttribute("data-uxs-theme"),
                 rootDataMode: root.getAttribute("data-mode"),
@@ -4161,18 +4583,31 @@ async function main() {
                 rootHasLight: root.classList.contains("light"),
                 rootStyleColorScheme: root.style.getPropertyValue("color-scheme"),
                 rootStyleColorSchemePrio: root.style.getPropertyPriority("color-scheme"),
+                bodyClassName: body ? body.getAttribute("class") : null,
+                bodyDataAttrs: getDataAttrs(body),
                 bodyDataTheme: body ? body.getAttribute("data-theme") : null,
+                bodyDataUxsTheme: body ? body.getAttribute("data-uxs-theme") : null,
                 bodyDataMode: body ? body.getAttribute("data-mode") : null,
                 bodyHasDark: body ? body.classList.contains("dark") : false,
                 bodyHasLight: body ? body.classList.contains("light") : false,
                 bodyStyleColorScheme: body ? body.style.getPropertyValue("color-scheme") : "",
                 bodyStyleColorSchemePrio: body ? body.style.getPropertyPriority("color-scheme") : "",
+                appClassName: appShell ? appShell.getAttribute("class") : null,
+                appDataAttrs: getDataAttrs(appShell),
+                hasAppShell: Boolean(appShell),
                 hasMeta: Boolean(meta),
                 metaContent: meta ? meta.getAttribute("content") : null,
+                shellThemeBtnPressed: Array.from(
+                  document.querySelectorAll('[data-ux-shell-toolbar] [data-theme], button[data-theme]')
+                ).map((b) => ({
+                  theme: b.getAttribute("data-theme"),
+                  ariaPressed: b.getAttribute("aria-pressed"),
+                })),
               };
             })
             .catch(() => null)
         : null;
+      const cdpInitialScroll = isCdpAttached ? await captureScrollPosition(page) : null;
       try {
         if (!isCdpAttached) {
           const targetUrl = toUrl(target);
@@ -4298,7 +4733,23 @@ async function main() {
             page.evaluate(() => {
               const r = document.documentElement;
               const b = document.body;
+              const aShell = document.querySelector("#app, #root, #__next") || document.querySelector("main");
+              const getDataAttrs = (el) => {
+                if (!el) return null;
+                const entries = [];
+                for (const a of el.attributes) {
+                  if (a.name.startsWith("data-")) entries.push([a.name, a.value]);
+                }
+                entries.sort((a, b2) => a[0].localeCompare(b2[0]));
+                return Object.fromEntries(entries);
+              };
               return {
+                rClassName: r.getAttribute("class"),
+                bClassName: b ? b.getAttribute("class") : null,
+                rDataAttrs: getDataAttrs(r),
+                bDataAttrs: getDataAttrs(b),
+                aClassName: aShell ? aShell.getAttribute("class") : null,
+                aDataAttrs: getDataAttrs(aShell),
                 rDark: r.classList.contains("dark"),
                 rLight: r.classList.contains("light"),
                 bDark: Boolean(b?.classList.contains("dark")),
@@ -4405,8 +4856,8 @@ async function main() {
                           return;
                         }
                         if (
-                          /(?:^|[\s,>+~(])body\.dark\b/i.test(sel) ||
-                          (/\bbody\b/i.test(parentSel) && /(?:^|[\s,>+~(])&\.dark\b/i.test(sel))
+                          /(?:^|[\s,>+~(])body\.dark(?![a-zA-Z0-9_-])/i.test(sel) ||
+                          (/(?<![a-zA-Z0-9_-])body(?![a-zA-Z0-9_-])/i.test(parentSel) && /(?:^|[\s,>+~(])&\.dark(?![a-zA-Z0-9_-])/i.test(sel))
                         ) {
                           if (body) {
                             body.classList.toggle("dark", th === "dark");
@@ -4414,7 +4865,7 @@ async function main() {
                             return;
                           }
                         }
-                        if (/(?:^|[\s,>+~(])(?:html|:root|&)?\.dark\b/i.test(sel)) {
+                        if (/(?:^|[\s,>+~(])(?:html|:root|&)?\.dark(?![a-zA-Z0-9_-])/i.test(sel)) {
                           root.classList.toggle("dark", th === "dark");
                           applied = true;
                           return;
@@ -4444,7 +4895,7 @@ async function main() {
               const afterDom = await snapDomThemeAttrs().catch(() => null);
               const inferred = inferObservedThemeMech(beforeDom, afterDom);
               if (inferred) observedThemeMech = inferred;
-              return true;
+              return { ok: true, domChanged: JSON.stringify(beforeDom) !== JSON.stringify(afterDom) };
             };
             try {
               return await clickOnce();
@@ -4454,17 +4905,11 @@ async function main() {
                 try {
                   return await clickOnce();
                 } catch {
-                  return false;
+                  return { ok: false, domChanged: false };
                 }
               }
-              return false;
+              return { ok: false, domChanged: false };
             }
-          };
-          const findVisibleEl = async (sel) => {
-            for (const h of await page.$$(sel)) {
-              if (await h.isVisible().catch(() => false)) return h;
-            }
-            return null;
           };
           if (args.themeToggle) {
             const curTheme = await page.evaluate(() => {
@@ -4581,14 +5026,24 @@ async function main() {
             });
             if (curTheme !== m.theme) {
               const tog = await findVisibleEl(args.themeToggle);
-              const clicked = tog ? await safeThemeClick(tog) : false;
-              if (!clicked) await applyDomThemeFallback(m.theme);
+              const res = tog ? await safeThemeClick(tog) : { ok: false, domChanged: false };
+              if (res.ok && isCdpAttached) {
+                cdpThemeToggleClicked = true;
+                cdpToggleClicks++;
+                if (res.domChanged) cdpDomChangedOnClick = true;
+              }
+              if (!res.ok) await applyDomThemeFallback(m.theme);
             }
           } else {
             const themeBtn = await findVisibleEl(`[data-ux-shell-toolbar] [data-theme="${m.theme}"], button[data-theme="${m.theme}"]`);
             if (themeBtn) {
-              const clicked = await safeThemeClick(themeBtn);
-              if (!clicked) await applyDomThemeFallback(m.theme);
+              const res = await safeThemeClick(themeBtn);
+              if (res.ok && isCdpAttached) {
+                cdpShellThemeClicked = true;
+                cdpToggleClicks++;
+                if (res.domChanged) cdpDomChangedOnClick = true;
+              }
+              if (!res.ok) await applyDomThemeFallback(m.theme);
             } else if (args.live || isCdpAttached) {
               await applyDomThemeFallback(m.theme);
             }
@@ -4647,20 +5102,39 @@ async function main() {
           await page.waitForTimeout(100);
           fileRes.reducedMotion = await page.evaluate(() => {
             const matches = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-            const parseMaxSec = (val) =>
-              Math.max(
-                0,
-                ...(val || "0s").split(",").map((raw) => {
+            const parseDurList = (val) =>
+              String(val || "0s")
+                .split(",")
+                .map((raw) => {
                   const s = raw.trim().toLowerCase();
                   const n = parseFloat(s) || 0;
                   return s.endsWith("ms") ? n / 1000 : n;
-                })
-              );
+                });
+            const splitList = (val, fallback) => {
+              const parts = String(val || "")
+                .split(",")
+                .map((x) => x.trim().toLowerCase())
+                .filter(Boolean);
+              return parts.length > 0 ? parts : [fallback];
+            };
             const unguarded = [];
             for (const el of document.querySelectorAll("*")) {
               const cs = getComputedStyle(el);
-              const dur = Math.max(parseMaxSec(cs.transitionDuration), parseMaxSec(cs.animationDuration));
-              if (dur > 0.25 && cs.display !== "none") {
+              if (cs.display === "none") continue;
+              const transDurs = parseDurList(cs.transitionDuration);
+              const transProps = splitList(cs.transitionProperty, "all");
+              const maxTrans = Math.max(0, ...transDurs.map((d, idx) => (transProps[idx % transProps.length] === "none" ? 0 : d)));
+              const animDurs = parseDurList(cs.animationDuration);
+              const animNames = splitList(cs.animationName, "none");
+              const animStates = splitList(cs.animationPlayState, "running");
+              const maxAnim = Math.max(
+                0,
+                ...animDurs.map((d, idx) =>
+                  animNames[idx % animNames.length] === "none" || animStates[idx % animStates.length] === "paused" ? 0 : d
+                )
+              );
+              const dur = Math.max(maxTrans, maxAnim);
+              if (dur > 0.25) {
                 unguarded.push({ tag: el.tagName.toLowerCase(), dur });
               }
             }
@@ -4677,6 +5151,83 @@ async function main() {
       } finally {
         page.off("pageerror", onPageError);
         if (isCdpAttached) {
+          const doesDomMatchInitialTheme = (snap) =>
+            page.evaluate((s) => {
+              const r = document.documentElement;
+              const b = document.body;
+              const aShell = document.querySelector("#app, #root, #__next") || document.querySelector("main");
+              const normCls = (v) => String(v || "").trim().split(/\s+/).filter(Boolean).sort().join(" ");
+              const dataEq = (el, expected) => {
+                if (!el && !expected) return true;
+                if (!el || !expected) return false;
+                const cur = [];
+                for (const a of el.attributes) {
+                  if (a.name.startsWith("data-")) cur.push([a.name, a.value]);
+                }
+                cur.sort((x, y) => x[0].localeCompare(y[0]));
+                return JSON.stringify(Object.fromEntries(cur)) === JSON.stringify(expected);
+              };
+              return (
+                normCls(r.getAttribute("class")) === normCls(s.rootClassName) &&
+                dataEq(r, s.rootDataAttrs) &&
+                r.getAttribute("data-theme") === s.rootDataTheme &&
+                r.getAttribute("data-uxs-theme") === s.rootDataUxsTheme &&
+                r.getAttribute("data-mode") === s.rootDataMode &&
+                r.classList.contains("dark") === s.rootHasDark &&
+                r.classList.contains("light") === s.rootHasLight &&
+                (!aShell ||
+                  (normCls(aShell.getAttribute("class")) === normCls(s.appClassName) && dataEq(aShell, s.appDataAttrs))) &&
+                (!b ||
+                  (normCls(b.getAttribute("class")) === normCls(s.bodyClassName) &&
+                    dataEq(b, s.bodyDataAttrs) &&
+                    b.getAttribute("data-theme") === s.bodyDataTheme &&
+                    b.getAttribute("data-uxs-theme") === s.bodyDataUxsTheme &&
+                    b.getAttribute("data-mode") === s.bodyDataMode &&
+                    b.classList.contains("dark") === s.bodyHasDark &&
+                    b.classList.contains("light") === s.bodyHasLight))
+              );
+            }, snap);
+          if (cdpThemeToggleClicked && args.themeToggle) {
+            if (cdpDomChangedOnClick) {
+              const alreadyRestored = cdpInitialDomTheme ? await doesDomMatchInitialTheme(cdpInitialDomTheme).catch(() => false) : false;
+              if (!alreadyRestored) {
+                for (let attempt = 0; attempt < 2; attempt++) {
+                  if (cdpInitialDomTheme && (await doesDomMatchInitialTheme(cdpInitialDomTheme).catch(() => false))) break;
+                  const tog = await findVisibleEl(args.themeToggle);
+                  if (!tog) break;
+                  await tog.click({ timeout: 4000 }).catch(() => {});
+                  await page.waitForTimeout(50);
+                }
+              }
+            } else if (cdpToggleClicks % 2 === 1) {
+              const tog = await findVisibleEl(args.themeToggle);
+              if (tog) {
+                await tog.click({ timeout: 4000 }).catch(() => {});
+                await page.waitForTimeout(50);
+              }
+            }
+          } else if (cdpShellThemeClicked && cdpInitialDomTheme) {
+            const initPressedBtn = (cdpInitialDomTheme.shellThemeBtnPressed || []).find(
+              (x) => x.ariaPressed === "true" && (x.theme === "light" || x.theme === "dark")
+            );
+            const initIsDark =
+              cdpInitialDomTheme.rootHasDark ||
+              cdpInitialDomTheme.bodyHasDark ||
+              cdpInitialDomTheme.rootDataTheme === "dark" ||
+              cdpInitialDomTheme.rootDataUxsTheme === "dark" ||
+              cdpInitialDomTheme.rootDataMode === "dark" ||
+              cdpInitialDomTheme.bodyDataTheme === "dark" ||
+              cdpInitialDomTheme.bodyDataUxsTheme === "dark" ||
+              cdpInitialDomTheme.bodyDataMode === "dark";
+            const initTh = initPressedBtn ? initPressedBtn.theme : initIsDark ? "dark" : "light";
+            const restoreBtn = await findVisibleEl(`[data-ux-shell-toolbar] [data-theme="${initTh}"], button[data-theme="${initTh}"]`);
+            if (restoreBtn) {
+              await restoreBtn.click({ timeout: 4000 }).catch(() => {});
+              await page.waitForTimeout(50);
+            }
+          }
+          await page.emulateMedia({ colorScheme: null, reducedMotion: null }).catch(() => {});
+          await page.waitForTimeout(40).catch(() => {});
           if (cdpInitialDomTheme) {
             await page
               .evaluate((snap) => {
@@ -4684,28 +5235,57 @@ async function main() {
                 const body = document.body;
                 const setOrRemove = (el, attr, val) => {
                   if (!el) return;
-                  if (val === null) el.removeAttribute(attr);
+                  if (val === null || val === undefined) el.removeAttribute(attr);
                   else el.setAttribute(attr, val);
                 };
+                const restoreDataAttrs = (el, savedData) => {
+                  if (!el || !savedData) return;
+                  for (const a of [...el.attributes]) {
+                    if (a.name.startsWith("data-") && !Object.prototype.hasOwnProperty.call(savedData, a.name)) {
+                      el.removeAttribute(a.name);
+                    }
+                  }
+                  for (const [k, v] of Object.entries(savedData)) el.setAttribute(k, v);
+                };
+                const syncBoolClass = (el, cls, want) => {
+                  if (!el) return;
+                  if (want) {
+                    if (!el.classList.contains(cls)) el.classList.add(cls);
+                  } else if (el.classList.contains(cls)) {
+                    el.classList.remove(cls);
+                  }
+                };
+                setOrRemove(root, "class", snap.rootClassName);
+                restoreDataAttrs(root, snap.rootDataAttrs);
                 setOrRemove(root, "data-theme", snap.rootDataTheme);
                 setOrRemove(root, "data-uxs-theme", snap.rootDataUxsTheme);
                 setOrRemove(root, "data-mode", snap.rootDataMode);
-                root.classList.toggle("dark", snap.rootHasDark);
-                root.classList.toggle("light", snap.rootHasLight);
+                syncBoolClass(root, "dark", snap.rootHasDark);
+                syncBoolClass(root, "light", snap.rootHasLight);
                 if (snap.rootStyleColorScheme) {
                   root.style.setProperty("color-scheme", snap.rootStyleColorScheme, snap.rootStyleColorSchemePrio || "");
                 } else {
                   root.style.removeProperty("color-scheme");
                 }
                 if (body) {
+                  setOrRemove(body, "class", snap.bodyClassName);
+                  restoreDataAttrs(body, snap.bodyDataAttrs);
                   setOrRemove(body, "data-theme", snap.bodyDataTheme);
+                  setOrRemove(body, "data-uxs-theme", snap.bodyDataUxsTheme);
                   setOrRemove(body, "data-mode", snap.bodyDataMode);
-                  body.classList.toggle("dark", snap.bodyHasDark);
-                  body.classList.toggle("light", snap.bodyHasLight);
+                  syncBoolClass(body, "dark", snap.bodyHasDark);
+                  syncBoolClass(body, "light", snap.bodyHasLight);
                   if (snap.bodyStyleColorScheme) {
                     body.style.setProperty("color-scheme", snap.bodyStyleColorScheme, snap.bodyStyleColorSchemePrio || "");
                   } else {
                     body.style.removeProperty("color-scheme");
+                  }
+                }
+                if (snap.hasAppShell) {
+                  const aShell = document.querySelector("#app, #root, #__next") || document.querySelector("main");
+                  if (aShell) {
+                    setOrRemove(aShell, "class", snap.appClassName);
+                    restoreDataAttrs(aShell, snap.appDataAttrs);
                   }
                 }
                 const meta = document.querySelector('meta[name="color-scheme"]');
@@ -4713,11 +5293,19 @@ async function main() {
                   if (snap.metaContent === null) meta.removeAttribute("content");
                   else meta.setAttribute("content", snap.metaContent);
                 }
+                if (Array.isArray(snap.shellThemeBtnPressed)) {
+                  const themeBtns = document.querySelectorAll('[data-ux-shell-toolbar] [data-theme], button[data-theme]');
+                  themeBtns.forEach((btn, idx) => {
+                    const saved = snap.shellThemeBtnPressed[idx];
+                    if (!saved || saved.theme !== btn.getAttribute("data-theme")) return;
+                    setOrRemove(btn, "aria-pressed", saved.ariaPressed);
+                  });
+                }
               }, cdpInitialDomTheme)
               .catch(() => {});
           }
           await restoreConsentOverlays(page).catch(() => {});
-          await page.emulateMedia({ colorScheme: null, reducedMotion: null }).catch(() => {});
+          if (cdpInitialScroll) await restoreScrollPosition(page, cdpInitialScroll);
         } else {
           await page.close().catch(() => {});
         }
@@ -4758,7 +5346,7 @@ async function main() {
       }
       for (const c of f.checks) {
         console.log(
-          `  [${c.state}] ${c.passed ? "PASS" : "FAIL"} | overflow=${c.docOverflow}/${c.bodyOverflow} child=${c.childOverflows.length} small44=${c.smallTargets.length} clip=${c.clippedTargets.length}${c.clippedTargets.length ? `(${c.clippedTargets.map((t) => t.text).join(",")})` : ""} hdrBloat=${c.headerBloat ? c.headerBloat.height + "px" : 0} badges=${c.crushedBadges?.length || 0} clipTbl=${c.clippedTables?.length || 0} borders=${c.borderFails.length} hover=${c.hoverFails.length} covered=${c.coveredText.length} leaks=${c.focusLeaks.length} tab=${c.keyboardMap.tabbableCount}(+${c.keyboardMap.positiveTabindexCount}/un=${c.keyboardMap.unnamedInteractiveCount}) slop=${c.badTransitions.length + c.hiddenAtRest.length + c.inlineHeightMismatches.length} axe=${c.axeViolations.length}${c.axeViolations.length ? `(${c.axeViolations.map((v) => v.id).join(",")})` : ""} rtl=${c.rtlChecks?.passed === false ? `FAIL(${[c.rtlChecks.missingDirRtl ? "missing dir=rtl" : "", c.rtlChecks.arabicLetterSpacingViolations ? `letterSpacing=${c.rtlChecks.arabicLetterSpacingViolations}` : ""].filter(Boolean).join(",")})` : "ok"} | apcaBodyMin=${c.apca.minBodyLc ?? "n/a"} btnSigs=${c.componentInventory.buttons.distinctSignatures}`
+          `  [${c.state}] ${c.passed ? "PASS" : "FAIL"} | overflow=${c.docOverflow}/${c.bodyOverflow} child=${c.childOverflows.length} small44=${c.smallTargets.length} clip=${c.clippedTargets.length}${c.clippedTargets.length ? `(${c.clippedTargets.map((t) => t.text).join(",")})` : ""} hdrBloat=${c.headerBloat ? c.headerBloat.height + "px" : 0} badges=${c.crushedBadges?.length || 0} clipTbl=${c.clippedTables?.length || 0} borders=${c.borderFails.length} hover=${c.hoverFails.length} covered=${c.coveredText.length} leaks=${c.focusLeaks.length} tab=${c.keyboardMap.tabbableCount}(+${c.keyboardMap.positiveTabindexCount}/un=${c.keyboardMap.unnamedInteractiveCount}) slop=${c.badTransitions.length + c.hiddenAtRest.length + c.inlineHeightMismatches.length} axe=${c.axeViolations.length}${c.axeViolations.length ? `(${c.axeViolations.map((v) => v.id).join(",")})` : ""} rtl=${c.rtlChecks?.passed === false ? `FAIL(${[c.rtlChecks.missingDirRtl ? "missing dir=rtl" : "", c.rtlChecks.arabicLetterSpacingViolations ? `letterSpacing=${c.rtlChecks.arabicLetterSpacingViolations}` : "", c.rtlChecks.physicalLeftAlignViolations ? `leftAlign=${c.rtlChecks.physicalLeftAlignViolations}` : ""].filter(Boolean).join(",")})` : "ok"} | apcaBodyMin=${c.apca.minBodyLc ?? "n/a"} btnSigs=${c.componentInventory.buttons.distinctSignatures}`
         );
       }
     }

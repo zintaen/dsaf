@@ -1,6 +1,6 @@
 # Unified Deterministic Scoring Model & No-Silent-Regression Policy (`v0.9.3`)
 
-Load this reference during criterion scoring and baseline comparison in every mode (`Mode S`, `Mode C`, `Mode P`). Pair with `../scripts/compute-scorecard.mjs` and `../scripts/audit-diff.mjs` to guarantee zero arithmetic drift, strict evidence linkage, and mechanical regression blocking.
+Load this reference during criterion scoring and baseline comparison in every mode (`Mode S`, `Mode C`, `Mode P`). Pair with `./scripts/compute-scorecard.mjs` and `./scripts/audit-diff.mjs` to guarantee zero arithmetic drift, strict evidence linkage, and mechanical regression blocking.
 
 ---
 
@@ -109,7 +109,7 @@ Static, edit-time hook (`dsaf hook`), and CI SARIF (`--sarif` / `--github`) chec
 | **P6 Design System & Resilience** | **V10** | 3-Tier System & Component Consistency | Primitive -> Semantic -> Component tokens, 4-level button hierarchy, unified icon family & stroke weight. |
 | | **V11** | Extreme Content & Viewport Resilience | Zero overflow/clipping under accented stress copy, 200% zoom, 375px mobile; `overflow-x: clip`, no `100vw`, `minmax(0, 1fr)`. |
 
-**APCA Reference (`audit-tokens.mjs` / `audit-runtime.mjs` vs Craft Targets):** Automated scripts enforce `|Lc| >= 60` for body copy (12–16px), `|Lc| >= 45` for large headings (>= 24px or 18.66px bold), and WCAG 1.4.11 `>= 3.00:1` for UI borders; `|Lc| >= 75` for 14–16px body prose and `APCA >= Lc 30` for non-text icons/borders are manual editorial/visual craft targets.
+**APCA Reference (`audit-tokens.mjs` / `audit-runtime.mjs` vs Craft Targets):** Automated scripts enforce WCAG 2.2 AA (`>= 4.5:1` text in DTCG/axe and `>= 3.00:1` UI borders) and report APCA warnings (`apcaWarnings` / `apca.lowWarnings`) when `|Lc| < 60` for body copy (12–16px) or `|Lc| < 45` for large headings (>= 24px or 18.66px bold); `|Lc| >= 75` for 14–16px body prose and `APCA >= Lc 30` for non-text icons/borders are manual editorial/visual craft targets.
 
 **Domain Weight Presets:** `dev_b2b` (20/20/18/20/10/12) · `consumer_brand` (20/15/18/17/20/10) · `content_docs` (18/27/18/15/10/12) · `balanced` (18/18/18/18/14/14).
 

@@ -110,7 +110,7 @@
       panel.addEventListener("beforematch", () => {
         const ownerId = panel.getAttribute("aria-labelledby");
         const ownerTab = tabs.find((t) => t.id === ownerId);
-        if (ownerTab) activateTab(ownerTab);
+        if (ownerTab) activateTab(ownerTab, { scroll: false });
       });
     }
   }

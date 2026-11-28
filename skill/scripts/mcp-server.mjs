@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * DSAF v0.9.3 — Zero-Dependency Stdio MCP Server & Client Config Installer (`dsaf mcp`).
- * Exposes 8 read-only audit tools over JSON-RPC 2.0 stdio (Content-Length & NDJSON),
+ * Exposes 8 audit & dry-run preview tools (read-only unless `dsaf_audit` receives optional `outDir`) over JSON-RPC 2.0 stdio (Content-Length & NDJSON),
  * plus `dsaf mcp install` to wire Claude, Cursor, Codex, or Antigravity MCP JSON.
  */
 
@@ -286,7 +286,14 @@ function executeTool(name, args = {}) {
       }
       const figmaPath = optString(args, "figma");
       const runtimePath = optString(args, "runtime");
-      const codeConnectDir = optString(args, "codeConnect") || null;
+      const rawCodeConnect = optString(args, "codeConnect") || null;
+      let codeConnectDir = null;
+      if (rawCodeConnect) {
+        codeConnectDir = resolve(rawCodeConnect);
+        if (!existsSync(codeConnectDir) || !statSync(codeConnectDir).isDirectory()) {
+          throw new Error(`Parameter 'codeConnect' must be an existing directory: ${rawCodeConnect}`);
+        }
+      }
       const prefix = optString(args, "prefix") || null;
       if (!figmaPath && !runtimePath) {
         throw new Error("Either 'figma' (3-vertex) or 'runtime' (2-vertex) must be supplied.");
@@ -478,13 +485,13 @@ function isLooseIncompleteHeaderBlock(headerSlice) {
   const lines = headerSlice.split("\n");
   for (let i = 0; i < lines.length - 1; i++) {
     const line = lines[i].replace(/\r$/, "");
-    if (!/^[A-Za-z][^\r\n:]{0,127}:[^\r\n]*$/.test(line)) return false;
+    if (!/^[A-Za-z][^\r\n:]*:[^\r\n]*$/.test(line)) return false;
   }
   const tail = lines[lines.length - 1].replace(/\r$/, "");
   return (
     tail === "" ||
-    /^[A-Za-z][^\r\n:]{0,127}:[^\r\n]*$/.test(tail) ||
-    /^[A-Za-z][A-Za-z0-9_ .-]{0,127}$/.test(tail)
+    /^[A-Za-z][^\r\n:]*:[^\r\n]*$/.test(tail) ||
+    /^[A-Za-z][A-Za-z0-9_ .-]{0,511}$/.test(tail)
   );
 }
 
@@ -503,6 +510,8 @@ export function createFrameReader(onMessage, onError) {
   let buf = Buffer.alloc(0);
   let detectedMode = null;
   let awaitingHeaderResync = false;
+  let resyncAtBoundary = true;
+  let resyncOversizeEmitted = false;
   let discardingOversizedHeader = false;
   let discardingOversizedLine = false;
   let discardingOversizedArray = false;
@@ -511,8 +520,11 @@ export function createFrameReader(onMessage, onError) {
   let discardLineDroppedBytes = false;
   let discardLineTrimEmpty = true;
 
+  const isBoundaryByte = (b) => b === 0x0d || b === 0x0a || b === 0x7d || b === 0x5d;
+
   const rejectContentLengthHeader = (err, keepDiscardingHeader = false, nextOffset = -1) => {
     if (nextOffset >= 0) {
+      resyncAtBoundary = nextOffset > 0 ? isBoundaryByte(buf[nextOffset - 1]) : true;
       buf = buf.subarray(nextOffset);
       discardLineHasColon = false;
       discardLinePrefixNonEmpty = false;
@@ -537,17 +549,56 @@ export function createFrameReader(onMessage, onError) {
         discardLineDroppedBytes = false;
         buf = Buffer.from(tailLine);
       }
+      resyncAtBoundary = true;
     } else {
       buf = Buffer.alloc(0);
       discardLineHasColon = false;
       discardLinePrefixNonEmpty = false;
       discardLineDroppedBytes = false;
       discardLineTrimEmpty = true;
+      resyncAtBoundary = true;
     }
     awaitingHeaderResync = true;
+    resyncOversizeEmitted = false;
     discardingOversizedHeader = keepDiscardingHeader;
     if (onError) onError(err, "content-length");
     else throw err;
+  };
+
+  const findOversizedHeaderStop = (buffer, limit) => {
+    const bound = Math.min(buffer.length, limit);
+    let pos = 0;
+    while (pos < bound) {
+      const nlIdx = buffer.indexOf(0x0a, pos);
+      const isCompleteLine = nlIdx !== -1 && nlIdx < bound;
+      const lineEnd = isCompleteLine ? nlIdx : bound;
+      const lineSlice = buffer.subarray(pos, lineEnd);
+      const lineStr = lineSlice.toString("latin1").replace(/\r$/, "");
+      const trimmedStart = lineStr.trimStart();
+      if (trimmedStart[0] === "{" || trimmedStart[0] === "[") {
+        return { stopped: true, nextOffset: pos };
+      }
+      if (!isCompleteLine) break;
+      const trimmedLine = lineStr.trim();
+      if (trimmedLine === "") {
+        return { stopped: true, nextOffset: nlIdx + 1 };
+      }
+      if (!lineSlice.includes(0x3a) && trimmedLine !== "") {
+        return { stopped: true, nextOffset: nlIdx + 1 };
+      }
+      pos = nlIdx + 1;
+    }
+    return { stopped: false, nextOffset: -1 };
+  };
+
+  const rejectOversizedUnseparatedHeader = () => {
+    const stop = findOversizedHeaderStop(buf, buf.length);
+    if (stop.stopped) {
+      rejectContentLengthHeader(new Error("MCP header block exceeded 16KB without terminator"), false, stop.nextOffset);
+      return true;
+    }
+    rejectContentLengthHeader(new Error("MCP header block exceeded 16KB without terminator"), true);
+    return false;
   };
 
   return function pushChunk(chunk) {
@@ -557,11 +608,13 @@ export function createFrameReader(onMessage, onError) {
         const nlIdx = buf.indexOf(0x0a);
         if (nlIdx === -1) {
           buf = Buffer.alloc(0);
+          resyncAtBoundary = false;
           break;
         }
         const lineTrimmed = buf.subarray(0, nlIdx).toString("latin1").trim();
         buf = buf.subarray(nlIdx + 1);
         discardingOversizedLine = false;
+        resyncAtBoundary = true;
         if (discardingOversizedArray && lineTrimmed.endsWith("]")) {
           discardingOversizedArray = false;
         }
@@ -569,12 +622,13 @@ export function createFrameReader(onMessage, onError) {
       }
       if (discardingOversizedArray) {
         const latinHead = buf.subarray(0, Math.min(buf.length, 64)).toString("latin1");
-        if (/^\s*Content-(?:Length|Type)[ \t]*:/i.test(latinHead)) {
+        if (/^[ \t]*Content-(?:Length|Type)[ \t]*:/i.test(latinHead) && (resyncAtBoundary || /^[ \t]+/.test(latinHead))) {
           discardingOversizedArray = false;
         } else {
           const nlIdx = buf.indexOf(0x0a);
           if (nlIdx === -1) {
             if (buf.length > MAX_FRAME_BYTES) {
+              resyncAtBoundary = buf.length > 0 && isBoundaryByte(buf[buf.length - 1]);
               buf = Buffer.alloc(0);
               discardingOversizedLine = true;
             }
@@ -582,6 +636,7 @@ export function createFrameReader(onMessage, onError) {
           }
           const lineTrimmed = buf.subarray(0, nlIdx).toString("latin1").trim();
           buf = buf.subarray(nlIdx + 1);
+          resyncAtBoundary = true;
           if (lineTrimmed.endsWith("]")) {
             discardingOversizedArray = false;
           }
@@ -595,22 +650,14 @@ export function createFrameReader(onMessage, onError) {
           const nlIdx = buf.indexOf(0x0a, pos);
           const lineSlice = buf.subarray(pos, nlIdx === -1 ? buf.length : nlIdx);
           const lineStr = lineSlice.toString("latin1").replace(/\r$/, "");
+          const trimmedStart = lineStr.trimStart();
           if (!discardLineHasColon) {
-            if (!discardLineDroppedBytes && !discardLinePrefixNonEmpty && (lineStr[0] === "{" || lineStr[0] === "[")) {
+            if (!discardLineDroppedBytes && !discardLinePrefixNonEmpty && (trimmedStart[0] === "{" || trimmedStart[0] === "[")) {
               buf = buf.subarray(pos);
               discardingOversizedHeader = false;
+              resyncAtBoundary = true;
               ended = true;
               break;
-            }
-            const hdrM = /(Content-(?:Length|Type)[ \t]*:)/i.exec(lineStr);
-            if (hdrM) {
-              const beforeM = lineStr.slice(0, hdrM.index);
-              if ((discardLinePrefixNonEmpty || beforeM.trim().length > 0) && !beforeM.includes(":")) {
-                buf = buf.subarray(pos + hdrM.index);
-                discardingOversizedHeader = false;
-                ended = true;
-                break;
-              }
             }
           }
           if (nlIdx === -1) {
@@ -638,6 +685,7 @@ export function createFrameReader(onMessage, onError) {
           if (discardLineTrimEmpty && trimmedLine === "") {
             buf = buf.subarray(nlIdx + 1);
             discardingOversizedHeader = false;
+            resyncAtBoundary = true;
             ended = true;
             break;
           }
@@ -645,6 +693,7 @@ export function createFrameReader(onMessage, onError) {
           if (!hasColon && trimmedLine !== "") {
             buf = buf.subarray(nlIdx + 1);
             discardingOversizedHeader = false;
+            resyncAtBoundary = true;
             ended = true;
             break;
           }
@@ -654,26 +703,57 @@ export function createFrameReader(onMessage, onError) {
           discardLineDroppedBytes = false;
           discardLineTrimEmpty = true;
         }
-        if (!ended && discardingOversizedHeader) break;
+        if (!ended && discardingOversizedHeader) {
+          if (pos > 0) buf = buf.subarray(pos);
+          break;
+        }
         continue;
       }
 
       let lead = 0;
-      while (lead < buf.length && (buf[lead] === 0x0d || buf[lead] === 0x0a)) lead++;
+      while (lead < buf.length) {
+        if (buf[lead] === 0x0d || buf[lead] === 0x0a) {
+          lead++;
+          continue;
+        }
+        if (buf[lead] === 0x20 || buf[lead] === 0x09) {
+          let j = lead;
+          while (j < buf.length && (buf[j] === 0x20 || buf[j] === 0x09)) j++;
+          if (j < buf.length && (buf[j] === 0x0a || buf[j] === 0x0d)) {
+            lead = buf[j] === 0x0d && j + 1 < buf.length && buf[j + 1] === 0x0a ? j + 2 : j + 1;
+            continue;
+          }
+        }
+        break;
+      }
       if (lead > 0) {
         buf = buf.subarray(lead);
+        resyncAtBoundary = true;
         if (buf.length === 0) break;
       }
 
       if (awaitingHeaderResync) {
         const latin = buf.toString("latin1");
-        const hdrMatch = /(Content-(?:Length|Type)[ \t]*:)/i.exec(latin);
+        const resyncHdrRe = /(Content-(?:Length|Type)[ \t]*:)/gi;
+        let hdrMatch = null;
+        let rm;
+        while ((rm = resyncHdrRe.exec(latin)) !== null) {
+          const atBound = rm.index === 0 ? resyncAtBoundary : /[\r\n}\]]/.test(latin[rm.index - 1]);
+          if (atBound) {
+            hdrMatch = rm;
+            break;
+          }
+        }
         if (!hdrMatch) {
           if (buf.length > MAX_FRAME_BYTES) {
-            const tail = buf.subarray(Math.max(0, buf.length - 32)).toString("latin1");
+            const tailStart = Math.max(0, buf.length - 32);
+            const tail = buf.subarray(tailStart).toString("latin1");
             let partialLen = -1;
             for (let ti = 0; ti < tail.length; ti++) {
               if (tail[ti] !== "c" && tail[ti] !== "C") continue;
+              const absIdx = tailStart + ti;
+              const atBound = absIdx === 0 ? resyncAtBoundary : isBoundaryByte(buf[absIdx - 1]);
+              if (!atBound) continue;
               const cand = tail.slice(ti).replace(/[ \t]+(?=:|$)/g, "").toLowerCase();
               if ("content-length:".startsWith(cand) || "content-type:".startsWith(cand)) {
                 partialLen = tail.length - ti;
@@ -682,19 +762,24 @@ export function createFrameReader(onMessage, onError) {
             }
             if (partialLen > 0) {
               buf = buf.subarray(buf.length - partialLen);
+              resyncAtBoundary = true;
               break;
             }
+            resyncAtBoundary = buf.length > 0 && isBoundaryByte(buf[buf.length - 1]);
             buf = Buffer.alloc(0);
-            awaitingHeaderResync = false;
-            const err = new Error("Oversized malformed frame exceeded 10MB limit");
-            if (onError) onError(err, detectedMode || "ndjson");
-            else throw err;
+            if (!resyncOversizeEmitted) {
+              resyncOversizeEmitted = true;
+              const err = new Error("Oversized malformed frame exceeded 10MB limit");
+              if (onError) onError(err, detectedMode || "content-length");
+              else throw err;
+            }
           }
           break;
         }
         const hStart = hdrMatch.index;
         if (hStart > 0) {
           buf = buf.subarray(hStart);
+          resyncAtBoundary = true;
           continue;
         }
       }
@@ -718,6 +803,7 @@ export function createFrameReader(onMessage, onError) {
         if (firstNl > MAX_FRAME_BYTES) {
           const lineTrimmed = buf.subarray(0, firstNl).toString("latin1").trim();
           buf = buf.subarray(firstNl + 1);
+          resyncAtBoundary = true;
           if (firstByte === 0x5b && !lineTrimmed.endsWith("]")) {
             discardingOversizedArray = true;
           }
@@ -728,6 +814,7 @@ export function createFrameReader(onMessage, onError) {
         }
         const line = buf.subarray(0, firstNl).toString("utf8").trim();
         buf = buf.subarray(firstNl + 1);
+        resyncAtBoundary = true;
         if (awaitingHeaderResync || !line) continue;
         if (!detectedMode) detectedMode = "ndjson";
         let parsed;
@@ -757,10 +844,15 @@ export function createFrameReader(onMessage, onError) {
         const previewLooksHeader =
           detectedMode === "content-length" ||
           /^Content-(?:Length|Type)[ \t]*:/i.test(head) ||
-          (isPotentialIncompleteHeaderBlock(headerPreview) && detectedMode !== "ndjson") ||
+          ((isPotentialIncompleteHeaderBlock(headerPreview) || isLooseIncompleteHeaderBlock(headerPreview)) && detectedMode !== "ndjson") ||
           (hasCoreHeaderInBlock && !hasJsonLineInBlock);
         if (previewLooksHeader) {
-          rejectContentLengthHeader(new Error("MCP header block exceeded 16KB"), false, hdrEnd + sepLen);
+          const stop = findOversizedHeaderStop(buf, hdrEnd + sepLen);
+          rejectContentLengthHeader(
+            new Error("MCP header block exceeded 16KB"),
+            false,
+            stop.stopped ? stop.nextOffset : hdrEnd + sepLen
+          );
           continue;
         }
       }
@@ -771,7 +863,7 @@ export function createFrameReader(onMessage, onError) {
         const startsWithCoreHeader = /^Content-(?:Length|Type)[ \t]*:/i.test(head);
         const hasCoreHeader = startsWithCoreHeader || /(?:^|\n)Content-(?:Length|Type)[ \t]*:/im.test(bufTextForJson);
         if (!hasJsonLine && (detectedMode === "content-length" || startsWithCoreHeader || hasCoreHeader || isLooseIncompleteHeaderBlock(oversizePreview))) {
-          rejectContentLengthHeader(new Error("MCP header block exceeded 16KB without terminator"), true);
+          if (rejectOversizedUnseparatedHeader()) continue;
           break;
         }
       }
@@ -825,6 +917,7 @@ export function createFrameReader(onMessage, onError) {
         }
         if (firstNl > MAX_FRAME_BYTES) {
           buf = buf.subarray(firstNl + 1);
+          resyncAtBoundary = true;
           const err = new Error("Malformed frame exceeded 10MB limit");
           if (onError) onError(err, detectedMode || "ndjson");
           else throw err;
@@ -832,6 +925,7 @@ export function createFrameReader(onMessage, onError) {
         }
         const badLine = buf.subarray(0, firstNl).toString("utf8").trim();
         buf = buf.subarray(firstNl + 1);
+        resyncAtBoundary = true;
         if (awaitingHeaderResync || !badLine) continue;
         let parsedBad;
         try {
@@ -847,7 +941,7 @@ export function createFrameReader(onMessage, onError) {
 
       if (!hasSep) {
         if (buf.length > MAX_HEADER_BYTES) {
-          rejectContentLengthHeader(new Error("MCP header block exceeded 16KB without terminator"), true);
+          if (rejectOversizedUnseparatedHeader()) continue;
         }
         break;
       }
@@ -878,6 +972,8 @@ export function createFrameReader(onMessage, onError) {
         continue;
       }
       awaitingHeaderResync = false;
+      resyncOversizeEmitted = false;
+      resyncAtBoundary = true;
       const totalNeed = hdrEnd + sepLen + bodyLen;
       if (buf.length < totalNeed) break;
       const bodyStr = buf.subarray(hdrEnd + sepLen, totalNeed).toString("utf8");
@@ -1907,8 +2003,10 @@ function runSelfTest() {
       assert.equal(e.length > 0, true);
     }
     for (const recChunks of [
-      [`Content-Length: 5\r\nContent-Length: 999\r\n\r\nhello${r23Frame}`],
-      [`Content-Length: 5\r\nX-Huge: ${"a".repeat(17000)}\r\nhello`, r23Frame],
+      [`Content-Length: 7\r\nContent-Length: 999\r\n\r\n{"a":1}${r23Frame}`],
+      [`Content-Length: 5\r\nContent-Length: 999\r\n\r\nhello\r\n${r23Frame}`],
+      [`Content-Length: 7\r\nX-Huge: ${"a".repeat(17000)}\r\n\r\n{"a":1}`, r23Frame],
+      [`Content-Length: 5\r\nX-Huge: ${"a".repeat(17000)}\r\nhello\r\n`, r23Frame],
     ]) {
       const m = [], e = [];
       const rdr = createFrameReader((msg) => m.push(msg.id), (err) => e.push(err.message));
@@ -2051,6 +2149,192 @@ function runSelfTest() {
       assert.equal(readFileSync(r30DirVictim, "utf8"), '{"keep":"dir"}\n');
     }
 
+    // R31 (A1-L1): >16KB header blocks with colonless break line behave identically across 1-chunk and multi-chunk boundaries
+    {
+      const r31Msg = JSON.stringify({ jsonrpc: "2.0", id: 931, method: "ping" });
+      const r31ValidFrame = `Content-Length: ${Buffer.byteLength(r31Msg, "utf8")}\r\n\r\n${r31Msg}`;
+      const r31ColonlessPayload = `X-Pad: ${"a".repeat(17000)}\r\nBadColonless\r\n${r31ValidFrame}`;
+      const cutBeforeBreak = r31ColonlessPayload.indexOf("BadColonless");
+      const cutAfterBreak = r31ColonlessPayload.indexOf("\r\n", cutBeforeBreak) + 2;
+      for (const chunks of [
+        [r31ColonlessPayload],
+        [r31ColonlessPayload.slice(0, cutBeforeBreak), r31ColonlessPayload.slice(cutBeforeBreak)],
+        [r31ColonlessPayload.slice(0, cutAfterBreak), r31ColonlessPayload.slice(cutAfterBreak)],
+      ]) {
+        const m = [], e = [];
+        const rdr = createFrameReader((msg) => m.push(msg.id), (err) => e.push(err.message));
+        for (const ch of chunks) rdr(ch);
+        assert.deepEqual(m, [931], "R31 A1-L1: colonless line after >16KB header must allow valid frame resync identically across chunk splits");
+        assert.equal(e.length, 1);
+      }
+
+      const r31ContPayload = `X-Pad: ${"a".repeat(17000)}\r\n${r31ValidFrame}`;
+      const contCut = 16500;
+      for (const chunks of [
+        [r31ContPayload],
+        [r31ContPayload.slice(0, contCut), r31ContPayload.slice(contCut)],
+      ]) {
+        const m = [], e = [];
+        const rdr = createFrameReader((msg) => m.push(msg.id), (err) => e.push(err.message));
+        for (const ch of chunks) rdr(ch);
+        assert.deepEqual(m, [], "R31 A1-L1: contiguous >16KB header without colonless break must still reject frame");
+        assert.equal(e.length, 1);
+      }
+    }
+
+    // R33 (A1-M1 & A1-L4): discarded \n-terminated header chunks must advance buf & reject invalid codeConnect/null tokens
+    {
+      const r33Msg = JSON.stringify({ jsonrpc: "2.0", id: 933, method: "ping" });
+      const r33Valid = `Content-Length: ${Buffer.byteLength(r33Msg, "utf8")}\r\n\r\n${r33Msg}`;
+      const r33Out = [], r33Errs = [];
+      const r33Rdr = createFrameReader((msg) => r33Out.push(msg.id), (err) => r33Errs.push(err.message));
+      r33Rdr(`X-Pad: ${"a".repeat(17000)}\r\n`);
+      for (let ci = 0; ci < 25; ci++) {
+        r33Rdr(`X-Chunk-${ci}: ${"b".repeat(40000)}\r\n`);
+      }
+      r33Rdr(`\r\n${r33Valid}`);
+      assert.deepEqual(r33Out, [933], "R33 A1-M1: many \\r\\n-terminated oversized header chunks must drain cleanly and parse subsequent frame");
+      assert.equal(r33Errs.length, 1);
+
+      const nullTok = join(scratch, "null-tokens.json");
+      const validRt = join(scratch, "valid-runtime.json");
+      const notADir = join(scratch, "regular-cc.txt");
+      writeFileSync(nullTok, "null\n");
+      writeFileSync(validRt, JSON.stringify({ schema: "dsaf-pw/1", allPassed: true, files: [] }));
+      writeFileSync(notADir, "not a directory\n");
+      const ccFileRes = dispatch({
+        jsonrpc: "2.0",
+        id: 934,
+        method: "tools/call",
+        params: { name: "dsaf_figma_diff", arguments: { tokens: validRt, runtime: validRt, codeConnect: notADir } },
+      });
+      assert.equal(ccFileRes.result?.isError, true, "R33 A1-L4: dsaf_figma_diff must reject regular file for codeConnect");
+      assert.match(ccFileRes.result?.content?.[0]?.text || "", /existing directory/i);
+      const nullTokRes = dispatch({
+        jsonrpc: "2.0",
+        id: 935,
+        method: "tools/call",
+        params: { name: "dsaf_figma_diff", arguments: { tokens: nullTok, runtime: validRt } },
+      });
+      assert.equal(nullTokRes.result?.isError, true, "R33 A1-L4: dsaf_figma_diff must fail cleanly on JSON null tokens");
+      assert.doesNotMatch(nullTokRes.result?.content?.[0]?.text || "", /Cannot read properties of null/i);
+    }
+
+    // R36 (R35-A1-M1): >128-char header names split before Content-Length must reject in both 1-chunk and multi-chunk delivery
+    {
+      const ping1 = JSON.stringify({ jsonrpc: "2.0", id: 936, method: "ping" });
+      const tail1 = `\r\nContent-Length: ${Buffer.byteLength(ping1, "utf8")}\r\n\r\n${ping1}`;
+      const longHdr = "X-" + "a".repeat(200) + ": " + "b".repeat(17000);
+      const shortBadHdr = "X-" + "a".repeat(200) + ": v";
+      const pingValidNext = JSON.stringify({ jsonrpc: "2.0", id: 937, method: "ping" });
+      const validNextFrame = `Content-Length: ${Buffer.byteLength(pingValidNext, "utf8")}\r\n\r\n${pingValidNext}`;
+      for (const chunks of [
+        [longHdr + tail1],
+        [longHdr, tail1, validNextFrame],
+        [shortBadHdr + tail1],
+        [shortBadHdr + "\r\n", `Content-Length: ${Buffer.byteLength(ping1, "utf8")}\r\n\r\n${ping1}`, validNextFrame],
+      ]) {
+        const outIds = [];
+        const errs = [];
+        const rdr = createFrameReader((msg) => outIds.push(msg.id), (err) => errs.push(err.message));
+        for (const ch of chunks) rdr(ch);
+        assert.equal(outIds.includes(936), false, "R36 A1-M1: malformed/oversized >128-char header must reject smuggled frame across chunks");
+        assert.ok(errs.length >= 1, "R36 A1-M1: must emit header rejection error");
+        if (chunks.length > 1) {
+          assert.deepEqual(outIds, [937], "R36 A1-M1: subsequent clean Content-Length frame must recover");
+        }
+      }
+
+      // Round 39 (R38-A1-M1 >16KB unterminated header followed by JSON line in same chunk must recover next Content-Length frame):
+      for (const prefixHdr of [
+        "Content-Length: 40\r\nX-Pad: " + "a".repeat(17000) + "\n",
+        "X-Pad: " + "a".repeat(17000) + "\n",
+        "X-Pad: " + "a".repeat(17000) + "\n  ",
+      ]) {
+        const outIds = [];
+        const errs = [];
+        const rdr = createFrameReader((msg) => outIds.push(msg.id), (err) => errs.push(err.message));
+        rdr(prefixHdr + ping1 + "\n");
+        rdr(validNextFrame);
+        assert.ok(errs.length >= 1, "R39 A1-M1: oversized unterminated header + JSON line must emit error");
+        assert.deepEqual(outIds, [937], "R39 A1-M1: subsequent valid Content-Length frame must be delivered cleanly");
+
+        const outUnterm = [];
+        const errUnterm = [];
+        const rdr2 = createFrameReader((msg) => outUnterm.push(msg.id), (err) => errUnterm.push(err.message));
+        rdr2(prefixHdr + ping1);
+        rdr2("\n" + validNextFrame);
+        assert.ok(errUnterm.length >= 1, "R39 A1-M1: unterminated JSON line after >16KB header must still emit error");
+        assert.deepEqual(outUnterm, [937], "R39 A1-M1: subsequent valid Content-Length frame after unterminated JSON line must recover");
+      }
+    }
+
+    // Round 40 (R39-A1-M1 custom/malformed header suffixes, R39-A1-M2 >10MB resync lock, R39-A1-L1 blank whitespace lines):
+    {
+      const p40 = JSON.stringify({ jsonrpc: "2.0", id: 9400, method: "ping" });
+      const p40Ok = JSON.stringify({ jsonrpc: "2.0", id: 9401, method: "ping" });
+      const okFrame40 = `Content-Length: ${Buffer.byteLength(p40Ok, "utf8")}\r\n\r\n${p40Ok}`;
+      for (const hName of ["X-Content-Length", "X_BadContent-Length", "X-Original-Content-Length"]) {
+        const m1 = [], e1 = [];
+        const r1 = createFrameReader((m) => m1.push(m.id), (e) => e1.push(e.message));
+        r1(Buffer.from(`X-Pad: ${"a".repeat(17000)}\r\n${hName}: ${Buffer.byteLength(p40)}\r\n\r\n${p40}`));
+        r1(Buffer.from("\n" + okFrame40));
+        assert.deepEqual(m1, [9401], `R40 M1 (1-chunk ${hName}): smuggled header must drop and trailing valid frame recover`);
+        assert.equal(e1.length, 1);
+
+        const m2 = [], e2 = [];
+        const r2 = createFrameReader((m) => m2.push(m.id), (e) => e2.push(e.message));
+        r2(Buffer.from(`X-Pad: ${"a".repeat(17000)}\r\n`));
+        r2(Buffer.from(`${hName}: ${Buffer.byteLength(p40)}\r\n\r\n${p40}`));
+        r2(Buffer.from("\n" + okFrame40));
+        assert.deepEqual(m2, [9401], `R40 M1 (2-chunk ${hName}): smuggled header must drop and trailing valid frame recover`);
+        assert.equal(e2.length, 1);
+
+        const mE = [], eE = [];
+        const rE = createFrameReader((m) => mE.push(m.id), (e) => eE.push(e.message));
+        rE(Buffer.from("Content-Length: 20000000\r\n\r\n"));
+        rE(Buffer.from(`garbage ${hName}: ${Buffer.byteLength(p40)}\r\n\r\n${p40}\n${okFrame40}`));
+        assert.deepEqual(mE, [9401], `R40 M1 (resync ${hName}): inline spoofed header must drop and newline-aligned frame recover`);
+        assert.equal(eE.length, 1);
+      }
+
+      const m10 = [], e10 = [];
+      const r10 = createFrameReader((m) => m10.push(m.id), (e) => e10.push(e.message));
+      r10(Buffer.from("Content-Length: 20000000\r\n\r\n", "utf8"));
+      r10(Buffer.alloc(10 * 1024 * 1024 + 64, 0x61));
+      r10(Buffer.from(`${p40}\n`, "utf8"));
+      r10(Buffer.from(okFrame40, "utf8"));
+      assert.deepEqual(m10, [9401], "R40 M2: >10MB discarded body must remain in header-resync so trailing NDJSON is dropped until Content-Length:");
+      assert.equal(e10.length, 2);
+
+      const mWsA = [], eWsA = [];
+      const rWsA = createFrameReader((m) => mWsA.push(m.id), (e) => eWsA.push(e.message));
+      rWsA(Buffer.from("  \n"));
+      rWsA(Buffer.from(okFrame40));
+      assert.deepEqual(mWsA, [9401]);
+      assert.deepEqual(eWsA, []);
+
+      const mWsB = [], eWsB = [];
+      const rWsB = createFrameReader((m) => mWsB.push(m.id), (e) => eWsB.push(e.message));
+      rWsB(Buffer.from(okFrame40));
+      rWsB(Buffer.from("  \n"));
+      rWsB(Buffer.from(okFrame40));
+      assert.deepEqual(mWsB, [9401, 9401], "R40 L1: whitespace-only blank line after content-length frame must not break next frame");
+      assert.deepEqual(eWsB, []);
+
+      const mWsC = [], eWsC = [];
+      const rWsC = createFrameReader((m) => mWsC.push(m.id), (e) => eWsC.push(e.message));
+      rWsC(Buffer.from("  \n" + okFrame40));
+      assert.deepEqual(mWsC, [9401], "R40 L1: leading whitespace-only blank line in single chunk must not break frame");
+      assert.deepEqual(eWsC, []);
+
+      const mWsBad = [], eWsBad = [];
+      const rWsBad = createFrameReader((m) => mWsBad.push(m.id), (e) => eWsBad.push(e.message));
+      rWsBad(Buffer.from("  " + okFrame40));
+      assert.deepEqual(mWsBad, [], "Leading horizontal spaces on actual header line must still reject");
+      assert.equal(eWsBad.length, 1);
+    }
+
     console.log("DSAF_MCP_SELF_TEST_PASSED (8 tools + Content-Length & NDJSON framing + mcp install)");
     return 0;
   } finally {
@@ -2089,7 +2373,7 @@ if (isEntrypoint) {
         [
           `DSAF v${MCP_SERVER_VERSION} — Stdio MCP Server & Installer`,
           "Usage:",
-          "  dsaf mcp                          Run JSON-RPC 2.0 stdio MCP server (8 read-only tools)",
+          "  dsaf mcp                          Run JSON-RPC 2.0 stdio MCP server (8 audit & dry-run tools)",
           "  dsaf mcp install [--agent claude|cursor|codex|antigravity|all] [--scope project|user] [--dir <path>] [--cwd <dir>] [--pin|--tag <ver>] [--dry-run] [--json] [--help]",
           "  dsaf mcp --self-test",
         ].join("\n")

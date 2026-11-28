@@ -15,6 +15,7 @@ import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { assertWritableOutputFile, isDirectCliEntry, splitTopLevelCommas, stripCommentsPreservingLines } from "./ci-report.mjs";
 import { hasDesignTokenEvidence } from "./recon.mjs";
+import { hwbToSrgb, labToSrgb, parseCssColorToRgba, resolveDtcgExtends } from "./audit-tokens.mjs";
 
 function normalizeKey(rawKey) {
   return String(rawKey || "")
@@ -51,66 +52,76 @@ function normalizeCssNumberString(str) {
     .replace(/(^|[\s,(])-?\.(\d+)/g, (full, pre, dec) => `${pre}${full.includes("-") ? "-" : ""}0.${dec}`);
 }
 
-function rgbFuncToHex(s) {
-  const m = s.match(/^rgba?\(\s*(\d+(?:\.\d+)?%?)\s*[,\s]\s*(\d+(?:\.\d+)?%?)\s*[,\s]\s*(\d+(?:\.\d+)?%?)(?:\s*[,/]\s*([\d.]+%?))?\s*\)$/i);
-  if (!m) return null;
-  const toChan = (raw) => {
-    const val = raw.endsWith("%") ? Math.round((Number.parseFloat(raw) / 100) * 255) : Math.round(Number.parseFloat(raw));
-    return Number.isFinite(val) ? Math.max(0, Math.min(255, val)) : 0;
-  };
-  const [r, g, b] = [toChan(m[1]), toChan(m[2]), toChan(m[3])];
-  if (m[4] !== undefined) {
-    const aRaw = m[4].endsWith("%") ? Number.parseFloat(m[4]) / 100 : Number.parseFloat(m[4]);
-    if (!Number.isFinite(aRaw)) return null;
-    const clampedA = Math.max(0, Math.min(1, aRaw));
-    if (Math.abs(clampedA - 1) > 1e-6) {
-      return normalizeCssNumberString(`rgba(${r}, ${g}, ${b}, ${Number(clampedA.toFixed(4))})`);
-    }
+function formatRgbaHexOrStr(rgba) {
+  if (!rgba) return null;
+  const [r, g, b, a] = rgba;
+  const alpha = typeof a === "number" && Number.isFinite(a) ? Math.max(0, Math.min(1, a)) : 1;
+  const roundedA = Number(alpha.toFixed(4));
+  if (Math.abs(roundedA - 1) > 1e-6) {
+    return normalizeCssNumberString(`rgba(${r}, ${g}, ${b}, ${roundedA})`);
   }
-  const toHex = (n) => n.toString(16).padStart(2, "0");
+  const toHex = (n) => Math.max(0, Math.min(255, Math.round(n))).toString(16).padStart(2, "0");
   return `#${toHex(r)}${toHex(g)}${toHex(b)}`;
 }
 
-function hslFuncToHex(s) {
-  const m = s.match(/^hsla?\(\s*([+-]?\d+(?:\.\d+)?(?:deg|rad|grad|turn)?)\s*[,\s]\s*(\d+(?:\.\d+)?)%\s*[,\s]\s*(\d+(?:\.\d+)?)%(?:\s*[,/]\s*([\d.]+%?))?\s*\)$/i);
-  if (!m) return null;
-  const rawHue = m[1].toLowerCase();
-  let hueDeg = Number.parseFloat(rawHue);
-  if (!Number.isFinite(hueDeg)) return null;
-  if (rawHue.endsWith("rad")) hueDeg = (hueDeg * 180) / Math.PI;
-  else if (rawHue.endsWith("turn")) hueDeg *= 360;
-  else if (rawHue.endsWith("grad")) hueDeg *= 0.9;
-  const h = ((hueDeg % 360) + 360) % 360;
-  const sat = Math.max(0, Math.min(1, Number.parseFloat(m[2]) / 100));
-  const lig = Math.max(0, Math.min(1, Number.parseFloat(m[3]) / 100));
-  const c = (1 - Math.abs(2 * lig - 1)) * sat;
-  const x = c * (1 - Math.abs(((h / 60) % 2) - 1));
-  const mOff = lig - c / 2;
-  let r1 = 0, g1 = 0, b1 = 0;
-  if (h < 60) [r1, g1, b1] = [c, x, 0];
-  else if (h < 120) [r1, g1, b1] = [x, c, 0];
-  else if (h < 180) [r1, g1, b1] = [0, c, x];
-  else if (h < 240) [r1, g1, b1] = [0, x, c];
-  else if (h < 300) [r1, g1, b1] = [x, 0, c];
-  else [r1, g1, b1] = [c, 0, x];
-  const r = Math.max(0, Math.min(255, Math.round((r1 + mOff) * 255)));
-  const g = Math.max(0, Math.min(255, Math.round((g1 + mOff) * 255)));
-  const b = Math.max(0, Math.min(255, Math.round((b1 + mOff) * 255)));
-  if (m[4] !== undefined) {
-    const aRaw = m[4].endsWith("%") ? Number.parseFloat(m[4]) / 100 : Number.parseFloat(m[4]);
-    if (!Number.isFinite(aRaw)) return null;
-    const clampedA = Math.max(0, Math.min(1, aRaw));
-    if (Math.abs(clampedA - 1) > 1e-6) {
-      return normalizeCssNumberString(`rgba(${r}, ${g}, ${b}, ${Number(clampedA.toFixed(4))})`);
+function cssColorFnToNormalized(s) {
+  const cm = /^color\(\s*([a-z0-9-]+)\s+([^()]+)\)$/i.exec(String(s || "").trim());
+  if (cm) {
+    const cs = cm[1].toLowerCase();
+    if (cs === "srgb") {
+      return formatRgbaHexOrStr(parseCssColorToRgba(s));
     }
+    const fmtNumTok = (tok) => {
+      if (/^none$/i.test(tok)) return "none";
+      const tm = /^([+-]?(?:\d+(?:\.\d+)?|\.\d+)(?:[eE][+-]?\d+)?)(%?)$/.exec(tok);
+      if (!tm) return tok;
+      const n = Number.parseFloat(tm[1]);
+      if (!Number.isFinite(n)) return tok;
+      const unitVal = tm[2] ? n / 100 : n;
+      const rounded = Number(unitVal.toFixed(4));
+      return String(Object.is(rounded, -0) ? 0 : rounded);
+    };
+    const normChannels = (rawMain) =>
+      String(rawMain || "")
+        .trim()
+        .split(/\s+/)
+        .map(fmtNumTok)
+        .join(" ");
+    const body = cm[2].trim();
+    const slashIdx = body.indexOf("/");
+    if (slashIdx !== -1) {
+      const mainPart = normChannels(body.slice(0, slashIdx));
+      const rawA = body.slice(slashIdx + 1).trim();
+      const isNone = /^none$/i.test(rawA);
+      const aNum = isNone ? 0 : rawA.endsWith("%") ? Number.parseFloat(rawA) / 100 : Number.parseFloat(rawA);
+      if (Number.isFinite(aNum)) {
+        const clampedA = Math.max(0, Math.min(1, aNum));
+        const roundedA = Number(clampedA.toFixed(4));
+        const suffix = Math.abs(roundedA - 1) <= 1e-6 ? "" : ` / ${roundedA}`;
+        return normalizeCssNumberString(`color(${cs} ${mainPart}${suffix})`);
+      }
+    }
+    return normalizeCssNumberString(`color(${cs} ${normChannels(body)})`);
   }
-  const toHex = (n) => n.toString(16).padStart(2, "0");
-  return `#${toHex(r)}${toHex(g)}${toHex(b)}`;
+  if (/^(?:hwb|lab|lch)\(/i.test(s)) {
+    return formatRgbaHexOrStr(parseCssColorToRgba(s));
+  }
+  return null;
+}
+
+function rgbFuncToHex(s) {
+  if (!/^rgba?\(/i.test(String(s || "").trim())) return null;
+  return formatRgbaHexOrStr(parseCssColorToRgba(s));
+}
+
+function hslFuncToHex(s) {
+  if (!/^hsla?\(/i.test(String(s || "").trim())) return null;
+  return formatRgbaHexOrStr(parseCssColorToRgba(s));
 }
 
 function okColorFuncToHex(s) {
   const m = String(s || "").match(
-    /^(oklab|oklch)\(\s*(none|[+-]?(?:\d+(?:\.\d+)?|\.\d+)%?)\s*[,\s]\s*(none|[+-]?(?:\d+(?:\.\d+)?|\.\d+)%?)\s*[,\s]\s*(none|[+-]?(?:\d+(?:\.\d+)?|\.\d+)(?:deg|rad|grad|turn|%)?)(?:\s*[,/]\s*(none|[+-]?(?:\d+(?:\.\d+)?|\.\d+)%?))?\s*\)$/i
+    /^(oklab|oklch)\(\s*(none|[+-]?(?:\d+(?:\.\d+)?|\.\d+)(?:[eE][+-]?\d+)?%?)\s*[,\s]\s*(none|[+-]?(?:\d+(?:\.\d+)?|\.\d+)(?:[eE][+-]?\d+)?%?)\s*[,\s]\s*(none|[+-]?(?:\d+(?:\.\d+)?|\.\d+)(?:[eE][+-]?\d+)?(?:deg|rad|grad|turn|%)?)(?:\s*[,/]\s*(none|[+-]?(?:\d+(?:\.\d+)?|\.\d+)(?:[eE][+-]?\d+)?%?))?\s*\)$/i
   );
   if (!m) return null;
   const kind = m[1].toLowerCase();
@@ -171,7 +182,8 @@ function okColorFuncToHex(s) {
       const v = Number(n.toFixed(4));
       return String(Object.is(v, -0) ? 0 : v);
     };
-    const alphaSuffix = clampedA !== null && Math.abs(clampedA - 1) > 1e-6 ? ` / ${fmtNum(clampedA)}` : "";
+    const roundedA = clampedA !== null ? Number(clampedA.toFixed(4)) : null;
+    const alphaSuffix = roundedA !== null && Math.abs(roundedA - 1) > 1e-6 ? ` / ${roundedA}` : "";
     if (kind === "oklch") {
       const hMod = ((hDeg % 360) + 360) % 360;
       const normH = Math.abs(hMod - 360) < 1e-6 ? 0 : hMod;
@@ -185,8 +197,9 @@ function okColorFuncToHex(s) {
     return Math.max(0, Math.min(255, Math.round(enc * 255)));
   };
   const [r, g, bCh] = [toSrgb(lr), toSrgb(lg), toSrgb(lb)];
-  if (clampedA !== null && Math.abs(clampedA - 1) > 1e-6) {
-    return normalizeCssNumberString(`rgba(${r}, ${g}, ${bCh}, ${Number(clampedA.toFixed(4))})`);
+  const roundedOutA = clampedA !== null ? Number(clampedA.toFixed(4)) : null;
+  if (roundedOutA !== null && Math.abs(roundedOutA - 1) > 1e-6) {
+    return normalizeCssNumberString(`rgba(${r}, ${g}, ${bCh}, ${roundedOutA})`);
   }
   const toHex = (n) => n.toString(16).padStart(2, "0");
   return `#${toHex(r)}${toHex(g)}${toHex(bCh)}`;
@@ -323,10 +336,10 @@ function normalizeValue(val) {
     if (Array.isArray(val.components) && val.components.length >= 3) {
       const cs = String(val.colorSpace || "srgb").toLowerCase();
       if (cs !== "srgb") {
-        const a =
-          typeof val.alpha === "number" && Number.isFinite(val.alpha) && val.alpha < 1
-            ? ` / ${Number(Math.max(0, val.alpha).toFixed(4))}`
-            : "";
+        const rawAlpha = typeof val.alpha === "number" && Number.isFinite(val.alpha) ? Math.max(0, Math.min(1, val.alpha)) : 1;
+        const roundedObjA = Number(rawAlpha.toFixed(4));
+        const hasVisibleAlpha = Math.abs(roundedObjA - 1) > 1e-6;
+        const a = hasVisibleAlpha ? ` / ${roundedObjA}` : "";
         const cssColorFnSpaces = new Set(["display-p3", "srgb-linear", "a98-rgb", "prophoto-rgb", "rec2020", "xyz", "xyz-d50", "xyz-d65"]);
         const body = `${val.components.join(" ")}${a}`;
         const formatted = normalizeCssNumberString(cssColorFnSpaces.has(cs) ? `color(${cs} ${body})` : `${cs}(${body})`);
@@ -343,18 +356,30 @@ function normalizeValue(val) {
             if (hslHex) return hslHex;
           }
         }
+        const objA = hasVisibleAlpha ? roundedObjA : 1;
+        const nNums = val.components.slice(0, 3).map((c) => (c === "none" ? 0 : c));
+        if (nNums.every((n) => typeof n === "number" && Number.isFinite(n))) {
+          if (cs === "hwb") return formatRgbaHexOrStr([...hwbToSrgb(nNums[0], nNums[1] / 100, nNums[2] / 100), objA]);
+          if (cs === "lab") return formatRgbaHexOrStr([...labToSrgb(nNums[0], nNums[1], nNums[2]), objA]);
+          if (cs === "lch") {
+            const hr = (nNums[2] * Math.PI) / 180;
+            return formatRgbaHexOrStr([...labToSrgb(nNums[0], nNums[1] * Math.cos(hr), nNums[1] * Math.sin(hr)), objA]);
+          }
+        }
         return formatted;
       }
       const nums = val.components.slice(0, 3).map((c) => (c === "none" ? 0 : c));
       if (!nums.every((n) => typeof n === "number" && Number.isFinite(n))) {
         return `${cs}(${val.components.join(", ")})`;
       }
-      const scale = nums.every((n) => n >= 0 && n <= 1) ? 255 : 1;
+      const isLegacy255 = nums.every((n) => n >= 0 && n <= 255) && nums.some((n) => n > 2);
+      const scale = isLegacy255 ? 1 : 255;
       const toChan = (n) => Math.max(0, Math.min(255, Math.round(n * scale)));
       const [r, g, b] = [toChan(nums[0]), toChan(nums[1]), toChan(nums[2])];
-      const alpha = typeof val.alpha === "number" && Number.isFinite(val.alpha) ? val.alpha : 1;
-      if (alpha < 1) {
-        return normalizeCssNumberString(`rgba(${r}, ${g}, ${b}, ${Number(Math.max(0, alpha).toFixed(4))})`);
+      const alpha = typeof val.alpha === "number" && Number.isFinite(val.alpha) ? Math.max(0, Math.min(1, val.alpha)) : 1;
+      const roundedAlpha = Number(alpha.toFixed(4));
+      if (Math.abs(roundedAlpha - 1) > 1e-6) {
+        return normalizeCssNumberString(`rgba(${r}, ${g}, ${b}, ${roundedAlpha})`);
       }
       const toHex = (n) => n.toString(16).padStart(2, "0");
       return `#${toHex(r)}${toHex(g)}${toHex(b)}`;
@@ -386,7 +411,7 @@ function normalizeValue(val) {
   if (lowerKw === "white") return "#ffffff";
   if (lowerKw === "black") return "#000000";
   if (lowerKw === "transparent") return "rgba(0, 0, 0, 0)";
-  const rgbHex = rgbFuncToHex(s) || hslFuncToHex(s) || okColorFuncToHex(s);
+  const rgbHex = rgbFuncToHex(s) || hslFuncToHex(s) || okColorFuncToHex(s) || cssColorFnToNormalized(s);
   if (rgbHex) return rgbHex;
   if (/^#[0-9a-f]{3}$/i.test(s)) {
     return `#${s[1]}${s[1]}${s[2]}${s[2]}${s[3]}${s[3]}`;
@@ -468,6 +493,12 @@ function extractPrimaryFont(v) {
 }
 
 function isFontStackHint(v) {
+  if (Array.isArray(v)) {
+    return (
+      v.length >= 2 &&
+      v.every((x) => typeof x === "string" && x.trim().length > 0 && !/[()#]|^-?(?:\d|\.\d)/.test(x.trim()))
+    );
+  }
   const s = String(v || "").trim();
   return /["']|\b(?:sans-serif|serif|monospace|system-ui|ui-sans-serif|ui-serif|ui-monospace|cursive|fantasy|-apple-system|blinkmacsystemfont|segoe ui)\b/i.test(s);
 }
@@ -535,10 +566,12 @@ export function valuesMatch(fVal, dVal) {
     return true;
   }
   if (normalizeWeightOrFont(normA) === normalizeWeightOrFont(normB)) return true;
-  const pfA = extractPrimaryFont(String(fVal));
-  const pfB = extractPrimaryFont(String(dVal));
-  const looksLikeFont = isFontStackHint(fVal) || isFontStackHint(dVal);
-  if ((pfA !== null || pfB !== null) && looksLikeFont && (pfA ?? String(fVal).trim().toLowerCase()) === (pfB ?? String(dVal).trim().toLowerCase())) {
+  const normAFontSrc = typeof normA === "string" ? normA : String(fVal);
+  const normBFontSrc = typeof normB === "string" ? normB : String(dVal);
+  const pfA = extractPrimaryFont(normAFontSrc);
+  const pfB = extractPrimaryFont(normBFontSrc);
+  const looksLikeFont = isFontStackHint(fVal) || isFontStackHint(dVal) || isFontStackHint(normAFontSrc) || isFontStackHint(normBFontSrc);
+  if ((pfA !== null || pfB !== null) && looksLikeFont && (pfA ?? normAFontSrc.trim().toLowerCase()) === (pfB ?? normBFontSrc.trim().toLowerCase())) {
     return true;
   }
   return false;
@@ -554,18 +587,40 @@ function resolvePointerKey(refStr) {
       .filter(Boolean)
       .map((seg) => seg.replaceAll("~1", "/").replaceAll("~0", "~"));
     const valIdx = segs.indexOf("$value");
-    return normalizeKey((valIdx > 0 ? segs.slice(0, valIdx) : segs).join("."));
+    return normalizeKey((valIdx > 0 ? segs.slice(0, valIdx) : segs).filter((seg) => seg !== "$root").join("."));
   }
   return normalizeKey(s);
 }
 
+function getExtModes(node) {
+  const ext = node?.$extensions ?? node?.extensions;
+  if (!ext || typeof ext !== "object" || Array.isArray(ext)) return null;
+  const cand = ext.mode ?? ext.modes ?? ext["com.figma.mode"] ?? ext["org.designtokens.mode"];
+  return cand && typeof cand === "object" && !Array.isArray(cand) && Object.keys(cand).length > 0 ? cand : null;
+}
+
+function hasNonMetaObjectChild(node) {
+  return Object.entries(node).some(
+    ([k, v]) =>
+      !k.startsWith("$") &&
+      k !== "type" &&
+      k !== "description" &&
+      k !== "extensions" &&
+      v &&
+      typeof v === "object" &&
+      !Array.isArray(v)
+  );
+}
+
 function hasNestedTokenDescendant(obj) {
   if (!obj || typeof obj !== "object" || Array.isArray(obj)) return false;
-  for (const v of Object.values(obj)) {
+  for (const [k, v] of Object.entries(obj)) {
+    if (k.startsWith("$") || k === "extensions") continue;
     if (v && typeof v === "object" && !Array.isArray(v)) {
       if (
         Object.prototype.hasOwnProperty.call(v, "$value") ||
         Object.prototype.hasOwnProperty.call(v, "value") ||
+        (Boolean(getExtModes(v)) && !hasNonMetaObjectChild(v)) ||
         hasNestedTokenDescendant(v)
       ) {
         return true;
@@ -585,15 +640,10 @@ function containsTokenRef(val) {
   return false;
 }
 
-function getExtModes(node) {
-  const ext = node?.$extensions;
-  if (!ext || typeof ext !== "object") return null;
-  const cand = ext.mode ?? ext.modes ?? ext["com.figma.mode"] ?? ext["org.designtokens.mode"];
-  return cand && typeof cand === "object" && !Array.isArray(cand) ? cand : null;
-}
-
-function flattenGenericTokens(node, prefix = [], out = new Map(), rawAliases = new Map(), compositeRaws = new Map()) {
+function flattenGenericTokens(node, prefix = [], out = new Map(), rawAliases = new Map(), compositeRaws = new Map(), knownModes = null, expanded = false) {
+  const modeSet = knownModes || (out.__modes instanceof Set ? out.__modes : (out.__modes = new Set()));
   if (!node || typeof node !== "object" || Array.isArray(node)) return out;
+  if (!expanded) node = resolveDtcgExtends(node);
   const hasDollarVal = Object.prototype.hasOwnProperty.call(node, "$value");
   const rawLegacyVal = node.value;
   const siblingHasToken = Object.entries(node).some(
@@ -618,14 +668,16 @@ function flattenGenericTokens(node, prefix = [], out = new Map(), rawAliases = n
         !hasNestedTokenDescendant(rawLegacyVal)));
   const hasVal = hasDollarVal || hasLegacyLeafVal;
   const hasRef = typeof node.$ref === "string";
-  if (hasVal || hasRef) {
+  const extModes = getExtModes(node);
+  const hasExtModeLeaf = prefix.length > 0 && Boolean(extModes) && !hasNonMetaObjectChild(node);
+  if (hasVal || hasRef || hasExtModeLeaf) {
     const recordLeafVal = (targetKey, rawV) => {
       if (!targetKey) return;
       if (rawV && typeof rawV === "object" && typeof rawV.$ref === "string") {
         const ptr = resolvePointerKey(rawV.$ref);
         if (ptr) rawAliases.set(targetKey, ptr);
       } else if (typeof rawV === "string" && /^\{([^}]+)\}$/.test(rawV.trim())) {
-        rawAliases.set(targetKey, normalizeKey(rawV.trim().slice(1, -1)));
+        rawAliases.set(targetKey, normalizeKey(rawV.trim().slice(1, -1)).replace(/\.\$root$/i, ""));
       } else if ((typeof rawV === "object" && rawV !== null && containsTokenRef(rawV)) || (typeof rawV === "string" && /\{[^}]+\}/.test(rawV))) {
         compositeRaws.set(targetKey, rawV);
       } else {
@@ -639,14 +691,14 @@ function flattenGenericTokens(node, prefix = [], out = new Map(), rawAliases = n
       if (hasRef) {
         const ptr = resolvePointerKey(node.$ref);
         if (ptr) rawAliases.set(key, ptr);
-      } else {
+      } else if (hasVal) {
         recordLeafVal(key, v);
       }
-      const extModes = getExtModes(node);
       if (extModes) {
         for (const [mKey, mRaw] of Object.entries(extModes)) {
           const cleanMode = normalizeKey(mKey);
           if (!cleanMode) continue;
+          modeSet.add(cleanMode);
           const modeLeafKey = key.startsWith(`${cleanMode}.`) ? key : `${cleanMode}.${key}`;
           const unwrapped =
             mRaw &&
@@ -664,15 +716,19 @@ function flattenGenericTokens(node, prefix = [], out = new Map(), rawAliases = n
     return out;
   }
   for (const [k, v] of Object.entries(node)) {
+    if (k === "$root" && v && typeof v === "object" && !Array.isArray(v)) {
+      flattenGenericTokens(v, [...prefix], out, rawAliases, compositeRaws, modeSet, true);
+      continue;
+    }
     if (k.startsWith("$")) continue;
     if ((k === "type" || k === "description") && (v == null || typeof v !== "object")) continue;
     if (v && typeof v === "object" && !Array.isArray(v)) {
-      flattenGenericTokens(v, [...prefix, k], out, rawAliases, compositeRaws);
+      flattenGenericTokens(v, [...prefix, k], out, rawAliases, compositeRaws, modeSet, true);
     } else if (v != null && (typeof v === "string" || typeof v === "number")) {
       const key = normalizeKey([...prefix, k].join("."));
       const str = String(v).trim();
       if (/^\{([^}]+)\}$/.test(str)) {
-        rawAliases.set(key, normalizeKey(str.slice(1, -1)));
+        rawAliases.set(key, normalizeKey(str.slice(1, -1)).replace(/\.\$root$/i, ""));
       } else if (/\{[^}]+\}/.test(str)) {
         compositeRaws.set(key, str);
       } else {
@@ -707,22 +763,37 @@ function resolveAliases(valuesMap, aliasesMap, fallbacksMap = new Map(), composi
     }
   }
 
+  const knownModes = new Set(["light", "dark"]);
+  if (valuesMap.__modes instanceof Set) {
+    for (const m of valuesMap.__modes) knownModes.add(canonKey(m));
+  }
+  const findModeSeg = (k, allowLeaf = false) => {
+    const segs = canonKey(String(k || "")).split(".");
+    const lim = allowLeaf ? segs.length : Math.max(0, segs.length - 1);
+    for (let idx = 0; idx < lim; idx++) {
+      const seg = segs[idx];
+      if (seg && knownModes.has(seg.toLowerCase())) return seg;
+    }
+    return "";
+  };
   const tryModeTargets = (rawTarget, modeHintKey, nextStack) => {
     if (!rawTarget) return null;
-    const isModeExplicit = /^(?:light|dark)\./i.test(rawTarget);
-    const keyModeM = /^(light|dark)\./i.exec(String(modeHintKey || ""));
-    if (!isModeExplicit && keyModeM) {
-      const mk = keyModeM[1].toLowerCase();
-      let found = resolveOne(`${mk}.${rawTarget}`, nextStack);
+    const isModeExplicit = Boolean(findModeSeg(rawTarget, false));
+    const hintSeg = findModeSeg(modeHintKey, true);
+    const keyMode = hintSeg ? hintSeg.toLowerCase() : null;
+    if (!isModeExplicit && keyMode) {
+      let found = resolveOne(`${keyMode}.${rawTarget}`, nextStack);
       if (found !== null) return found;
       for (let dotIdx = rawTarget.indexOf("."); dotIdx !== -1; dotIdx = rawTarget.indexOf(".", dotIdx + 1)) {
-        found = resolveOne(`${rawTarget.slice(0, dotIdx)}.${mk}.${rawTarget.slice(dotIdx + 1)}`, nextStack);
+        found = resolveOne(`${rawTarget.slice(0, dotIdx)}.${keyMode}.${rawTarget.slice(dotIdx + 1)}`, nextStack);
         if (found !== null) return found;
       }
+      found = resolveOne(`${rawTarget}.${keyMode}`, nextStack);
+      if (found !== null) return found;
     }
     let found = resolveOne(rawTarget, nextStack);
     if (found === null && !isModeExplicit) {
-      const modeCandidates = keyModeM ? [] : ["light", "dark"];
+      const modeCandidates = keyMode ? [] : ["light", "dark"];
       for (const mk of modeCandidates) {
         found = resolveOne(`${mk}.${rawTarget}`, nextStack);
         if (found !== null) break;
@@ -730,6 +801,8 @@ function resolveAliases(valuesMap, aliasesMap, fallbacksMap = new Map(), composi
           found = resolveOne(`${rawTarget.slice(0, dotIdx)}.${mk}.${rawTarget.slice(dotIdx + 1)}`, nextStack);
           if (found !== null) break;
         }
+        if (found !== null) break;
+        found = resolveOne(`${rawTarget}.${mk}`, nextStack);
         if (found !== null) break;
       }
     }
@@ -740,12 +813,12 @@ function resolveAliases(valuesMap, aliasesMap, fallbacksMap = new Map(), composi
     if (typeof rawVal === "string") {
       const trimmed = rawVal.trim();
       if (/^\{([^}]+)\}$/.test(trimmed)) {
-        const targetKey = normalizeKey(trimmed.slice(1, -1));
+        const targetKey = normalizeKey(trimmed.slice(1, -1)).replace(/\.\$root$/i, "");
         const resolved = tryModeTargets(targetKey, modeHintKey, nextStack);
         return resolved !== null ? resolved : rawVal;
       }
       return rawVal.replace(/\{([^}]+)\}/g, (full, inner) => {
-        const tk = normalizeKey(inner);
+        const tk = normalizeKey(inner).replace(/\.\$root$/i, "");
         const resolved = tryModeTargets(tk, modeHintKey, nextStack);
         return resolved !== null ? String(resolved) : full;
       });
@@ -881,9 +954,9 @@ export function loadFigmaVariables(figmaPath) {
 }
 
 const DARK_SELECTOR_RE =
-  /(?:^|,|\s|\(|&)(?:html|body|:root)?(?:\[data-(?:theme|uxs-theme|bs-theme|color-mode)\s*=\s*["']?dark["']?(?:\s+[is])?\s*\]|\.dark(?![a-zA-Z0-9_-]))/i;
+  /(?:^|,|\s|\(|&)(?:html|body|:root)?(?:\[data-(?:(?:uxs-|bs-)?theme|color-mode|mode)\s*=\s*["']?dark["']?(?:\s+[is])?\s*\]|\.(?:dark|uxs-dark)(?![a-zA-Z0-9_-]))/i;
 const NON_DEFAULT_THEME_ATTR_RE =
-  /\[data-(?:(?:uxs-|bs-)?theme|color-mode)\s*=\s*["']?([a-z0-9_-]+)["']?(?:\s+[is])?\s*\]/gi;
+  /\[data-(?:(?:uxs-|bs-)?theme|color-mode|mode)\s*=\s*["']?([a-z0-9_-]+)["']?(?:\s+[is])?\s*\]/gi;
 
 function stripBalancedPseudo(str, nameRe = /^:not\(/i) {
   const s = String(str || "");
@@ -947,7 +1020,7 @@ function containsNegatedLightPseudo(selStr) {
         pk++;
       }
       const argInner = sInner.slice(pOpen + 1, pd === 0 ? pk - 1 : pk);
-      if (/(?:\.light|\.uxs-light|\[data-(?:(?:uxs-|bs-)?theme|color-mode)\s*=\s*["']?light["']?(?:\s+[is])?\s*\])(?![a-zA-Z0-9_-])/i.test(argInner)) {
+      if (/(?:\.light|\.uxs-light|\[data-(?:(?:uxs-|bs-)?theme|color-mode|mode)\s*=\s*["']?light["']?(?:\s+[is])?\s*\])(?![a-zA-Z0-9_-])/i.test(argInner)) {
         return true;
       }
       j = pk;
@@ -997,10 +1070,10 @@ function isRootTokenSelectorHeader(hdr, parentIsRoot = false) {
   if (isNonDefaultThemeSelectorHeader(clean)) return false;
   if (/^@theme(?:\s+(?:inline|static|reference|default))*\b/i.test(clean)) return true;
   if (/^@(?:media|supports|layer|container|document|scope)\b/i.test(clean)) return false;
-  const lightAttrReStr = "\\[data-(?:(?:uxs-|bs-)?theme|color-mode)\\s*=\s*[\"']?(?:light|default)[\"']?(?:\\s+[is])?\\s*\\]";
+  const lightAttrReStr = "\\[data-(?:(?:uxs-|bs-)?theme|color-mode|mode)\\s*=\\s*[\"']?(?:light|default)[\"']?(?:\\s+[is])?\\s*\\]";
   const rootBases = parentIsRoot
-    ? `:root|:host|html|body|&(?![a-zA-Z0-9_-]|::)|(?:${lightAttrReStr}|\\.light(?![a-zA-Z0-9_-]))`
-    : `:root|:host|html|body|(?:${lightAttrReStr}|\\.light(?![a-zA-Z0-9_-]))`;
+    ? `:root|:host|html|body|&(?![a-zA-Z0-9_-]|::)|(?:${lightAttrReStr}|\\.(?:light|uxs-light)(?![a-zA-Z0-9_-]))`
+    : `:root|:host|html|body|(?:${lightAttrReStr}|\\.(?:light|uxs-light)(?![a-zA-Z0-9_-]))`;
   const baseRe = new RegExp(`^(?:${rootBases})`, "i");
   const isSingleRootBranch = (branch) => {
     const t = branch.trim();
@@ -1033,7 +1106,7 @@ function isRootTokenSelectorHeader(hdr, parentIsRoot = false) {
     }
     while (p < t.length) {
       const rest = t.slice(p);
-      const attrM = /^\[data-(?:(?:uxs-|bs-)?theme|color-mode)(?:\s*=\s*["']?(?:light|default)["']?(?:\s+[is])?\s*)?\]/i.exec(rest);
+      const attrM = /^\[data-(?:(?:uxs-|bs-)?theme|color-mode|mode)(?:\s*=\s*["']?(?:light|default)["']?(?:\s+[is])?\s*)?\]/i.exec(rest);
       if (attrM) {
         p += attrM[0].length;
         continue;
@@ -1062,7 +1135,7 @@ function isRootTokenSelectorHeader(hdr, parentIsRoot = false) {
         if (d !== 0) return false;
         const inner = t.slice(open + 1, k - 1);
         if (isNotPseudo) {
-          if (/(?:\.light|\.uxs-light|\[data-(?:(?:uxs-|bs-)?theme|color-mode)\s*=\s*["']?light["']?(?:\s+[is])?\s*\])(?![a-zA-Z0-9_-])/i.test(inner)) {
+          if (/(?:\.light|\.uxs-light|\[data-(?:(?:uxs-|bs-)?theme|color-mode|mode)\s*=\s*["']?light["']?(?:\s+[is])?\s*\])(?![a-zA-Z0-9_-])/i.test(inner)) {
             return false;
           }
         } else if (containsNegatedLightPseudo(inner)) {
@@ -1475,10 +1548,20 @@ function extractCssCustomProperties(cssText, outMap, aliasesMap, fallbacksMap = 
   extractCustomPropsFromSplitSlice(scopedCss, outMap, aliasesMap, fallbacksMap, compositesMap, scopedLocked);
 }
 
+function canonFsPath(p) {
+  try {
+    return (realpathSync.native || realpathSync)(p);
+  } catch {
+    return resolve(p);
+  }
+}
+
 export function loadDefinedTokens(tokensArg, excludeFiles = new Set()) {
   const abs = resolve(tokensArg);
   if (!existsSync(abs)) throw new Error(`Tokens target not found: ${abs}`);
+  const canonExcludes = new Set([...excludeFiles].map(canonFsPath));
   const out = new Map();
+  out.__modes = new Set();
   const aliases = new Map();
   const fallbacks = new Map();
   const composites = new Map();
@@ -1504,7 +1587,7 @@ export function loadDefinedTokens(tokensArg, excludeFiles = new Set()) {
     const tmpOut = new Map();
     const tmpAliases = new Map();
     const tmpComposites = new Map();
-    flattenGenericTokens(parsed, [], tmpOut, tmpAliases, tmpComposites);
+    flattenGenericTokens(parsed, [], tmpOut, tmpAliases, tmpComposites, out.__modes);
     const hasInternalModes =
       [...tmpOut.keys(), ...tmpAliases.keys(), ...tmpComposites.keys()].some((k) => /^(light|dark)(?:\.|$)/i.test(k)) ||
       hasExtensionThemeModes(parsed);
@@ -1564,7 +1647,7 @@ export function loadDefinedTokens(tokensArg, excludeFiles = new Set()) {
         }
         if (!isFile) continue;
         {
-          if (excludeFiles.has(resolve(full))) continue;
+          if (canonExcludes.has(canonFsPath(full))) continue;
           const rel = relative(dir, full).replace(/\\/g, "/");
           if (/(^|\/)(?:tests?|__tests__|fixtures|__fixtures__|storybook-static|_audit|ios\/App\/App\/public|android\/app\/src\/main\/assets\/public)\//i.test(rel)) continue;
           if (/(?:\.test\.|\.spec\.|\.min\.|\.bundle\.)/i.test(rel)) continue;
@@ -1603,6 +1686,9 @@ export function loadDefinedTokens(tokensArg, excludeFiles = new Set()) {
     scanDir(abs);
   } else if (abs.toLowerCase().endsWith(".json")) {
     const json = JSON.parse(readFileSync(abs, "utf8"));
+    if (!json || typeof json !== "object" || Array.isArray(json)) {
+      throw new Error(`Invalid tokens JSON '${abs}': must be a JSON object.`);
+    }
     if (json.schema && String(json.schema).startsWith("dsaf-tokens/")) {
       if (json.target && existsSync(json.target) && statSync(json.target).isDirectory()) {
         scanDir(json.target);
@@ -1610,17 +1696,17 @@ export function loadDefinedTokens(tokensArg, excludeFiles = new Set()) {
       if (Array.isArray(json.dtcgFiles)) {
         for (const df of json.dtcgFiles) {
           const p = json.target && existsSync(join(json.target, df.file)) ? join(json.target, df.file) : df.file;
-          if (existsSync(p) && statSync(p).isFile() && !excludeFiles.has(resolve(p))) {
+          if (existsSync(p) && statSync(p).isFile() && !canonExcludes.has(canonFsPath(p))) {
             try {
               queueTokenJson(JSON.parse(readFileSync(p, "utf8")), df.file);
             } catch {}
           }
         }
       }
-    } else if (!excludeFiles.has(abs)) {
+    } else if (!canonExcludes.has(canonFsPath(abs))) {
       queueTokenJson(json, basename(abs));
     }
-  } else if (!excludeFiles.has(abs)) {
+  } else if (!canonExcludes.has(canonFsPath(abs))) {
     cssTexts.push(readFileSync(abs, "utf8"));
   }
 
@@ -1667,7 +1753,14 @@ export function loadDefinedTokens(tokensArg, excludeFiles = new Set()) {
       }
       continue;
     }
-    const prefixIfUnscoped = (k) => (/^(light|dark)(?:\.|$)/i.test(k) ? k : `${fileMode}.${k}`);
+    const hasExplicitModePrefix = (k) =>
+      /^(light|dark)(?:\.|$)/i.test(k) ||
+      [...(out.__modes || [])].some((m) => {
+        const cm = canonKey(m);
+        const ck2 = canonKey(k);
+        return ck2 === cm || ck2.startsWith(`${cm}.`);
+      });
+    const prefixIfUnscoped = (k) => (hasExplicitModePrefix(k) ? k : `${fileMode}.${k}`);
     const modeKeys = modeLocalCanonKeys[fileMode];
     for (const [k, v] of tmpOut.entries()) {
       const pk = prefixIfUnscoped(k);
@@ -1681,7 +1774,9 @@ export function loadDefinedTokens(tokensArg, excludeFiles = new Set()) {
       const pk = prefixIfUnscoped(k);
       const ck = canonKey(pk);
       const nextTarget =
-        modeKeys.has(canonKey(target)) && !/^(light|dark)(?:\.|$)/i.test(target) ? `${fileMode}.${target}` : target;
+        !hasExplicitModePrefix(k) && modeKeys.has(canonKey(target)) && !hasExplicitModePrefix(target)
+          ? `${fileMode}.${target}`
+          : target;
       if (!pass1Occupied.has(ck)) {
         aliases.set(pk, nextTarget);
         pass1Occupied.add(ck);
@@ -1799,7 +1894,9 @@ export function loadDefinedTokens(tokensArg, excludeFiles = new Set()) {
     }
     const resolvedDarkCss = new Map();
     for (const [dk, val] of mergedDarkOut.entries()) {
+      if (/^light\./i.test(dk)) continue;
       if (darkAffectedCanons.has(canonKey(dk)) || !out.has(dk) || val !== out.get(dk)) {
+        if (/^dark\./i.test(dk) && out.has(dk)) out.set(dk, val);
         resolvedDarkCss.set(dk, val);
       }
     }
@@ -1853,7 +1950,53 @@ export function scanCodeConnect(codeConnectDir) {
       cur++;
       while (cur < cleanTxt.length && /\s/.test(cleanTxt[cur])) cur++;
       const compM = /^([A-Za-z0-9_.]+)/.exec(cleanTxt.slice(cur, cur + 160));
-      if (compM) found.add(compM[1]);
+      if (compM) {
+        found.add(compM[1]);
+      } else if (cleanTxt[cur] === '"' || cleanTxt[cur] === "'" || cleanTxt[cur] === "`") {
+        let j = cur;
+        let p = 1;
+        let q = null;
+        while (j < cleanTxt.length && p > 0) {
+          const ch = cleanTxt[j];
+          if (q) {
+            if (ch === "\\" && j + 1 < cleanTxt.length) {
+              j += 2;
+              continue;
+            }
+            if (ch === q || (q !== "`" && ch === "\n")) q = null;
+          } else if (ch === '"' || ch === "'" || ch === "`") {
+            q = ch;
+          } else if (ch === "(") {
+            p++;
+          } else if (ch === ")") {
+            p--;
+            if (p === 0) break;
+          }
+          j++;
+        }
+        const firstComma = (() => {
+          let cq = null;
+          for (let ci = cur; ci < j; ci++) {
+            const c = cleanTxt[ci];
+            if (cq) {
+              if (c === "\\" && ci + 1 < j) { ci++; continue; }
+              if (c === cq || (cq !== "`" && c === "\n")) cq = null;
+            } else if (c === '"' || c === "'" || c === "`") cq = c;
+            else if (c === ",") return ci;
+          }
+          return -1;
+        })();
+        const restBody = firstComma !== -1 ? cleanTxt.slice(firstComma + 1, j) : "";
+        const propM = /(?:component|name|selector)\s*:\s*["']([A-Za-z0-9_.-]+)["']/i.exec(restBody);
+        const tagMatches = [...restBody.matchAll(/<([A-Za-z][A-Za-z0-9_.-]*)(?=[\s/>])/g)].map((tm) => tm[1]);
+        const preferredTag = tagMatches.find((t) => t.includes("-") || /^[A-Z]/.test(t)) || tagMatches[0];
+        const fileStem = basename(full)
+          .replace(/\.figma\.(?:batch\.)?(?:tsx?|jsx?|mjs|cjs)$/i, "")
+          .replace(/[^A-Za-z0-9_.-]/g, "");
+        if (propM && propM[1]) found.add(propM[1]);
+        else if (preferredTag) found.add(preferredTag);
+        else if (fileStem) found.add(fileStem);
+      }
     }
     for (const m of txt.matchAll(/\/\/\s*component\s*=\s*([A-Za-z0-9_.-]+)/g)) {
       found.add(m[1]);
@@ -2025,7 +2168,7 @@ function detectDominantPrefix(definedMap, figmaMap) {
 export function compareVertices({ figmaPath, tokensArg, codeConnectDir = null, runtimePath = null, prefix = null }) {
   const absFigma = resolve(figmaPath);
   const figma = loadFigmaVariables(absFigma);
-  const defined = loadDefinedTokens(tokensArg, new Set([absFigma]));
+  const defined = loadDefinedTokens(tokensArg, new Set([canonFsPath(absFigma)]));
   const codeConnect = scanCodeConnect(codeConnectDir);
 
   let shippedSummary = null;
@@ -2055,15 +2198,23 @@ export function compareVertices({ figmaPath, tokensArg, codeConnectDir = null, r
     };
   }
 
-  const activePrefix = prefix ? canonKey(normalizeKey(prefix)).replace(/^\.+|\.+$/g, "") : detectDominantPrefix(defined, figma.variables);
+  const explicitPrefix = prefix ? canonKey(normalizeKey(prefix)).replace(/^\.+|\.+$/g, "") : null;
+  const definedPrefix = explicitPrefix || detectDominantPrefix(defined, figma.variables);
+  const strippedDefinedForPrefix = new Map();
+  for (const [dKey, dVal] of defined.entries()) {
+    const ck = canonKey(dKey);
+    const bare = definedPrefix && ck.startsWith(`${definedPrefix}.`) ? ck.slice(definedPrefix.length + 1) : ck;
+    if (!strippedDefinedForPrefix.has(bare)) strippedDefinedForPrefix.set(bare, dVal);
+  }
+  const figmaPrefix = explicitPrefix || detectDominantPrefix(figma.variables, strippedDefinedForPrefix);
   const directLookup = new Map();
   const strippedLookup = new Map();
   for (const [dKey, dVal] of defined.entries()) {
     const ck = canonKey(dKey);
     if (!directLookup.has(dKey)) directLookup.set(dKey, { key: dKey, value: dVal });
     if (!directLookup.has(ck)) directLookup.set(ck, { key: dKey, value: dVal });
-    if (activePrefix && ck.startsWith(`${activePrefix}.`)) {
-      const bareCanon = ck.slice(activePrefix.length + 1);
+    if (definedPrefix && ck.startsWith(`${definedPrefix}.`)) {
+      const bareCanon = ck.slice(definedPrefix.length + 1);
       if (!strippedLookup.has(bareCanon)) strippedLookup.set(bareCanon, { key: dKey, value: dVal });
     }
   }
@@ -2073,12 +2224,17 @@ export function compareVertices({ figmaPath, tokensArg, codeConnectDir = null, r
   const darkStrippedLookup = new Map();
   if (darkCssMap) {
     for (const [dKey, dVal] of darkCssMap.entries()) {
-      const ck = canonKey(dKey);
-      if (!darkDirectLookup.has(dKey)) darkDirectLookup.set(dKey, { key: `dark.${dKey}`, value: dVal });
-      if (!darkDirectLookup.has(ck)) darkDirectLookup.set(ck, { key: `dark.${dKey}`, value: dVal });
-      if (activePrefix && ck.startsWith(`${activePrefix}.`)) {
-        const bareCanon = ck.slice(activePrefix.length + 1);
-        if (!darkStrippedLookup.has(bareCanon)) darkStrippedLookup.set(bareCanon, { key: `dark.${dKey}`, value: dVal });
+      const alreadyDark = /^dark\./i.test(dKey);
+      const displayKey = alreadyDark ? dKey : `dark.${dKey}`;
+      const lookupKeys = alreadyDark ? [dKey, dKey.slice(5)] : [dKey];
+      for (const lk of lookupKeys) {
+        const lck = canonKey(lk);
+        if (!darkDirectLookup.has(lk)) darkDirectLookup.set(lk, { key: displayKey, value: dVal });
+        if (!darkDirectLookup.has(lck)) darkDirectLookup.set(lck, { key: displayKey, value: dVal });
+        if (definedPrefix && lck.startsWith(`${definedPrefix}.`)) {
+          const bareCanon = lck.slice(definedPrefix.length + 1);
+          if (!darkStrippedLookup.has(bareCanon)) darkStrippedLookup.set(bareCanon, { key: displayKey, value: dVal });
+        }
       }
     }
   }
@@ -2092,12 +2248,18 @@ export function compareVertices({ figmaPath, tokensArg, codeConnectDir = null, r
 
   const lookupInMaps = (keyStr, dMap, sMap) => {
     const ck = canonKey(keyStr);
+    const strippedCk = canonKey(stripPrimitivesSegment(ck));
+    const bareFigma = figmaPrefix && ck.startsWith(`${figmaPrefix}.`) ? ck.slice(figmaPrefix.length + 1) : null;
+    const bareStrippedFigma =
+      figmaPrefix && strippedCk.startsWith(`${figmaPrefix}.`) ? strippedCk.slice(figmaPrefix.length + 1) : null;
     const candidates = [
       keyStr,
       ck,
       stripPrimitivesSegment(keyStr),
       canonKey(stripPrimitivesSegment(keyStr)),
       stripPrimitivesSegment(ck),
+      ...(bareFigma ? [bareFigma, stripPrimitivesSegment(bareFigma)] : []),
+      ...(bareStrippedFigma && bareStrippedFigma !== bareFigma ? [bareStrippedFigma] : []),
     ];
     for (const cand of candidates) {
       if (dMap.has(cand)) return dMap.get(cand);
@@ -2108,6 +2270,10 @@ export function compareVertices({ figmaPath, tokensArg, codeConnectDir = null, r
     return null;
   };
   const resolveDefinedEntry = (fKey) => {
+    if (fKey.startsWith("dark.") && darkCssMap) {
+      const darkExactHit = lookupInMaps(fKey, darkDirectLookup, darkStrippedLookup);
+      if (darkExactHit) return { ...darkExactHit, fromDarkCss: true };
+    }
     const directHit = lookupInMaps(fKey, directLookup, strippedLookup);
     if (directHit) return { ...directHit, fromDarkCss: false };
     if (fKey.startsWith("dark.") && darkCssMap) {
@@ -2117,6 +2283,14 @@ export function compareVertices({ figmaPath, tokensArg, codeConnectDir = null, r
     if (fKey.startsWith("light.")) {
       const lightHit = lookupInMaps(fKey.slice(6), directLookup, strippedLookup);
       if (lightHit) return { ...lightHit, fromDarkCss: false };
+    }
+    if (!/^(?:light|dark)\./i.test(fKey)) {
+      const ck = canonKey(fKey);
+      const bareFKey = figmaPrefix && ck.startsWith(`${figmaPrefix}.`) ? ck.slice(figmaPrefix.length + 1) : fKey;
+      const prefLightHit =
+        lookupInMaps(`light.${fKey}`, directLookup, strippedLookup) ||
+        (bareFKey !== fKey ? lookupInMaps(`light.${bareFKey}`, directLookup, strippedLookup) : null);
+      if (prefLightHit) return { ...prefLightHit, fromDarkCss: false };
     }
     return null;
   };
@@ -2148,7 +2322,7 @@ export function compareVertices({ figmaPath, tokensArg, codeConnectDir = null, r
       if (ck && !shippedNorm.has(ck)) shippedNorm.set(ck, { cssVar, value: normVal });
       if (ck && !shippedCanonMap.has(ck)) shippedCanonMap.set(ck, { cssVar, value: normVal });
     }
-    const shippedPrefix = activePrefix || detectDominantPrefix(shippedCanonMap, defined);
+    const shippedPrefix = definedPrefix || detectDominantPrefix(shippedCanonMap, defined);
     if (shippedPrefix) {
       for (const [sCk, info] of shippedCanonMap.entries()) {
         if (sCk.startsWith(`${shippedPrefix}.`)) {
@@ -2157,22 +2331,42 @@ export function compareVertices({ figmaPath, tokensArg, codeConnectDir = null, r
         }
       }
     }
+    const isDarkModeKey = (k) => /^dark\./i.test(String(k || ""));
+    const stripLightModePrefix = (k) => String(k || "").replace(/^light\./i, "");
+    const noLightDefinedPrefix =
+      definedPrefix ||
+      detectDominantPrefix(
+        new Map([...defined.entries()].map(([dk, dv]) => [stripLightModePrefix(dk), dv])),
+        shippedCanonMap
+      );
     const seenDefined = new Set();
     for (const pair of allResolvedPairs) {
-      if (pair.fromDarkCss) continue;
       const ck = canonKey(pair.definedKey);
+      if (pair.fromDarkCss || (isDarkModeKey(ck) && !shippedNorm.has(ck))) continue;
       if (seenDefined.has(ck)) continue;
       seenDefined.add(ck);
-      const bareCk = activePrefix && ck.startsWith(`${activePrefix}.`) ? ck.slice(activePrefix.length + 1) : null;
+      const noLightKey = stripLightModePrefix(pair.definedKey);
+      const noLightCk = stripLightModePrefix(ck);
+      const bareCk = definedPrefix && ck.startsWith(`${definedPrefix}.`) ? ck.slice(definedPrefix.length + 1) : null;
+      const bareNoLightCk =
+        noLightDefinedPrefix && noLightCk.startsWith(`${noLightDefinedPrefix}.`)
+          ? noLightCk.slice(noLightDefinedPrefix.length + 1)
+          : null;
       const bareShippedCk = shippedPrefix && ck.startsWith(`${shippedPrefix}.`) ? ck.slice(shippedPrefix.length + 1) : null;
+      const bareShippedNoLightCk =
+        shippedPrefix && noLightCk.startsWith(`${shippedPrefix}.`) ? noLightCk.slice(shippedPrefix.length + 1) : null;
       const cands = [
         pair.definedKey,
         ck,
         stripPrimitivesSegment(pair.definedKey),
         canonKey(stripPrimitivesSegment(pair.definedKey)),
         stripPrimitivesSegment(ck),
+        ...(noLightKey !== pair.definedKey ? [noLightKey, stripPrimitivesSegment(noLightKey), canonKey(stripPrimitivesSegment(noLightKey))] : []),
+        ...(noLightCk !== ck ? [noLightCk, stripPrimitivesSegment(noLightCk)] : []),
         ...(bareCk ? [bareCk] : []),
+        ...(bareNoLightCk ? [bareNoLightCk] : []),
         ...(bareShippedCk ? [bareShippedCk] : []),
+        ...(bareShippedNoLightCk ? [bareShippedNoLightCk] : []),
       ];
       let hit = null;
       for (const c of cands) {
@@ -2221,7 +2415,7 @@ export function compareVertices({ figmaPath, tokensArg, codeConnectDir = null, r
     summary: {
       figmaVariables: totalFigma,
       definedVariablesSampled: uniqueDefinedCanons.size,
-      detectedPrefix: activePrefix,
+      detectedPrefix: definedPrefix || figmaPrefix || null,
       matchedCount: matchedTokens.length,
       valueDriftCount: valueDrift.length,
       designOnlyCount: designOnlyTokens.length,
@@ -2270,9 +2464,15 @@ export function compareDefinedToShipped({ tokensArg, runtimePath, codeConnectDir
     if (ck && !shippedUnique.has(ck)) shippedUnique.set(ck, { cssVar, value: normVal });
   }
 
+  const isDarkModeKey = (k) => /^dark\./i.test(String(k || ""));
+  const stripLightModePrefix = (k) => String(k || "").replace(/^light\./i, "");
+  const noLightDefined = new Map([...defined.entries()].map(([dk, dv]) => [stripLightModePrefix(dk), dv]));
   const activePrefix = prefix
     ? canonKey(normalizeKey(prefix)).replace(/^\.+|\.+$/g, "")
-    : detectDominantPrefix(defined, shippedUnique) || detectDominantPrefix(shippedUnique, defined);
+    : detectDominantPrefix(defined, shippedUnique) ||
+      detectDominantPrefix(noLightDefined, shippedUnique) ||
+      detectDominantPrefix(shippedUnique, defined) ||
+      detectDominantPrefix(shippedUnique, noLightDefined);
   if (activePrefix) {
     for (const [sCk, info] of shippedUnique.entries()) {
       if (sCk.startsWith(`${activePrefix}.`)) {
@@ -2285,9 +2485,11 @@ export function compareDefinedToShipped({ tokensArg, runtimePath, codeConnectDir
   const uniqueDefined = new Map();
   for (const [dKey, dVal] of [...defined.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
     const fullCk = canonKey(dKey);
-    const bareKey = activePrefix && fullCk.startsWith(`${activePrefix}.`) ? fullCk.slice(activePrefix.length + 1) : fullCk;
+    if (isDarkModeKey(fullCk) && !shippedNorm.has(fullCk)) continue;
+    const noLightCk = stripLightModePrefix(fullCk);
+    const bareKey = activePrefix && noLightCk.startsWith(`${activePrefix}.`) ? noLightCk.slice(activePrefix.length + 1) : noLightCk;
     if (!uniqueDefined.has(bareKey) || (dKey.includes(".") && !uniqueDefined.get(bareKey).key.includes("."))) {
-      uniqueDefined.set(bareKey, { key: dKey, bareKey, canon: fullCk, value: dVal });
+      uniqueDefined.set(bareKey, { key: dKey, bareKey, canon: fullCk, noLightCanon: noLightCk, value: dVal });
     }
   }
 
@@ -2297,14 +2499,20 @@ export function compareDefinedToShipped({ tokensArg, runtimePath, codeConnectDir
   const matchedShippedCanons = new Set();
 
   for (const entry of uniqueDefined.values()) {
+    const noLightKey = stripLightModePrefix(entry.key);
+    const noLightCk = entry.noLightCanon || stripLightModePrefix(entry.canon);
     const barePrefix = activePrefix && entry.canon.startsWith(`${activePrefix}.`) ? entry.canon.slice(activePrefix.length + 1) : null;
+    const bareNoLightPrefix = activePrefix && noLightCk.startsWith(`${activePrefix}.`) ? noLightCk.slice(activePrefix.length + 1) : null;
     const cands = [
       entry.key,
       entry.canon,
       stripPrimitivesSegment(entry.key),
       canonKey(stripPrimitivesSegment(entry.key)),
       stripPrimitivesSegment(entry.canon),
+      ...(noLightKey !== entry.key ? [noLightKey, stripPrimitivesSegment(noLightKey), canonKey(stripPrimitivesSegment(noLightKey))] : []),
+      ...(noLightCk !== entry.canon ? [noLightCk, stripPrimitivesSegment(noLightCk)] : []),
       ...(barePrefix ? [barePrefix] : []),
+      ...(bareNoLightPrefix ? [bareNoLightPrefix] : []),
     ];
     let hit = null;
     for (const c of cands) {
@@ -3438,6 +3646,328 @@ function runSelfTest() {
 
     assert.equal(valuesMatch("oklch(0.7 0.2 250 / 50%)", "oklch(70% 50% 250deg / 0.5)"), true, "R30 A2-L7: out-of-gamut oklch % vs deg/alpha must canonicalize");
     assert.equal(valuesMatch("oklch(0.7 0.2 250deg / 100%)", "oklch(0.7 0.2 250)"), true, "R30 A2-L7: out-of-gamut oklch 100% alpha equals implicit 1");
+
+    // Round 31 regressions (A2-H3 [data-mode="dark"] & .uxs-dark routing, A2-M9 symmetric Figma dominant prefix)
+    const r31DarkDir = join(scratch, "r31-dark-mode");
+    mkdirSync(r31DarkDir, { recursive: true });
+    writeFileSync(
+      join(r31DarkDir, "tokens.css"),
+      [
+        ':root[data-mode="light"] { --bg: #ffffff; }',
+        ".uxs-light { --fg: #111827; }",
+        '[data-mode="dark"] { --bg: #0f172a; }',
+        ".uxs-dark { --fg: #f8fafc; }",
+      ].join("\n") + "\n"
+    );
+    const r31DarkFigma = join(r31DarkDir, "figma.json");
+    writeFileSync(
+      r31DarkFigma,
+      JSON.stringify({ bg: "#ffffff", fg: "#111827", dark: { bg: "#0f172a", fg: "#f8fafc" } })
+    );
+    const r31DarkDiff = compareVertices({ figmaPath: r31DarkFigma, tokensArg: r31DarkDir });
+    assert.deepEqual(r31DarkDiff.valueDrift, [], `R31 A2-H3: expected 0 drift on data-mode/.uxs-dark, got ${JSON.stringify(r31DarkDiff.valueDrift)}`);
+    assert.equal(r31DarkDiff.summary.triangulationCoveragePct, 100, "R31 A2-H3: dark/light selectors must route cleanly for 100% match");
+
+    const r31SymDir = join(scratch, "r31-sym-prefix");
+    mkdirSync(r31SymDir, { recursive: true });
+    writeFileSync(
+      join(r31SymDir, "tokens.css"),
+      ":root { --color-surface: #ffffff; --color-text: #111111; --space-md: 16px; }\n"
+    );
+    const r31SymFigma = join(r31SymDir, "figma.json");
+    writeFileSync(
+      r31SymFigma,
+      JSON.stringify({ ds: { color: { surface: "#ffffff", text: "#111111" }, space: { md: "16px" } } })
+    );
+    const r31SymDiff = compareVertices({ figmaPath: r31SymFigma, tokensArg: r31SymDir });
+    assert.equal(r31SymDiff.summary.detectedPrefix, "ds", "R31 A2-M9: Figma-side dominant prefix 'ds' must be auto-detected");
+    assert.equal(r31SymDiff.summary.triangulationCoveragePct, 100, "R31 A2-M9: Figma ds/* tokens must match unprefixed CSS tokens at 100%");
+    assert.deepEqual(r31SymDiff.valueDrift, []);
+
+    // Round 33 (A2-H1 & A2-M4): dark.* DTCG tokens & $root group tokens must not false-flag shipped CSS & must resolve cleanly
+    const r33Dir = join(scratch, "r33-dtcg-modes");
+    mkdirSync(r33Dir, { recursive: true });
+    writeFileSync(
+      join(r33Dir, "light.tokens.json"),
+      JSON.stringify({
+        surface: { $root: { $type: "color", $value: "#ffffff" }, card: { $value: "{surface.$root}" } },
+        text: { primary: { $type: "color", $value: "#111111" } },
+      })
+    );
+    writeFileSync(
+      join(r33Dir, "dark.tokens.json"),
+      JSON.stringify({
+        surface: { $root: { $type: "color", $value: "#0b0f19" }, card: { $value: "{surface.$root}" } },
+        text: { primary: { $type: "color", $value: "#f8fafc" } },
+      })
+    );
+    const r33Figma = join(r33Dir, "figma-ext.json");
+    writeFileSync(
+      r33Figma,
+      JSON.stringify({
+        surface: {
+          $type: "color",
+          $value: "#ffffff",
+          $extensions: { mode: { light: "#ffffff", dark: "#0b0f19" } },
+        },
+        surfaceCard: {
+          $type: "color",
+          $value: "#ffffff",
+          $extensions: { mode: { light: "#ffffff", dark: "#0b0f19" } },
+        },
+        "surface-card": { $type: "color", $value: "{surface}", $extensions: { mode: { light: "{surface}", dark: "#0b0f19" } } },
+        text: { primary: { $type: "color", $value: "#111111", $extensions: { mode: { light: "#111111", dark: "#f8fafc" } } } },
+      })
+    );
+    const r33Rt = join(r33Dir, "runtime.json");
+    writeFileSync(
+      r33Rt,
+      JSON.stringify({
+        schema: "dsaf-pw/1",
+        allPassed: true,
+        files: [
+          {
+            file: "index.html",
+            passed: true,
+            computedVars: {
+              "--surface": "#ffffff",
+              "--surface-card": "#ffffff",
+              "--text-primary": "#111111",
+            },
+          },
+        ],
+      })
+    );
+    const r33Ship = compareDefinedToShipped({ tokensArg: r33Dir, runtimePath: r33Rt });
+    assert.deepEqual(r33Ship.shippedSummary.definedNotShipped, [], `R33 A2-H1/M4: split light/dark + $root must yield 0 definedNotShipped, got ${JSON.stringify(r33Ship.shippedSummary.definedNotShipped)}`);
+    assert.equal(r33Ship.shippedSummary.shippedMatchedCount, 3, "R33 A2-H1/M4: 3 light/root tokens should match shipped CSS vars");
+    const r33ExtDir = join(scratch, "r33-dtcg-ext");
+    mkdirSync(r33ExtDir, { recursive: true });
+    const r33ExtTok = join(r33ExtDir, "tokens.json");
+    writeFileSync(
+      r33ExtTok,
+      JSON.stringify({
+        surface: { $root: { $type: "color", $value: "#ffffff", $extensions: { mode: { light: "#ffffff", dark: "#0b0f19" } } } },
+        surfaceCard: { $type: "color", $value: "{surface.$root}", $extensions: { mode: { light: "{surface.$root}", dark: "#0b0f19" } } },
+        text: { primary: { $type: "color", $value: "#111111", $extensions: { mode: { light: "#111111", dark: "#f8fafc" } } } },
+      })
+    );
+    const r33ExtFigma = join(r33ExtDir, "figma.json");
+    writeFileSync(
+      r33ExtFigma,
+      JSON.stringify({
+        light: { surface: "#ffffff", "surface-card": "#ffffff", "text.primary": "#111111" },
+        dark: { surface: "#0b0f19", "surface-card": "#0b0f19", "text.primary": "#f8fafc" },
+      })
+    );
+    const r33Tri = compareVertices({ figmaPath: r33ExtFigma, tokensArg: r33ExtTok, runtimePath: r33Rt });
+    assert.deepEqual(r33Tri.shippedSummary.definedNotShipped, [], `R33 A2-H1: compareVertices shippedSummary must skip dark.* DTCG tokens, got ${JSON.stringify(r33Tri.shippedSummary.definedNotShipped)}`);
+    assert.equal(r33Tri.shippedSummary.shippedMatchedCount, 3);
+
+    // Round 34 (A2-M16 dual distinct prefixes, A2-M17 symmetric light.* & non-light/dark mode aliases, A2-L18 URL-first Code Connect, A2-L19 symlinked --figma in --tokens):
+    const r34PrefixDir = join(scratch, "r34-prefixes");
+    mkdirSync(r34PrefixDir, { recursive: true });
+    const r34FigmaPlain = join(r34PrefixDir, "figma-vars.tokens.json");
+    writeFileSync(
+      r34FigmaPlain,
+      JSON.stringify({
+        tokens: {
+          color: { bg: { $value: "#ffffff" }, primary: { $value: "#2563eb" } },
+          spacing: { md: { $value: "16px" } },
+        },
+      })
+    );
+    writeFileSync(
+      join(r34PrefixDir, "ds.css"),
+      ":root { --ds-color-bg: #ffffff; --ds-color-primary: #2563eb; --ds-spacing-md: 1rem; }\n"
+    );
+    const r34DualPrefixRes = compareVertices({
+      figmaPath: r34FigmaPlain,
+      tokensArg: join(r34PrefixDir, "ds.css"),
+    });
+    assert.equal(r34DualPrefixRes.summary.matchedCount, 3, "R34 A2-M16: distinct figmaPrefix (tokens) and definedPrefix (ds) must all match");
+    assert.equal(r34DualPrefixRes.summary.designOnlyCount, 0);
+    assert.equal(r34DualPrefixRes.summary.codeOnlyCount, 0);
+
+    const r34SymRepo = join(scratch, "r34-sym-repo");
+    mkdirSync(join(r34SymRepo, "tokens"), { recursive: true });
+    writeFileSync(
+      join(r34SymRepo, "tokens/light.json"),
+      JSON.stringify({
+        color: { bg: { $type: "color", $value: "#ffffff" }, primary: { $type: "color", $value: "#2563eb" } },
+        spacing: {
+          sm: { $type: "dimension", $value: "8px", $extensions: { mode: { compact: "4px" } } },
+          card: { $type: "dimension", $value: "16px", $extensions: { mode: { compact: "{spacing.sm}" } } },
+        },
+      })
+    );
+    const r34FigmaSymTarget = join(r34SymRepo, "tokens/figma-vars.tokens.json");
+    writeFileSync(
+      r34FigmaSymTarget,
+      JSON.stringify({
+        tokens: {
+          color: { bg: { $value: "#ffffff" }, primary: { $value: "#2563eb" } },
+          spacing: { md: { $value: "16px" } },
+        },
+      })
+    );
+    const r34FigmaSymLink = join(scratch, "r34-figma-link.json");
+    symlinkSync(r34FigmaSymTarget, r34FigmaSymLink);
+    const r34LightAndSymRes = compareVertices({
+      figmaPath: r34FigmaSymLink,
+      tokensArg: r34SymRepo,
+    });
+    assert.ok(
+      r34LightAndSymRes.matchedTokens.some((m) => m.key === "tokens.color.bg" && m.value === "#ffffff"),
+      "R34 A2-M17 & A2-L19: unprefixed/prefixed Figma key must match tokens/light.json while symlinked figma target inside --tokens is excluded"
+    );
+    const r34TokLoaded = loadDefinedTokens(r34SymRepo, new Set([canonFsPath(r34FigmaSymLink)]));
+    assert.equal(r34TokLoaded.get("compact.spacing.card"), "4px", "R34 A2-M17: non-light/dark $extensions.mode sibling alias must resolve to compact value 4px");
+    assert.equal(r34TokLoaded.has("tokens.spacing.md"), false, "R34 A2-L19: symlinked --figma target inside --tokens must be excluded");
+
+    const r34CcDir = join(scratch, "r34-cc");
+    mkdirSync(r34CcDir, { recursive: true });
+    writeFileSync(
+      join(r34CcDir, "button.figma.ts"),
+      'figma.connect("https://www.figma.com/design/abc/DS?node-id=1-2", { example: () => html`<ds-button></ds-button>` });\n'
+    );
+    const r34Cc = scanCodeConnect(r34CcDir);
+    assert.ok(r34Cc.mappedComponents.includes("ds-button"), `R34 A2-L18: URL-first figma.connect must extract ds-button, got ${JSON.stringify(r34Cc.mappedComponents)}`);
+
+    // Round 36 (R35-A2-M1 out-of-gamut srgb, R35-A2-M4 fontFamily array, R35-A2-M5 CSS Color 4 & / 1 alpha):
+    assert.equal(valuesMatch({ colorSpace: "srgb", components: [1.093, -0.226, -0.15] }, "#ff0000"), true);
+    assert.equal(valuesMatch({ colorSpace: "srgb", components: [1.093, -0.226, -0.15] }, "#010000"), false);
+    assert.equal(valuesMatch(["IBM Plex Sans", "Helvetica Neue"], "IBM Plex Sans"), true);
+    assert.equal(valuesMatch("color(srgb 1 0 0)", "#ff0000"), true);
+    assert.equal(valuesMatch("hwb(0 0% 0%)", "#ff0000"), true);
+    assert.equal(valuesMatch("lab(54.29 80.81 69.89)", "#ff0000"), true);
+    assert.equal(valuesMatch("rgb(none 255 0)", "#00ff00"), true);
+    assert.equal(valuesMatch("hsl(none 100% 50%)", "#ff0000"), true);
+    assert.equal(valuesMatch({ colorSpace: "display-p3", components: [1, 0, 0], alpha: 1 }, "color(display-p3 1 0 0 / 1)"), true);
+
+    // Round 37 (R36-A2-M4 DTCG $extends + R36-A2-L1 display-p3 % + scientific oklch):
+    const r37ExtTok = join(scratch, "r37-extends.tokens.json");
+    const r37ExtFig = join(scratch, "r37-extends.figma.json");
+    writeFileSync(
+      r37ExtTok,
+      JSON.stringify({
+        base: {
+          bg: { $type: "color", $value: "#ffffff" },
+          fg: { $type: "color", $value: "#111111" },
+        },
+        dark: {
+          $extends: "{base}",
+          bg: { $type: "color", $value: "#09090b" },
+        },
+      })
+    );
+    writeFileSync(
+      r37ExtFig,
+      JSON.stringify({
+        "base/bg": "#ffffff",
+        "base/fg": "#111111",
+        "dark/bg": "#09090b",
+        "dark/fg": "#111111",
+      })
+    );
+    const r37ExtRes = compareVertices({ figmaPath: r37ExtFig, tokensArg: r37ExtTok });
+    assert.equal(r37ExtRes.summary.triangulationCoveragePct, 100, "R37 A2-M4: DTCG $extends inherited group child must resolve in figma-diff");
+    assert.equal(r37ExtRes.summary.designOnlyCount, 0);
+
+    assert.equal(valuesMatch({ colorSpace: "display-p3", components: [1, 0, 0] }, "color(display-p3 100% 0% 0%)"), true, "R37 A2-L1: display-p3 % channels must normalize");
+    assert.equal(valuesMatch("oklch(0.6 0.2 30)", "oklch(6e-1 2e-1 3e1)"), true, "R37 A2-L1: scientific notation in oklch must parse");
+
+    // Round 38 (R37-A2-L3 rounded alpha 1 + R37-A2-M3 leaf .light/.dark aliases):
+    assert.equal(
+      valuesMatch({ colorSpace: "display-p3", components: [1, 0.5, 0], alpha: 0.9999999 }, "color(display-p3 1 0.5 0)"),
+      true,
+      "R38 A2-L3: alpha rounding to 1 must omit / 1 on wide-gamut color()"
+    );
+    const r38LeafTok = join(scratch, "r38-leaf.tokens.json");
+    const r38LeafFig = join(scratch, "r38-leaf.figma.json");
+    writeFileSync(
+      r38LeafTok,
+      JSON.stringify({
+        color: {
+          $type: "color",
+          bg: { light: { $value: "#ffffff" }, dark: { $value: "#111111" } },
+          cardText: { light: { $value: "{color.bg}" }, dark: { $value: "{color.bg}" } },
+        },
+      })
+    );
+    writeFileSync(
+      r38LeafFig,
+      JSON.stringify({
+        "color/bg/light": "#ffffff",
+        "color/bg/dark": "#111111",
+        "color/cardText/light": "#ffffff",
+        "color/cardText/dark": "#111111",
+      })
+    );
+    const r38LeafRes = compareVertices({ figmaPath: r38LeafFig, tokensArg: r38LeafTok });
+    assert.equal(r38LeafRes.summary.triangulationCoveragePct, 100, "R38 A2-M3: leaf .light/.dark alias targets must match Figma variables");
+
+    // Round 40 (R39-A2-M6 $extensions.mode-only tokens + R39-A2-M7 dark composite with .dark CSS custom prop):
+    const r40ExtTok = join(scratch, "r40-ext-tokens.json");
+    const r40ExtFig = join(scratch, "r40-ext-figma.json");
+    writeFileSync(
+      r40ExtTok,
+      JSON.stringify({
+        color: {
+          $type: "color",
+          surface: { $extensions: { mode: { light: "#ffffff", dark: "#0b0f19" } } },
+          accent: { $extensions: { mode: { dark: "#38bdf8" } } },
+        },
+      })
+    );
+    writeFileSync(
+      r40ExtFig,
+      JSON.stringify({
+        "light/color/surface": "#ffffff",
+        "dark/color/surface": "#0b0f19",
+        "dark/color/accent": "#38bdf8",
+      })
+    );
+    const r40ExtDiff = compareVertices({ figmaPath: r40ExtFig, tokensArg: r40ExtTok });
+    assert.equal(r40ExtDiff.summary.triangulationCoveragePct, 100, "R40 A2-M6: $extensions.mode-only tokens without $value must resolve in compareVertices");
+    assert.equal(r40ExtDiff.summary.valueDriftCount, 0);
+
+    const r40DarkCompDir = join(scratch, "r40-dark-comp");
+    const r40DarkCompFig = join(scratch, "r40-dark-comp-figma.json");
+    const r40DarkCompFigStale = join(scratch, "r40-dark-comp-figma-stale.json");
+    mkdirSync(r40DarkCompDir, { recursive: true });
+    writeFileSync(
+      join(r40DarkCompDir, "dark.tokens.json"),
+      JSON.stringify({
+        shadow: { card: { $type: "shadow", $value: "0 4px 8px {color.ring}" } },
+      })
+    );
+    writeFileSync(
+      join(r40DarkCompDir, "theme.css"),
+      ":root { --color-ring: #000000; }\n.dark { --color-ring: #38bdf8; }\n"
+    );
+    writeFileSync(
+      r40DarkCompFig,
+      JSON.stringify({
+        "dark/shadow/card": "0 4px 8px #38bdf8",
+        "color/ring": "#000000",
+        "dark/color/ring": "#38bdf8",
+      })
+    );
+    writeFileSync(
+      r40DarkCompFigStale,
+      JSON.stringify({
+        "dark/shadow/card": "0 4px 8px #000000",
+        "color/ring": "#000000",
+        "dark/color/ring": "#38bdf8",
+      })
+    );
+    const r40DarkOk = compareVertices({ figmaPath: r40DarkCompFig, tokensArg: r40DarkCompDir });
+    assert.equal(r40DarkOk.summary.valueDriftCount, 0, "R40 A2-M7: dark.shadow.card must resolve {color.ring} from .dark CSS (#38bdf8) without drift");
+    assert.equal(r40DarkOk.summary.matchedCount, 3, "R40 A2-M7: all 3 dark/base tokens must match");
+    assert.equal(r40DarkOk.summary.codeOnlyCount, 0, "R40 A2-M7: dark.shadow.card must not be double-prefixed dark.dark.shadow.card");
+    const r40DarkStale = compareVertices({ figmaPath: r40DarkCompFigStale, tokensArg: r40DarkCompDir });
+    assert.equal(r40DarkStale.summary.valueDriftCount, 1, "R40 A2-M7: stale :root #000000 in Figma dark.shadow.card must report drift against .dark #38bdf8");
 
     console.log("AUDIT_FIGMA_DIFF_SELF_TEST_PASSED (alias resolve + value drift + 2/3-vertex shipped + Code Connect v2)");
     return 0;

@@ -14,7 +14,7 @@ import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
-import { isBoilerplateReason, isDirectCliEntry, RULE_CATALOG } from "./ci-report.mjs";
+import { escMdCell, escMdInline, formatMdCodeSpan, isBoilerplateReason, isDirectCliEntry, RULE_CATALOG } from "./ci-report.mjs";
 
 export const ENGINE_VERSION = "0.9.3";
 
@@ -117,7 +117,13 @@ function resolveWeights(pillars, presets, profile, customWeights) {
       }
     }
   }
-  const name = customWeights ? profile || "custom" : profile || "balanced";
+  if (profile !== undefined && profile !== null) {
+    if (typeof profile !== "string" || !profile.trim()) {
+      throw new ScorecardError("Invalid profile: expected a non-empty string.");
+    }
+  }
+  const trimmedProfile = typeof profile === "string" ? profile.trim() : "";
+  const name = hasCustom ? trimmedProfile || "custom" : trimmedProfile || "balanced";
   const hasPreset = !customWeights && Object.prototype.hasOwnProperty.call(presets, name);
   const weights = customWeights
     ? Object.fromEntries(Object.entries(customWeights).map(([k, v]) => [k, v]))
@@ -144,8 +150,11 @@ function parseFindingSeverities(raw) {
   const out = Object.create(null);
   for (const [fid, sev] of Object.entries(raw)) {
     const id = String(fid).trim();
-    const s = String(sev).trim().toLowerCase();
     if (!id) throw new ScorecardError("Finding IDs in 'finding_severities' must be non-empty.");
+    if (typeof sev !== "string") {
+      throw new ScorecardError(`Invalid severity for ${id}: expected string, got ${JSON.stringify(sev)}.`);
+    }
+    const s = sev.trim().toLowerCase();
     if (!ALLOWED_SEVERITIES.has(s)) throw new ScorecardError(`Invalid severity '${sev}' for ${id}.`);
     out[id] = s;
   }
@@ -191,13 +200,38 @@ function validatePhaseScores(auditType, phaseName, scores, validIds, findingSeve
       throw new ScorecardError(`${phaseName}.${cid} must be an object with 'score'.`);
     }
     const raw = entry.score;
-    const volatility =
+    let volatility =
       auditType === "system" && SYSTEM_VOLATILITY[cid]
         ? SYSTEM_VOLATILITY[cid]
-        : entry.volatility || SYSTEM_VOLATILITY[cid] || "FIXED";
+        : SYSTEM_VOLATILITY[cid] || "FIXED";
+    if (entry.volatility !== undefined && entry.volatility !== null) {
+      if (typeof entry.volatility !== "string") {
+        throw new ScorecardError(`${phaseName}.${cid}.volatility must be 'FIXED' or 'DYNAMIC'; got ${JSON.stringify(entry.volatility)}.`);
+      }
+      const normV = entry.volatility.trim().toUpperCase();
+      if (normV !== "FIXED" && normV !== "DYNAMIC") {
+        throw new ScorecardError(`${phaseName}.${cid}.volatility must be 'FIXED' or 'DYNAMIC'; got ${JSON.stringify(entry.volatility)}.`);
+      }
+      if (!(auditType === "system" && SYSTEM_VOLATILITY[cid])) volatility = normV;
+    }
+    let checkType = auditType === "system" ? SYSTEM_CHECK_TYPE[cid] || null : null;
+    if (entry.check_type !== undefined && entry.check_type !== null) {
+      if (typeof entry.check_type !== "string" || !entry.check_type.trim()) {
+        throw new ScorecardError(`${phaseName}.${cid}.check_type must be a non-empty string.`);
+      }
+      const normCt = entry.check_type.trim().toUpperCase();
+      if (auditType === "system" && SYSTEM_CHECK_TYPE[cid] && normCt !== SYSTEM_CHECK_TYPE[cid]) {
+        throw new ScorecardError(
+          `${phaseName}.${cid}.check_type must be '${SYSTEM_CHECK_TYPE[cid]}'; got ${JSON.stringify(entry.check_type)}.`
+        );
+      }
+      checkType = auditType === "system" ? SYSTEM_CHECK_TYPE[cid] || normCt : entry.check_type.trim();
+    }
     if (typeof raw === "string" && raw.trim().toUpperCase() === "N/A") {
-      const reason = String(entry.reason ?? "").trim();
-      if (!reason) throw new ScorecardError(`${phaseName}.${cid} is 'N/A' without a non-empty 'reason'.`);
+      if (typeof entry.reason !== "string" || !entry.reason.trim()) {
+        throw new ScorecardError(`${phaseName}.${cid} is 'N/A' without a non-empty string 'reason'.`);
+      }
+      const reason = entry.reason.trim();
       normalized[cid] = {
         score: "N/A",
         findings: [],
@@ -205,7 +239,7 @@ function validatePhaseScores(auditType, phaseName, scores, validIds, findingSeve
         secondary_impact: false,
         volatility,
         bands: null,
-        check_type: entry.check_type || (auditType === "system" ? SYSTEM_CHECK_TYPE[cid] || null : null),
+        check_type: checkType,
       };
       continue;
     }
@@ -220,13 +254,17 @@ function validatePhaseScores(auditType, phaseName, scores, validIds, findingSeve
     if (raw < 2 && findings.length === 0) {
       throw new ScorecardError(`${phaseName}.${cid} has score ${raw} (< 2) without linked Finding IDs.`);
     }
-    const secondary = Boolean(entry.secondary_impact);
-    if (secondary && raw !== 1) {
+    if (entry.secondary_impact !== undefined && typeof entry.secondary_impact !== "boolean") {
+      throw new ScorecardError(`${phaseName}.${cid}.secondary_impact must be a boolean.`);
+    }
+    const secondary = entry.secondary_impact === true;
+    const score = raw === 0 ? 0 : raw;
+    if (secondary && score !== 1) {
       throw new ScorecardError(
-        `${phaseName}.${cid} cannot set 'secondary_impact: true' with score ${raw === 2 ? "2 (Pass)" : "0 (Fail)"}; score must be 1 (Partial).`
+        `${phaseName}.${cid} cannot set 'secondary_impact: true' with score ${score === 2 ? "2 (Pass)" : "0 (Fail)"}; score must be 1 (Partial).`
       );
     }
-    if (raw === 2) {
+    if (score === 2) {
       const disqualifyingHits = findings.filter((fid) =>
         ["blocker", "major", "moderate"].includes(findingSeverities[fid])
       );
@@ -235,21 +273,24 @@ function validatePhaseScores(auditType, phaseName, scores, validIds, findingSeve
           `${phaseName}.${cid} has score 2 (Pass) with disqualifying ${disqualifyingHits.map((fid) => `${fid}(${findingSeverities[fid]})`).join(", ")}.`
         );
       }
-    } else if (raw > 0 && !secondary) {
+    } else if (score > 0 && !secondary) {
       const blockerHits = findings.filter((fid) => findingSeverities[fid] === "blocker");
       if (blockerHits.length > 0) {
-        throw new ScorecardError(`${phaseName}.${cid} links Blocker ${blockerHits.join(", ")} with score ${raw} (> 0) without 'secondary_impact: true'.`);
+        throw new ScorecardError(`${phaseName}.${cid} links Blocker ${blockerHits.join(", ")} with score ${score} (> 0) without 'secondary_impact: true'.`);
       }
     }
-    const bands = auditType === "system" ? validateBands(phaseName, cid, entry.bands, raw) : null;
+    const bands = auditType === "system" ? validateBands(phaseName, cid, entry.bands, score) : null;
+    if (entry.reason !== undefined && entry.reason !== null && typeof entry.reason !== "string") {
+      throw new ScorecardError(`${phaseName}.${cid}.reason must be a string.`);
+    }
     normalized[cid] = {
-      score: raw,
+      score,
       findings,
-      reason: String(entry.reason ?? "").trim(),
+      reason: typeof entry.reason === "string" ? entry.reason.trim() : "",
       secondary_impact: secondary,
       volatility,
       bands,
-      check_type: entry.check_type || (auditType === "system" ? SYSTEM_CHECK_TYPE[cid] || null : null),
+      check_type: checkType,
     };
   }
   return normalized;
@@ -323,11 +364,23 @@ function evaluatePhase(auditType, pillars, weights, scores, blockers) {
     }
   }
 
-  const total = scoredWeightSum > 0 ? Number((weightedPointsSum * normFactor).toFixed(2)) : null;
+  let total = scoredWeightSum > 0 ? Number((weightedPointsSum * normFactor).toFixed(2)) : null;
+  let proseOnlyCapped = false;
+  if (auditType === "system" && total !== null) {
+    const positiveEntries = Object.values(scores).filter((e) => e && e.score !== "N/A" && e.score > 0);
+    const hasProseCapTrigger =
+      positiveEntries.length > 0 &&
+      positiveEntries.every((e) => e.bands !== null && e.bands.artifacts === 0 && e.bands.verification === 0);
+    if (hasProseCapTrigger) {
+      proseOnlyCapped = true;
+      if (total > 39.9) total = 39.9;
+    }
+  }
   return {
     pillars: pillarResults,
     scored_weight_sum: Number(scoredWeightSum.toFixed(2)),
     total,
+    ...(proseOnlyCapped ? { prose_only_capped: true } : {}),
     hard_floor_blockers: blockers,
     grade: gradeFor(auditType, total, blockers),
     criterion_unit_points: criterionUnitPoints,
@@ -339,12 +392,24 @@ function validateWaivers(rawWaivers) {
   if (!Array.isArray(rawWaivers)) throw new ScorecardError("'waivers' must be an array of { id, tier, reason, guard } entries.");
   const out = [];
   for (const w of rawWaivers) {
-    if (!w || typeof w !== "object") throw new ScorecardError("Each waiver entry must be an object.");
-    const id = String(w.id || w.ruleId || "").trim();
+    if (!w || typeof w !== "object" || Array.isArray(w)) throw new ScorecardError("Each waiver entry must be an object.");
+    const rawId = w.id ?? w.ruleId;
+    if (typeof rawId !== "string" || !rawId.trim()) {
+      throw new ScorecardError("Waiver entry missing 'id' / 'ruleId'.");
+    }
+    const id = rawId.trim();
     const normId = id.toLowerCase();
-    const tier = String(w.tier || "reflex").trim().toLowerCase();
-    const reason = String(w.reason || "").trim();
-    if (!id) throw new ScorecardError("Waiver entry missing 'id' / 'ruleId'.");
+    if (w.tier !== undefined && w.tier !== null && (typeof w.tier !== "string" || !w.tier.trim())) {
+      throw new ScorecardError(`Waiver '${id}' has invalid tier. Expected 'reflex' or 'finish'.`);
+    }
+    const tier = typeof w.tier === "string" ? w.tier.trim().toLowerCase() : "reflex";
+    if (typeof w.reason !== "string") {
+      throw new ScorecardError(`Waiver '${id}' rejected: Reflex waiver requires a concrete reason (>= 12 chars, non-boilerplate).`);
+    }
+    const reason = w.reason.trim();
+    if (w.guard !== undefined && w.guard !== null && typeof w.guard !== "string") {
+      throw new ScorecardError(`Waiver '${id}' has non-string 'guard'.`);
+    }
     if (tier !== "floor" && tier !== "reflex" && tier !== "finish") {
       throw new ScorecardError(`Waiver '${id}' has unsupported tier '${tier}'. Expected 'reflex' or 'finish'.`);
     }
@@ -360,7 +425,7 @@ function validateWaivers(rawWaivers) {
     if (isBoilerplateReason(reason)) {
       throw new ScorecardError(`Waiver '${id}' rejected: Reflex waiver requires a concrete reason (>= 12 chars, non-boilerplate).`);
     }
-    out.push({ id, tier, reason, guard: String(w.guard || "").trim() || null });
+    out.push({ id, tier, reason, guard: typeof w.guard === "string" ? w.guard.trim() || null : null });
   }
   return out;
 }
@@ -368,19 +433,30 @@ function validateWaivers(rawWaivers) {
 function validateProvenance(raw) {
   if (raw == null) return null;
   if (typeof raw !== "object" || Array.isArray(raw)) throw new ScorecardError("'review_provenance' must be an object.");
-  const method = String(raw.method || "").trim().toLowerCase();
+  if (typeof raw.method !== "string") {
+    throw new ScorecardError("'review_provenance.method' must be 'dual-agent' or 'single-context'.");
+  }
+  const method = raw.method.trim().toLowerCase();
   if (method !== "dual-agent" && method !== "single-context") {
     throw new ScorecardError("'review_provenance.method' must be 'dual-agent' or 'single-context'.");
   }
-  const reason = String(raw.reason || "").trim() || null;
+  if (raw.reason !== undefined && raw.reason !== null && typeof raw.reason !== "string") {
+    throw new ScorecardError("'review_provenance.reason' must be a string.");
+  }
+  for (const field of ["agent_a", "agent_b"]) {
+    if (raw[field] !== undefined && raw[field] !== null && typeof raw[field] !== "string") {
+      throw new ScorecardError(`'review_provenance.${field}' must be a string.`);
+    }
+  }
+  const reason = typeof raw.reason === "string" ? raw.reason.trim() || null : null;
   if (method === "single-context" && !reason) {
     throw new ScorecardError("'single-context' review_provenance requires a non-empty 'reason'.");
   }
   return {
     method,
     reason,
-    agent_a: raw.agent_a ? String(raw.agent_a) : null,
-    agent_b: raw.agent_b ? String(raw.agent_b) : null,
+    agent_a: typeof raw.agent_a === "string" ? raw.agent_a.trim() || null : null,
+    agent_b: typeof raw.agent_b === "string" ? raw.agent_b.trim() || null : null,
   };
 }
 
@@ -441,6 +517,7 @@ export function compute(payload) {
   const reviewProvenance = validateProvenance(payload.review_provenance);
   if (
     payload.new_findings !== undefined &&
+    payload.new_findings !== null &&
     (!Array.isArray(payload.new_findings) ||
       !payload.new_findings.every((x) => typeof x === "string" && x.trim().length > 0))
   ) {
@@ -467,6 +544,22 @@ export function compute(payload) {
       if (Object.keys(phaseVal).length > 0) {
       const overrides = validatePhaseScores(auditType, key, payload[key], validIds, findingSeverities, false);
       const merged = { ...beforeScores, ...overrides };
+      const beforeBlockerSet = new Set(beforeBlockers);
+      const hardFloorSet = new Set(HARD_FLOOR_CRITERIA[auditType] || []);
+      for (const cid of validIds) {
+        const be = beforeScores[cid];
+        if (!be || be.score === "N/A" || merged[cid]?.score !== "N/A") continue;
+        const hasBeforeBlocker =
+          Array.isArray(be.findings) &&
+          be.findings.some(
+            (fid) => beforeBlockerSet.has(fid) || (hardFloorSet.has(cid) && be.score === 0 && findingSeverities[fid] === "blocker")
+          );
+        if (hasBeforeBlocker) {
+          throw new ScorecardError(
+            `${key}.${cid} cannot convert baseline Hard Floor blocker criterion to 'N/A'; remediate the blocker instead.`
+          );
+        }
+      }
       validateCrossPhaseConsistency(key, beforeScores, merged, allowedNewFindings);
       const afterFids = new Set(Object.values(merged).flatMap((e) => e.findings));
       let phaseBlockers;
@@ -502,15 +595,16 @@ export function compute(payload) {
       deltas[key] = Number((phases[key].total - baseTotal).toFixed(2));
       const cmap = {};
       const afterUnits = phases[key].criterion_unit_points;
-      for (const cid of validIds) {
+    for (const cid of validIds) {
         const bs = beforeScores[cid].score;
         const as = mergedScores[key][cid].score;
         const bExact = beforeUnits[cid]?.exact_step;
         const aExact = afterUnits[cid]?.exact_step;
-        cmap[cid] =
+        const rawDelta =
           bs === "N/A" || as === "N/A" || bExact == null || aExact == null
             ? null
             : Number((as * aExact - bs * bExact).toFixed(2));
+        cmap[cid] = rawDelta === 0 ? 0 : rawDelta;
       }
       criterionDeltas[key] = cmap;
     }
@@ -533,12 +627,10 @@ export function compute(payload) {
 }
 
 export function renderMarkdown(res) {
-  const escMdCell = (v) => String(v ?? "").replace(/\r?\n/g, " ").replace(/\|/g, "\\|");
-  const escMdInline = (v) => String(v ?? "").replace(/\r?\n/g, " ");
   const hasA = Boolean(res.phases.after_track_a);
   const hasB = Boolean(res.phases.after_track_b);
   const lines = [
-    `### Deterministic Weighted Scorecard (${escMdInline(res.type.toUpperCase())} · Profile: \`${escMdInline(res.profile).replace(/`/g, "\\`")}\`)`,
+    `### Deterministic Weighted Scorecard (${escMdInline(res.type.toUpperCase())} · Profile: ${formatMdCodeSpan(res.profile, false)})`,
     "",
   ];
   if (res.review_provenance) {
@@ -936,6 +1028,213 @@ function runSelfTest() {
   const r29PipeMd = renderMarkdown(r29PipeScore);
   const r29GradeLine = r29PipeMd.split("\n").find((ln) => ln.includes("**Grade / Maturity**"));
   assert.ok(r29GradeLine && r29GradeLine.includes("F-2 \\| pipe break"), "R29 A4-L1: blocker pipe and newline must be escaped on single Grade / Maturity row");
+
+  // Round 33 (A4-M1 prose-only total <= 39.9 L1 cap, A4-M2 Hard Floor blocker -> N/A rejection, A4-L3 check_type & volatility validation)
+  const sIds = getSchema("system").pillars.flatMap(([, , cids]) => cids);
+  const r33ProseOnlySys = compute({
+    type: "system",
+    before: Object.fromEntries(
+      sIds.map((c) => [c, { score: 1, findings: ["F-PROSE"], bands: { prose: 35, artifacts: 0, verification: 0 } }])
+    ),
+  });
+  assert.equal(r33ProseOnlySys.phases.before.total, 39.9, "R33 A4-M1: prose-only system audit must cap total <= 39.9 (L1)");
+  assert.equal(r33ProseOnlySys.phases.before.prose_only_capped, true);
+  assert.match(r33ProseOnlySys.phases.before.grade, /^L1 —/);
+
+  assert.throws(
+    () =>
+      compute({
+        type: "usability",
+        profile: "balanced",
+        finding_severities: { "F-A11Y": "blocker" },
+        before: {
+          ...Object.fromEntries(uIds.map((c) => [c, { score: 2, findings: [] }])),
+          U18: { score: 0, findings: ["F-A11Y"] },
+        },
+        after_track_a: { U18: { score: "N/A", findings: [], reason: "Attempted N/A waiver" } },
+      }),
+    ScorecardError,
+    "R33 A4-M2: converting baseline Hard Floor blocker U18 to N/A must throw ScorecardError"
+  );
+
+  const r33BadVol = structuredClone(cleanVisualBefore);
+  r33BadVol.V01 = { score: 2, findings: [], volatility: "sometimes" };
+  assert.throws(() => compute({ type: "visual", before: r33BadVol }), ScorecardError, "R33 A4-L3: invalid volatility must throw");
+
+  const r33BadCt = structuredClone(sysBase);
+  r33BadCt.DS01 = { score: 2, findings: [], check_type: "MANUAL" };
+  assert.throws(() => compute({ type: "system", before: r33BadCt }), ScorecardError, "R33 A4-L3: mismatched system check_type must throw");
+
+  // Round 34 (A4-H1 unified Hard Floor blocker -> N/A refusal + A4-L2 custom_weights profile validation):
+  const r34V11Before = structuredClone(cleanVisualBefore);
+  r34V11Before.V11 = { score: 0, findings: ["F-OVF"] };
+  assert.throws(
+    () =>
+      compute({
+        type: "visual",
+        before: r34V11Before,
+        hard_floor_blockers: { before: ["F-OVF"] },
+        after_track_a: { V11: { score: "N/A", findings: [], reason: "Excluded mobile viewport" } },
+      }),
+    ScorecardError,
+    "R34 A4-H1: explicit baseline Hard Floor blocker on non-core criterion (V11) must reject N/A conversion even without finding_severities"
+  );
+
+  const r34U18SecBefore = Object.fromEntries(uIds.map((c) => [c, { score: 2, findings: [] }]));
+  r34U18SecBefore.U18 = { score: 1, findings: ["F-BLK"], secondary_impact: true };
+  assert.throws(
+    () =>
+      compute({
+        type: "usability",
+        finding_severities: { "F-BLK": "blocker" },
+        hard_floor_blockers: { before: ["F-BLK"] },
+        before: r34U18SecBefore,
+        after_track_a: { U18: { score: "N/A", findings: [], reason: "Excluded in track" } },
+      }),
+    ScorecardError,
+    "R34 A4-H1: secondary-impact score=1 Hard Floor blocker on U18 must reject N/A conversion"
+  );
+
+  assert.throws(
+    () => compute({ type: "system", profile: { evil: 1 }, custom_weights: { P1: 100, P2: 0, P3: 0, P4: 0 }, before: sysBase }),
+    ScorecardError,
+    "R34 A4-L2: non-string profile with custom_weights must throw ScorecardError"
+  );
+  assert.throws(
+    () => compute({ type: "system", profile: "   ", custom_weights: { P1: 100, P2: 0, P3: 0, P4: 0 }, before: sysBase }),
+    ScorecardError,
+    "R34 A4-L2: whitespace-only profile with custom_weights must throw ScorecardError"
+  );
+  const r34ProfTrim = compute({
+    type: "system",
+    profile: " my-profile ",
+    custom_weights: { P1: 100, P2: 0, P3: 0, P4: 0 },
+    before: sysBase,
+  });
+  assert.equal(r34ProfTrim.profile, "my-profile", "R34 A4-L2: valid custom_weights profile must trim cleanly");
+
+  // Round 36 (R35-A4-M1 profile validation without custom_weights, R35-A4-L2 new_findings: null, R35-A4-L3 non-string reason):
+  assert.throws(
+    () => compute({ type: "visual", profile: ["balanced"], before: cleanVisualBefore }),
+    ScorecardError,
+    "R36 A4-M1: array profile without custom_weights must throw ScorecardError"
+  );
+  assert.equal(
+    compute({ type: "visual", profile: " balanced ", before: cleanVisualBefore }).profile,
+    "balanced",
+    "R36 A4-M1: whitespace-padded string profile must trim cleanly"
+  );
+  assert.equal(
+    compute({ type: "visual", before: cleanVisualBefore, new_findings: null }).type,
+    "visual",
+    "R36 A4-L2: new_findings: null must be accepted as omitted"
+  );
+  for (const badReason of [{}, false, 0]) {
+    const badNa = structuredClone(cleanVisualBefore);
+    badNa.V01 = { score: "N/A", reason: badReason };
+    assert.throws(
+      () => compute({ type: "visual", before: badNa }),
+      ScorecardError,
+      `R36 A4-L3: N/A reason ${JSON.stringify(badReason)} must throw ScorecardError`
+    );
+  }
+  assert.throws(
+    () =>
+      compute({
+        type: "visual",
+        before: cleanVisualBefore,
+        review_provenance: { method: "single-context", reason: {} },
+      }),
+    ScorecardError,
+    "R36 A4-L3: non-string review_provenance.reason must throw ScorecardError"
+  );
+
+  // Round 39 (R38-A4-L1 non-string numeric criterion reason & waiver fields):
+  for (const badVal of [false, {}, 42]) {
+    const afterDropBadReason = structuredClone(cleanVisualBefore);
+    delete afterDropBadReason.V01.findings;
+    afterDropBadReason.V01 = { score: 2, findings: [], reason: badVal };
+    assert.throws(
+      () => compute({ type: "visual", before: cleanVisualBefore, after_track_a: afterDropBadReason }),
+      ScorecardError,
+      `R39 A4-L1: numeric criterion reason ${JSON.stringify(badVal)} must throw ScorecardError`
+    );
+    assert.throws(
+      () =>
+        compute({
+          type: "visual",
+          before: cleanVisualBefore,
+          waivers: [{ id: "dsaf/important-override", tier: "reflex", reason: badVal }],
+        }),
+      ScorecardError,
+      `R39 A4-L1: waiver reason ${JSON.stringify(badVal)} must throw ScorecardError`
+    );
+  }
+  assert.throws(
+    () =>
+      compute({
+        type: "visual",
+        before: cleanVisualBefore,
+        waivers: [{ id: "dsaf/important-override", tier: "reflex", reason: "Valid concrete waiver reason here", guard: {} }],
+      }),
+    ScorecardError,
+    "R39 A4-L1: non-string waiver guard must throw ScorecardError"
+  );
+
+  // Round 40 (R39-A4-M1 Markdown backslash/CR/code-span, R39-A4-L1 strict coercions, R39-A4-L2 -0 normalization):
+  const r40ProfMd = renderMarkdown({
+    ...waivedRes,
+    profile: "dev``test\rname",
+    phases: {
+      ...waivedRes.phases,
+      before: { ...waivedRes.phases.before, grade: "Grade\\|F\rLine2" },
+    },
+  });
+  assert.ok(r40ProfMd.includes("```dev``test name```"), `Profile code span must use balanced backtick fence & strip CR: ${r40ProfMd.split("\n")[0]}`);
+  const r40GradeLine = r40ProfMd.split("\n").find((l) => l.startsWith("| **Grade / Maturity**"));
+  assert.ok(r40GradeLine && r40GradeLine.includes("Grade\\\\\\|F Line2") && !r40GradeLine.includes("\r"), "Grade cell must escape \\| and standalone CR");
+
+  assert.throws(
+    () => compute({ type: "visual", before: cleanVisualBefore, finding_severities: { "F-01": ["blocker"] } }),
+    ScorecardError,
+    "R40 A4-L1: array severity must throw ScorecardError"
+  );
+  const r40BadSec = structuredClone(cleanVisualBefore);
+  r40BadSec.V01 = { score: 2, findings: [], secondary_impact: "false" };
+  assert.throws(() => compute({ type: "visual", before: r40BadSec }), ScorecardError, "R40 A4-L1: string secondary_impact must throw ScorecardError");
+  assert.throws(
+    () =>
+      compute({
+        type: "visual",
+        before: cleanVisualBefore,
+        waivers: [{ id: "dsaf/important-override", tier: "   ", reason: "Concrete technical waiver reason" }],
+      }),
+    ScorecardError,
+    "R40 A4-L1: whitespace-only waiver tier must throw ScorecardError"
+  );
+  assert.throws(
+    () => compute({ type: "visual", before: cleanVisualBefore, review_provenance: { method: "dual-agent", agent_a: 123 } }),
+    ScorecardError,
+    "R40 A4-L1: non-string provenance agent_a must throw ScorecardError"
+  );
+
+  const r40NegZero = structuredClone(cleanVisualBefore);
+  r40NegZero.V01 = { score: -0, findings: ["F-01"] };
+  const r40TinyBefore = Object.fromEntries(
+    uIds.map((c) => [c, c === "U01" || c === "U02" || c === "U03" ? { score: "N/A", reason: "N/A baseline" } : { score: 2, findings: [] }])
+  );
+  r40TinyBefore.U04 = { score: 1, findings: ["F-U"] };
+  const r40NegDeltaRes = compute({
+    type: "usability",
+    profile: "balanced",
+    before: r40TinyBefore,
+    after_track_a: { U01: { score: 2, findings: [] }, U04: { score: 1, findings: ["F-U"] } },
+  });
+  for (const dVal of Object.values(r40NegDeltaRes.criterion_deltas.after_track_a)) {
+    if (dVal === 0) assert.ok(Object.is(dVal, 0), "R40 A4-L2: zero criterion_deltas must normalize -0 to +0");
+  }
+  const r40NzRes = compute({ type: "visual", before: r40NegZero });
+  assert.ok(Object.is(r40NzRes.criteria.before.V01.score, 0), "R40 A4-L2: normalized score must be +0 rather than -0");
 
   console.log("COMPUTE_SCORECARD_SELF_TEST_PASSED (usability + visual + system 3-band cap + blocker + cross-phase + waivers)");
   return 0;

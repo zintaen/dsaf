@@ -400,6 +400,25 @@ function main() {
     console.error(`ERROR: skill/SKILL.md must reference v${pkg.version}`);
     process.exit(1);
   }
+  for (const [docRel, marker] of [
+    ["README.md", `v${pkg.version}`],
+    ["docs/index.html", `v${pkg.version}`],
+    ["examples/sample-mode-c-report.md", `v${pkg.version}`],
+    ["RELEASE_NOTES.md", `## v${pkg.version}`],
+  ]) {
+    const docTxt = readFileSync(join(REPO_ROOT, docRel), "utf8");
+    if (!docTxt.includes(marker)) {
+      console.error(`ERROR: ${docRel} missing version marker '${marker}'`);
+      process.exit(1);
+    }
+  }
+  for (const refName of readdirSync(join(SKILL_DIR, "references")).filter((n) => n.endsWith(".md")).sort()) {
+    const refTxt = readFileSync(join(SKILL_DIR, "references", refName), "utf8");
+    if (!refTxt.includes(pkg.version)) {
+      console.error(`ERROR: skill/references/${refName} missing version ${pkg.version}`);
+      process.exit(1);
+    }
+  }
   if (!scorecardSrc.includes(`ENGINE_VERSION = "${pkg.version}"`)) {
     console.error(`ERROR: compute-scorecard.mjs ENGINE_VERSION must match ${pkg.version}`);
     process.exit(1);
@@ -469,7 +488,9 @@ function main() {
   }
 
   const verMap = [
-    ["scripts/audit-pipeline.mjs", `engine_version: "${pkg.version}"`],
+    ["scripts/check-integrity.mjs", `INTEGRITY_VERSION = "${pkg.version}"`],
+    ["scripts/audit-pipeline.mjs", `PIPELINE_VERSION = "${pkg.version}"`],
+    ["scripts/audit-pipeline.mjs", "engine_version: PIPELINE_VERSION"],
     ["scripts/generate-personas.mjs", `PERSONAS_VERSION = "${pkg.version}"`],
     ["scripts/mcp-server.mjs", `MCP_SERVER_VERSION = "${pkg.version}"`],
     ["scripts/setup.mjs", `SETUP_VERSION = "${pkg.version}"`],

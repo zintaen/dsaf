@@ -22,6 +22,7 @@ import { probeRuntimeDeps } from "./audit-runtime.mjs";
 import { scanTarget } from "./audit-tokens.mjs";
 import { assertWritableOutputFile, isDirectCliEntry } from "./ci-report.mjs";
 import { checkTarget, discoverExternalDsCss, installAgentHook } from "./dsaf-hook.mjs";
+import { hasDesignTokenEvidence } from "./recon.mjs";
 import { checkLatestVersion, compareSemver, readCachedUpdate } from "./update-check.mjs";
 
 export const DOCTOR_VERSION = "0.9.3";
@@ -61,7 +62,7 @@ function isTokenFileRel(rel) {
   }
   return (
     (/\.tokens\.json$/i.test(rel) ||
-      /(^|\/)(?:tokens?|variables)[^/]*\.(?:css|scss|json)$/i.test(rel) ||
+      /(^|\/)(?:design[-_]?)?(?:tokens?|variables)(?:[._-][^/]*)?\.(?:css|scss|json)$/i.test(rel) ||
       /(^|\/)(?:tokens|design-tokens)\/(?:.+\/)?[^/]+\.(?:css|scss|json)$/i.test(rel)) &&
     !/(^|\/)(?:tests?|fixtures|__fixtures__|_audit|storybook-static)\//i.test(rel) &&
     !/(?:^|\/)(?:package|tsconfig[^/]*|.*schema.*|meta)\.json$/i.test(rel)
@@ -114,7 +115,16 @@ function findTokenFiles(root, maxDirs = 10_000, maxMatches = 500) {
       if (/(^|\/)(?:ios\/App\/App\/public|android\/app\/src\/main\/assets\/public)\//i.test(rel)) continue;
       if (e.isDirectory()) queue.push(full);
       else if (e.isFile() && isTokenFileRel(rel)) {
-        if (/\.json$/i.test(rel) && isDsafReportJson(full)) continue;
+        if (/\.json$/i.test(rel)) {
+          if (isDsafReportJson(full)) continue;
+          try {
+            if (statSync(full).size > 2_000_000) continue;
+            const rawJson = readFileSync(full, "utf8");
+            if (!hasDesignTokenEvidence(rawJson).valid) continue;
+          } catch {
+            continue;
+          }
+        }
         matches.push(rel);
       }
     }
@@ -914,6 +924,19 @@ function runSelfTest() {
     const r25DocCliSym = join(scratch, "r25-doc-cli-sym.mjs");
     symlinkSync(docSelfPath, r25DocCliSym);
     assert.equal(spawnSync(process.execPath, [r25DocCliSym, "--help"], { encoding: "utf8" }).status, 0);
+
+    // Round 36 (R35-A1-M2): non-design config JSON files matching token/variable names must not satisfy tokens_and_docs_freshness
+    const r36NoTok = join(scratch, "r36-non-design-json");
+    mkdirSync(join(r36NoTok, "src"), { recursive: true });
+    writeFileSync(join(r36NoTok, "src/token-config.json"), JSON.stringify({ ttl: 600, prefix: "pg" }));
+    writeFileSync(join(r36NoTok, "src/variables.json"), JSON.stringify({ PORT: 3000 }));
+    writeFileSync(join(r36NoTok, "src/tokenizer.json"), JSON.stringify({ mode: "bpe" }));
+    const r36NoTokDoc = runDoctor(r36NoTok, { cachePath: cacheUp, offline: true });
+    assert.equal(
+      r36NoTokDoc.checks.find((c) => c.id === "tokens_and_docs_freshness").status,
+      "WARN",
+      "R36 A1-M2: non-design JSON config files must not be misclassified as design-token files"
+    );
 
     console.log("DOCTOR_SELF_TEST_PASSED (guardrail parity + token mtime + hook/CI checks + Floor/waiver hygiene + update freshness)");
     return 0;

@@ -52,7 +52,13 @@ function shortRepoName(targetPath) {
 export function renderHtmlReport(summary, opts = {}) {
   const s = summary && typeof summary === "object" && !Array.isArray(summary) ? summary : {};
   const o = opts && typeof opts === "object" && !Array.isArray(opts) ? opts : {};
-  const repoLabel = o.title || shortRepoName(s.target);
+  const repoLabel = String(o.title ?? "").trim() || shortRepoName(s.target);
+  const safeNum = (v, fb = 0) =>
+    typeof v === "number" && Number.isFinite(v)
+      ? v
+      : typeof v === "string" && v.trim() !== "" && Number.isFinite(Number(v))
+      ? Number(v)
+      : fb;
   const r = s.recon && typeof s.recon === "object" ? s.recon : {};
   const t = s.tokens && typeof s.tokens === "object" ? s.tokens : {};
   const d = t.drift && typeof t.drift === "object" ? t.drift : {};
@@ -78,10 +84,11 @@ export function renderHtmlReport(summary, opts = {}) {
       : visibleFindings
           .map((f) => {
             const pList = Array.isArray(f.personaIds) && f.personaIds.length > 0 ? f.personaIds.join(", ") : "All";
+            const tierLow = String(f.tier || "").trim().toLowerCase();
             const tierBadge =
-              f.tier === "floor"
+              tierLow === "floor"
                 ? `<span class="pill pill--fail">Floor</span>`
-                : f.tier === "finish"
+                : tierLow === "finish"
                 ? `<span class="pill">Finish</span>`
                 : `<span class="pill pill--warn">Reflex</span>`;
             const loc = `${esc(f.file || "")}${f.line ? `:${esc(f.line)}` : ""}`;
@@ -99,8 +106,9 @@ export function renderHtmlReport(summary, opts = {}) {
       ? `<tr role="row"><td role="cell" colspan="4" class="muted-cell">No persona matrix attached to this audit run.</td></tr>`
       : personas
           .map((p) => {
-            const impactCount = Number(p.impactedCount || 0);
             const rawRules = Array.isArray(p.findingRules) ? p.findingRules : [];
+            const rawImp = p.impactedCount != null && String(p.impactedCount).trim() !== "" ? Number(p.impactedCount) : NaN;
+            const impactCount = Number.isFinite(rawImp) && rawImp >= 0 ? (rawImp === 0 && rawRules.length > 0 ? rawRules.length : rawImp) : rawRules.length;
             const rulesList = rawRules.slice(0, 3).map((x) => `<code>${esc(x)}</code>`).join(", ");
             const impactCell =
               impactCount > 0
@@ -548,11 +556,11 @@ export function renderHtmlReport(summary, opts = {}) {
     <section class="summary-strip" aria-label="Audit key counts">
       <div class="stat">
         <p class="stat-label">Floor Defects</p>
-        <p class="stat-val">${esc(cg.floor ?? 0)}</p>
+        <p class="stat-val">${esc(safeNum(cg.floor))}</p>
       </div>
       <div class="stat">
         <p class="stat-label">Reflex Warnings</p>
-        <p class="stat-val">${esc(cg.reflex ?? 0)}</p>
+        <p class="stat-val">${esc(safeNum(cg.reflex))}</p>
       </div>
       <div class="stat">
         <p class="stat-label">Token Compliance</p>
@@ -614,12 +622,12 @@ export function renderHtmlReport(summary, opts = {}) {
       <div role="tabpanel" aria-labelledby="tab-tokens" hidden="until-found">
         <div class="panel-box">
           <div class="metrics-grid">
-            <div class="metric-cell"><p class="metric-k">UI &amp; Style Files Scanned</p><p class="metric-v">${esc(t.filesScanned?.uiAndStyle ?? 0)}</p></div>
-            <div class="metric-cell"><p class="metric-k">DTCG Tokens</p><p class="metric-v">${esc(t.dtcgTokenCount ?? 0)}</p></div>
-            <div class="metric-cell"><p class="metric-k">Hardcoded Colors / var() Refs</p><p class="metric-v">${esc(d.hardcodedColorHits ?? 0)} / ${esc(d.colorTokenRefs ?? 0)}</p></div>
-            <div class="metric-cell"><p class="metric-k">CSS Orphans (Semantic / Scale)</p><p class="metric-v">${esc(d.semanticOrphanCount ?? 0)} / ${esc(d.paletteScaleUnusedCount ?? 0)}</p></div>
-            <div class="metric-cell"><p class="metric-k">!important / Off-Grid Spacing</p><p class="metric-v">${esc(d.importantOverrides ?? 0)} / ${esc(d.offGridSpacingHits ?? 0)}</p></div>
-            <div class="metric-cell"><p class="metric-k">Waived / Unused Ignores</p><p class="metric-v">${esc(cg.waived ?? 0)} / ${esc(cg.unusedIgnores ?? 0)}</p></div>
+            <div class="metric-cell"><p class="metric-k">UI &amp; Style Files Scanned</p><p class="metric-v">${esc(safeNum(t.filesScanned?.uiAndStyle))}</p></div>
+            <div class="metric-cell"><p class="metric-k">DTCG Tokens</p><p class="metric-v">${esc(safeNum(t.dtcgTokenCount))}</p></div>
+            <div class="metric-cell"><p class="metric-k">Hardcoded Colors / var() Refs</p><p class="metric-v">${esc(safeNum(d.hardcodedColorHits))} / ${esc(safeNum(d.colorTokenRefs))}</p></div>
+            <div class="metric-cell"><p class="metric-k">CSS Orphans (Semantic / Scale)</p><p class="metric-v">${esc(safeNum(d.semanticOrphanCount))} / ${esc(safeNum(d.paletteScaleUnusedCount))}</p></div>
+            <div class="metric-cell"><p class="metric-k">!important / Off-Grid Spacing</p><p class="metric-v">${esc(safeNum(d.importantOverrides))} / ${esc(safeNum(d.offGridSpacingHits))}</p></div>
+            <div class="metric-cell"><p class="metric-k">Waived / Unused Ignores</p><p class="metric-v">${esc(safeNum(cg.waived))} / ${esc(safeNum(cg.unusedIgnores))}</p></div>
           </div>
         </div>
       </div>
@@ -876,6 +884,35 @@ function runSelfTest() {
   // Round 27 (A4-L1): empty/missing summary.generated must not render an empty .pill capsule
   const r27EmptyDateHtml = renderHtmlReport({});
   assert.ok(!r27EmptyDateHtml.includes('<span class="pill"></span>'), "Missing generated date must omit empty .pill capsule");
+
+  // Round 33 (A4-L5): malformed telemetry counters, whitespace title, case-insensitive tier, invalid impactedCount fallback
+  const r33ReportHtml = renderHtmlReport(
+    {
+      target: "/workspace/my-dsaf-app",
+      ciGate: { floor: "bad", reflex: "3", waived: null, unusedIgnores: "bad" },
+      ciFindings: [{ ruleId: "dsaf/no-100vw", tier: "FLOOR", file: "a.css", line: 1, message: "100vw" }],
+      tokens: {
+        filesScanned: { uiAndStyle: "bad" },
+        dtcgTokenCount: "12",
+        drift: {
+          hardcodedColorHits: "bad",
+          colorTokenRefs: 4,
+          semanticOrphanCount: NaN,
+          paletteScaleUnusedCount: "2",
+          importantOverrides: undefined,
+          offGridSpacingHits: "bad",
+        },
+      },
+      personas: {
+        items: [{ id: "P01", name: "Screen Reader", axis: "Accessibility", impactedCount: "invalid", findingRules: ["dsaf/no-100vw"] }],
+      },
+    },
+    { title: "   " }
+  );
+  assert.match(r33ReportHtml, /my-dsaf-app/, "R33 A4-L5: whitespace title must fall back to target basename");
+  assert.ok(!r33ReportHtml.includes(">NaN<") && !r33ReportHtml.includes(">bad<"), "R33 A4-L5: malformed numbers must sanitize cleanly");
+  assert.match(r33ReportHtml, /class="pill pill--fail">Floor</, "R33 A4-L5: uppercase tier FLOOR must render Floor badge");
+  assert.match(r33ReportHtml, />1 issue</, "R33 A4-L5: invalid impactedCount must fall back to findingRules.length");
 
   console.log("HTML_REPORT_SELF_TEST_PASSED (offline editorial report + XSS escaping + accessible tabs/table)");
   return 0;

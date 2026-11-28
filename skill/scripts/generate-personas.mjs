@@ -389,6 +389,12 @@ function loadCustomPersonas(absTarget, customPath) {
       if (!statSync(defaultCustom).isFile()) {
         throw new Error(`Custom personas path is not a file: ${defaultCustom}`);
       }
+      const realRoot = (realpathSync.native || realpathSync)(absTarget);
+      const realCustom = (realpathSync.native || realpathSync)(defaultCustom);
+      const relCustom = relative(realRoot, realCustom);
+      if (relCustom === ".." || relCustom.startsWith(`..${sep}`) || isAbsolute(relCustom)) {
+        throw new Error(`Custom personas symlink escapes target directory: ${defaultCustom}`);
+      }
       candidates.push(defaultCustom);
     }
   }
@@ -729,6 +735,14 @@ function runSelfTest() {
     );
     assert.equal(existsSync(join(r26Outside, "personas.json")), false);
     assert.equal(existsSync(join(r26Outside, "personas.md")), false);
+
+    // Round 32 (A1-M1): escaping symlink at .dsaf/personas.custom.json must be rejected
+    const r32EscCustomRepo = join(scratch, "r32-esc-custom");
+    const r32OutsideSecret = join(scratch, "r32-outside-custom.json");
+    mkdirSync(join(r32EscCustomRepo, ".dsaf"), { recursive: true });
+    writeFileSync(r32OutsideSecret, JSON.stringify({ personas: [{ name: "Secret External Persona", axis: "Ext" }] }));
+    symlinkSync(r32OutsideSecret, join(r32EscCustomRepo, ".dsaf/personas.custom.json"));
+    assert.throws(() => generatePersonas(r32EscCustomRepo), /escapes target directory/i);
 
     console.log(`DSAF_PERSONAS_SELF_TEST_PASSED (uncapped signal scaling: quick=5, auto=${autoRes.personaCount}, deep+custom=${dsPersonas.personaCount})`);
     return 0;

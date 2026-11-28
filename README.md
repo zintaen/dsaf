@@ -23,7 +23,7 @@ npx @zintaen/dsaf check .
 npx @zintaen/dsaf ./apps/web
 ```
 
-Export an offline editorial HTML audit report (Scorecard, Persona Impact Matrix, and Tokens tabs):
+Export an offline editorial HTML audit report (Findings, Persona Matrix, and Tokens & Telemetry tabs):
 
 ```bash
 npx @zintaen/dsaf audit . --html audit-report.html --out ./audit-output
@@ -31,7 +31,7 @@ npx @zintaen/dsaf audit . --html audit-report.html --out ./audit-output
 
 ### 2. Install AI Agent Skill & MCP Server (Zero Config Edits)
 
-Installs the portable `dsaf` skill and wires the 8-tool read-only MCP server (`dsaf mcp`) cleanly into Claude, Cursor, Codex, Antigravity, or generic `.agents` clients:
+Installs the portable `dsaf` skill into Claude, Cursor, Codex, Antigravity, or generic `.agents` clients, and wires the 8-tool MCP server (`dsaf mcp`, read-only unless `dsaf_audit` receives `outDir`) cleanly into Claude, Cursor, Codex, and Antigravity:
 
 ```bash
 npx @zintaen/dsaf setup --agent claude
@@ -101,7 +101,7 @@ Any external project (including independent OSS/company repos) stays current aut
 |---|---|
 | `dsaf check [path]` | Fast summary check (Floor/Reflex counts, compliance %, impacted personas) |
 | `dsaf setup [target]` | One-command Skill + MCP installer (`--with-hook` / `--with-ci` / `--with-auto-update`) |
-| `dsaf update [target]` | Check (`--check` / `--fail-if-outdated`) or safely refresh skills, personas, guardrails, workflows & MCP |
+| `dsaf update` / `dsaf upgrade [target]` | Check (`--check` / `--fail-if-outdated`) or safely refresh skills, personas, guardrails, workflows & MCP |
 | `dsaf audit <target>` | Full Tier 0 pipeline (`--html`, `--sarif`, `--out`, `--url`, `--figma`) |
 | `dsaf fix <target>` | Preview (`--dry-run`) or apply (`--apply --backup`) safe Floor patches |
 | `dsaf mcp` / `dsaf mcp install` | Run 8-tool stdio MCP server or write client MCP JSON config |
@@ -109,6 +109,8 @@ Any external project (including independent OSS/company repos) stays current aut
 | `dsaf runtime <target-or-url>` | Playwright + `axe-core` verifier (APCA, keyboard map, `44px`, tabs/toggles, `--cdp`) |
 | `dsaf figma-diff` | 2-vertex `Defined <-> Shipped` or 3-vertex `Designed <-> Defined <-> Shipped` diff |
 | `dsaf recon` / `tokens` / `hook` / `doctor` / `guardrails` / `scorecard` / `diff` | Granular Tier 0 scanners, edit-time hooks, CI generators & regression gates |
+| `dsaf install-skill` / `integrity` / `verify` | Install Tier 1 skill packages, run Tier 1 self-tests, or run repo parity gate (`verify` is repo-only) |
+| `dsaf version` / `dsaf help` | Print installed CLI version or command reference |
 
 ---
 

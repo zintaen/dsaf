@@ -41,7 +41,11 @@ Evaluate:
      node ./scripts/audit-figma-diff.mjs --figma <figma-vars.json> --tokens <audit-output/conformance/tokens-drift.json> [--prefix <css-prefix>] [--code-connect <app-src-dir>] [--runtime <audit-output/conformance/runtime.json>] --format markdown
      ```
      Supports CSS `var()` alias resolution, `@media (prefers-color-scheme: dark)` preservation, `@collection` / `*_primitives` normalization, auto-detected `--prefix` stripping, `px`↔`rem` & font-stack equivalence, Code Connect v2 template + batch JSON parsing, and live `Shipped` Vertex 3 `computedVars` verification (`--runtime`). Report exact `triangulationCoveragePct`, value drift (`Designed` vs `Defined` and `Defined` vs `Shipped`), design-only / code-only tokens, and Code Connect mapped components.
-  2. When Figma specs or Code Connect files are absent, never fabricate a design vertex — state explicitly: `"3-vertex status: 2-vertex Defined <-> Shipped verified; Designed (Figma MCP / Code Connect): not tested (not supplied)"`.
+  2. When Figma specs or Code Connect files are absent, never fabricate a design vertex — run 2-vertex triangulation against live Shipped runtime output when a running app/build is available:
+     ```bash
+     node ./scripts/audit-figma-diff.mjs --tokens <audit-output/conformance/tokens-drift.json> --runtime <audit-output/conformance/runtime.json> [--prefix <css-prefix>] --format markdown
+     ```
+     and only after running that command state: `"3-vertex status: 2-vertex Defined <-> Shipped verified; Designed (Figma MCP / Code Connect): not tested (not supplied)"`. On static-only targets where runtime was not run, explicitly state that both Shipped runtime and Designed Figma/Code Connect vertices were not tested.
 
 ### Step 3. Chain with Product UX (`U01–U18`) & Visual Craft (`V01–V11`)
 - Execute Usability walkthroughs ([mode-product-ux.md](./mode-product-ux.md)) and Visual UI critique ([mode-product-ui.md](./mode-product-ui.md)) within confirmed `T0–T3` data permissions (enabling `T2-Mock` whenever `localhost` connects to a remote cloud DB).

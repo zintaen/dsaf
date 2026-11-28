@@ -14,6 +14,7 @@ import { isDirectCliEntry } from "./ci-report.mjs";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const SKILL_DIR = resolve(SCRIPT_DIR, "..");
+export const INTEGRITY_VERSION = "0.9.3";
 
 const REQUIRED_FILES = [
   "SKILL.md",
@@ -191,25 +192,26 @@ function main() {
 
   const binCliPath = resolve(SKILL_DIR, "../bin/dsaf.mjs");
   if (existsSync(binCliPath)) {
+    const cliEnv = { ...process.env, DSAF_NO_UPDATE_CHECK: "1" };
     const pkgVer = JSON.parse(readFileSync(resolve(SKILL_DIR, "../package.json"), "utf8")).version;
-    const vRes = spawnSync(process.execPath, [binCliPath, "version"], { encoding: "utf8" });
+    const vRes = spawnSync(process.execPath, [binCliPath, "version"], { encoding: "utf8", env: cliEnv });
     if (vRes.status !== 0 || !(vRes.stdout || "").includes(`v${pkgVer}`)) {
       console.error(`ERROR: bin/dsaf.mjs version failed (status=${vRes.status}, out=${vRes.stdout})`);
       process.exit(1);
     }
-    const hRes = spawnSync(process.execPath, [binCliPath, "help"], { encoding: "utf8" });
+    const hRes = spawnSync(process.execPath, [binCliPath, "help"], { encoding: "utf8", env: cliEnv });
     if (hRes.status !== 0 || !(hRes.stdout || "").includes("Usage: dsaf")) {
       console.error(`ERROR: bin/dsaf.mjs help failed (status=${hRes.status})`);
       process.exit(1);
     }
-    const badRes = spawnSync(process.execPath, [binCliPath, "version", "--bogus"], { encoding: "utf8" });
+    const badRes = spawnSync(process.execPath, [binCliPath, "version", "--bogus"], { encoding: "utf8", env: cliEnv });
     if (badRes.status !== 2) {
       console.error(`ERROR: bin/dsaf.mjs version --bogus must exit 2 (got ${badRes.status})`);
       process.exit(1);
     }
   }
 
-  console.log("SKILL_INTEGRITY_ALL_PASSED (v0.9.3)");
+  console.log(`SKILL_INTEGRITY_ALL_PASSED (v${INTEGRITY_VERSION})`);
 }
 
 if (isDirectCliEntry(import.meta.url)) main();

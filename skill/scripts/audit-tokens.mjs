@@ -16,7 +16,7 @@ import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } 
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { apcaContrast, wcagContrast } from "./audit-runtime.mjs";
-import { buildTailwindScanSurfacePreservingLines } from "./dsaf-hook.mjs";
+import { buildTailwindScanSurfacePreservingLines, maskAtApplyDeclsPreservingLines } from "./dsaf-hook.mjs";
 import {
   applyIgnores,
   assertWritableOutputFile,
@@ -88,13 +88,37 @@ const SPACING_RADIUS_JS_PROP_RE = new RegExp(
   "g"
 );
 
+const PX_VALUE_RE = /(?<![\w.])(\d+(?:\.\d+)?|\.\d+)px\b/g;
+
+function getNodeExtModes(node) {
+  const ext = node?.$extensions ?? node?.extensions;
+  if (!ext || typeof ext !== "object" || Array.isArray(ext)) return null;
+  const raw = ext.mode ?? ext.modes ?? ext["com.figma.mode"] ?? ext["org.designtokens.mode"];
+  return raw && typeof raw === "object" && !Array.isArray(raw) && Object.keys(raw).length > 0 ? raw : null;
+}
+
+function hasNonMetaObjectChild(node) {
+  return Object.entries(node).some(
+    ([k, v]) =>
+      !k.startsWith("$") &&
+      k !== "type" &&
+      k !== "description" &&
+      k !== "extensions" &&
+      v &&
+      typeof v === "object" &&
+      !Array.isArray(v)
+  );
+}
+
 function hasNestedTokenDescendant(obj) {
   if (!obj || typeof obj !== "object" || Array.isArray(obj)) return false;
-  for (const v of Object.values(obj)) {
+  for (const [k, v] of Object.entries(obj)) {
+    if (k.startsWith("$") || k === "extensions") continue;
     if (v && typeof v === "object" && !Array.isArray(v)) {
       if (
         Object.prototype.hasOwnProperty.call(v, "$value") ||
         Object.prototype.hasOwnProperty.call(v, "value") ||
+        (Boolean(getNodeExtModes(v)) && !hasNonMetaObjectChild(v)) ||
         hasNestedTokenDescendant(v)
       ) {
         return true;
@@ -104,7 +128,115 @@ function hasNestedTokenDescendant(obj) {
   return false;
 }
 
+function lookupRawExtendsGroup(root, rawRef) {
+  if (!root || typeof root !== "object" || Array.isArray(root) || typeof rawRef !== "string") return null;
+  const trimmed = rawRef.trim();
+  let segs = null;
+  if (/^\{[^}]+\}$/.test(trimmed)) {
+    segs = trimmed.slice(1, -1).trim().split(".").filter(Boolean);
+  } else if (trimmed.startsWith("#/")) {
+    segs = trimmed
+      .slice(2)
+      .split("/")
+      .filter(Boolean)
+      .map((p) => p.replaceAll("~1", "/").replaceAll("~0", "~"));
+  }
+  if (!segs || segs.length === 0) return null;
+  let cur = root;
+  for (const seg of segs) {
+    if (!cur || typeof cur !== "object" || Array.isArray(cur) || !Object.prototype.hasOwnProperty.call(cur, seg)) {
+      return null;
+    }
+    cur = cur[seg];
+  }
+  return cur && typeof cur === "object" && !Array.isArray(cur) ? cur : null;
+}
+
+function isTokenLeafObject(obj) {
+  return Boolean(
+    obj &&
+      typeof obj === "object" &&
+      !Array.isArray(obj) &&
+      (Object.prototype.hasOwnProperty.call(obj, "$value") ||
+        Object.prototype.hasOwnProperty.call(obj, "$ref") ||
+        (Object.prototype.hasOwnProperty.call(obj, "value") && !hasNestedTokenDescendant(obj)))
+  );
+}
+
+function mergeResolvedDtcgGroups(baseNode, localNode) {
+  const out = {};
+  for (const [k, v] of Object.entries(baseNode)) {
+    out[k] = v && typeof v === "object" && !Array.isArray(v) ? structuredClone(v) : v;
+  }
+  for (const [k, v] of Object.entries(localNode)) {
+    if (k === "$extends") continue;
+    const baseVal = out[k];
+    if (
+      baseVal &&
+      typeof baseVal === "object" &&
+      !Array.isArray(baseVal) &&
+      v &&
+      typeof v === "object" &&
+      !Array.isArray(v)
+    ) {
+      if (isTokenLeafObject(v) && isTokenLeafObject(baseVal)) {
+        const mergedLeaf = { ...baseVal, ...v };
+        if (Object.prototype.hasOwnProperty.call(v, "$value")) {
+          delete mergedLeaf.$ref;
+          delete mergedLeaf.value;
+        } else if (Object.prototype.hasOwnProperty.call(v, "value")) {
+          delete mergedLeaf.$value;
+          delete mergedLeaf.$ref;
+        }
+        if (Object.prototype.hasOwnProperty.call(v, "$ref")) {
+          delete mergedLeaf.$value;
+          delete mergedLeaf.value;
+        }
+        out[k] = mergedLeaf;
+      } else if (!isTokenLeafObject(v) && !isTokenLeafObject(baseVal)) {
+        out[k] = mergeResolvedDtcgGroups(baseVal, v);
+      } else {
+        out[k] = structuredClone(v);
+      }
+    } else {
+      out[k] = v && typeof v === "object" && !Array.isArray(v) ? structuredClone(v) : v;
+    }
+  }
+  return out;
+}
+
+export function resolveDtcgExtends(root) {
+  if (!root || typeof root !== "object" || Array.isArray(root)) return root;
+  const memo = new WeakMap();
+  const resolveGroup = (node, stack = new Set()) => {
+    if (!node || typeof node !== "object" || Array.isArray(node)) return node;
+    if (memo.has(node)) return memo.get(node);
+    if (stack.has(node)) return node;
+    stack.add(node);
+    let localCopy = {};
+    for (const [k, v] of Object.entries(node)) {
+      if (k === "$extends") continue;
+      localCopy[k] =
+        v && typeof v === "object" && !Array.isArray(v) && !k.startsWith("$")
+          ? resolveGroup(v, stack)
+          : v;
+    }
+    if (typeof node.$extends === "string") {
+      const target = lookupRawExtendsGroup(root, node.$extends);
+      if (target && !stack.has(target)) {
+        const resolvedBase = resolveGroup(target, stack);
+        localCopy = mergeResolvedDtcgGroups(resolvedBase, localCopy);
+      }
+    }
+    stack.delete(node);
+    memo.set(node, localCopy);
+    return localCopy;
+  };
+  return resolveGroup(root);
+}
+
 function flattenTokens(source) {
+  const expandedSource = resolveDtcgExtends(source);
   const tokens = [];
   function walk(node, path = [], inheritedType = null) {
     if (!node || typeof node !== "object" || Array.isArray(node)) return;
@@ -135,7 +267,8 @@ function flattenTokens(source) {
     const hasDollarType = Object.prototype.hasOwnProperty.call(node, "$type");
     const hasLegacyType = Object.prototype.hasOwnProperty.call(node, "type") && typeof node.type === "string";
     const nextType = hasDollarType ? node.$type : hasLegacyType ? node.type : inheritedType;
-    if (hasValue || hasRef) {
+    const hasExtModeLeaf = path.length > 0 && Boolean(getNodeExtModes(node)) && !hasNonMetaObjectChild(node);
+    if (hasValue || hasRef || hasExtModeLeaf) {
       tokens.push({
         path: path.join("."),
         type: nextType ?? null,
@@ -147,19 +280,23 @@ function flattenTokens(source) {
       return;
     }
     for (const [k, v] of Object.entries(node)) {
+      if (k === "$root" && v && typeof v === "object") {
+        walk(v, [...path], nextType);
+        continue;
+      }
       if (k.startsWith("$")) continue;
       if ((k === "type" || k === "description") && (v == null || typeof v !== "object")) continue;
       walk(v, [...path, k], nextType);
     }
   }
-  walk(source);
+  walk(expandedSource);
   return tokens;
 }
 
 function aliasTarget(value) {
   if (typeof value !== "string") return null;
   const m = value.trim().match(/^\{([^}]+)\}$/);
-  return m ? m[1].trim() : null;
+  return m ? m[1].trim().replace(/\.\$root$/i, "") : null;
 }
 
 function pointerTarget(ref, byPath) {
@@ -171,7 +308,7 @@ function pointerTarget(ref, byPath) {
     .map((p) => p.replaceAll("~1", "/").replaceAll("~0", "~"));
   for (let i = segs.length; i > 0; i--) {
     if (i < segs.length && segs[i] !== "$value") continue;
-    const candidate = segs.slice(0, i).join(".");
+    const candidate = segs.slice(0, i).filter((seg) => seg !== "$root").join(".");
     if (byPath.has(candidate)) return candidate;
   }
   return segs.join(".");
@@ -197,17 +334,26 @@ export function validateDtcgTokens(source) {
   const baseRefsByPath = new Map();
   const refsByPath = new Map();
   const modeNames = new Set();
+  const extModeRefsByPath = new Map();
   for (const t of tokens) {
     const valRefs = collectRefsInValue(t.value, byPath);
     const refT = t.ref ? pointerTarget(t.ref, byPath) : null;
     const baseRefs = refT ? [...valRefs, refT] : [...valRefs];
     baseRefsByPath.set(t.path, baseRefs);
     const extMode = getTokenExtModes(t);
-    const extModeRefs = extMode ? collectRefsInValue(extMode, byPath) : [];
+    const extModeEntries = [];
     if (extMode) {
-      for (const mk of Object.keys(extMode)) modeNames.add(mk.toLowerCase());
+      for (const [mk, mv] of Object.entries(extMode)) {
+        const mkLow = mk.toLowerCase();
+        modeNames.add(mkLow);
+        const modeHint = mkLow === "light" || mkLow === "dark" ? mkLow : null;
+        for (const rTarget of collectRefsInValue(mv, byPath)) {
+          extModeEntries.push({ target: rTarget, modeKey: modeHint });
+        }
+      }
     }
-    refsByPath.set(t.path, [...baseRefs, ...extModeRefs]);
+    extModeRefsByPath.set(t.path, extModeEntries);
+    refsByPath.set(t.path, [...baseRefs, ...extModeEntries.map((e) => e.target)]);
   }
 
   const typeByPath = new Map();
@@ -219,12 +365,13 @@ export function validateDtcgTokens(source) {
     const mm = /(?:^|\.)(light|dark)(?:\.|$)/i.exec(k);
     if (mm) actualModePrefixes.add(mm[1]);
   }
-  const resolveRefTargets = (target, callerPath = "") => {
+  const resolveRefTargets = (target, callerPath = "", explicitMode = null) => {
     if (!target) return [];
     if (/(?:^|\.)(?:light|dark)\./i.test(target)) {
       return byPath.has(target) ? [target] : [];
     }
     const callerModeM = /(?:^|\.)(light|dark)(?:\.|$)/i.exec(String(callerPath || ""));
+    const callerMode = explicitMode || (callerModeM ? callerModeM[1] : null);
     const collectScoped = (modePrefix) => {
       const hits = [];
       const pref = `${modePrefix}.${target}`;
@@ -233,6 +380,8 @@ export function validateDtcgTokens(source) {
         const mid = `${target.slice(0, dotIdx)}.${modePrefix}.${target.slice(dotIdx + 1)}`;
         if (byPath.has(mid)) hits.push(mid);
       }
+      const suf = `${target}.${modePrefix}`;
+      if (byPath.has(suf)) hits.push(suf);
       return hits;
     };
     const collectMatchingModes = (wantLower) => {
@@ -249,9 +398,9 @@ export function validateDtcgTokens(source) {
       }
       return out;
     };
-    if (callerModeM) {
-      const exactScoped = collectScoped(callerModeM[1]);
-      const fallbackScoped = collectMatchingModes(callerModeM[1].toLowerCase());
+    if (callerMode) {
+      const exactScoped = collectScoped(callerMode);
+      const fallbackScoped = collectMatchingModes(callerMode.toLowerCase());
       const scoped = [...new Set([...exactScoped, ...fallbackScoped])];
       if (scoped.length > 0) return scoped;
       return byPath.has(target) ? [target] : [];
@@ -281,15 +430,29 @@ export function validateDtcgTokens(source) {
 
   for (const t of tokens) resolveType(t);
 
+  const unresolvedSeen = new Set();
   for (const t of tokens) {
-    for (const target of refsByPath.get(t.path) ?? []) {
+    for (const target of baseRefsByPath.get(t.path) ?? []) {
       if (resolveRefTargets(target, t.path).length === 0) {
-        issues.push({ type: "unresolved_reference", path: t.path, target });
+        const uk = `${t.path}\0${target}`;
+        if (!unresolvedSeen.has(uk)) {
+          unresolvedSeen.add(uk);
+          issues.push({ type: "unresolved_reference", path: t.path, target });
+        }
+      }
+    }
+    for (const entry of extModeRefsByPath.get(t.path) ?? []) {
+      if (resolveRefTargets(entry.target, t.path, entry.modeKey).length === 0) {
+        const uk = `${t.path}\0${entry.target}`;
+        if (!unresolvedSeen.has(uk)) {
+          unresolvedSeen.add(uk);
+          issues.push({ type: "unresolved_reference", path: t.path, target: entry.target });
+        }
       }
     }
   }
 
-  function runCycleCheck(graphRefs) {
+  function runCycleCheck(graphRefs, activeMode = null, extModeOverridePaths = null) {
     const fullyExplored = new Set();
     function detectCycles(path, stack = []) {
       if (stack.includes(path)) {
@@ -302,8 +465,11 @@ export function validateDtcgTokens(source) {
         return;
       }
       if (fullyExplored.has(path)) return;
+      const fromExtMode = Boolean(extModeOverridePaths && extModeOverridePaths.has(path));
+      const callerOwnMode = /(?:^|\.)(light|dark)(?:\.|$)/i.test(path);
+      const refMode = fromExtMode ? activeMode : callerOwnMode ? null : activeMode;
       for (const target of graphRefs.get(path) ?? []) {
-        for (const rt of resolveRefTargets(target, path)) {
+        for (const rt of resolveRefTargets(target, path, refMode)) {
           detectCycles(rt, [...stack, path]);
         }
       }
@@ -312,21 +478,24 @@ export function validateDtcgTokens(source) {
     for (const t of tokens) detectCycles(t.path);
   }
 
-  runCycleCheck(baseRefsByPath);
+  runCycleCheck(baseRefsByPath, null);
   for (const modeName of modeNames) {
+    const extModeOverridePaths = new Set();
     const modeRefs = new Map(
       tokens.map((t) => {
         const extMode = getTokenExtModes(t);
         if (extMode) {
           const matchedKey = Object.keys(extMode).find((mk) => mk.toLowerCase() === modeName);
           if (matchedKey !== undefined) {
+            extModeOverridePaths.add(t.path);
             return [t.path, collectRefsInValue(extMode[matchedKey], byPath)];
           }
         }
         return [t.path, baseRefsByPath.get(t.path) ?? []];
       })
     );
-    runCycleCheck(modeRefs);
+    const modeHint = modeName === "light" || modeName === "dark" ? modeName : null;
+    runCycleCheck(modeRefs, modeHint, extModeOverridePaths);
   }
   for (const t of tokens) {
     if (!typeByPath.get(t.path)) {
@@ -334,12 +503,7 @@ export function validateDtcgTokens(source) {
     }
   }
 
-  const aliases = tokens.filter(
-    (t) =>
-      aliasTarget(t.value) !== null ||
-      Boolean(t.ref) ||
-      Boolean(t.value && typeof t.value === "object" && typeof t.value.$ref === "string")
-  );
+  const aliases = tokens.filter((t) => (refsByPath.get(t.path)?.length ?? 0) > 0);
   const componentScoped = tokens.filter((t) => /(component|button|input|card|dialog|modal|badge|toast|table|nav|tabs)/i.test(t.path));
   const MODERN_SPACE_RE = /^(oklch|oklab|display-p3|a98-rgb|prophoto-rgb|rec2020|lab|lch|xyz-d50|xyz-d65)$/i;
   const modernColors = tokens.filter(
@@ -488,7 +652,7 @@ function hslToSrgb(hDeg, sPct, lPct) {
 }
 
 function parseCssAngleDeg(tok) {
-  const m = /^([-+]?(?:\d+(?:\.\d+)?|\.\d+))(deg|rad|grad|turn)?$/i.exec(String(tok || "").trim());
+  const m = /^([-+]?(?:\d+(?:\.\d+)?|\.\d+)(?:[eE][+-]?\d+)?)(deg|rad|grad|turn)?$/i.exec(String(tok || "").trim());
   if (!m) return null;
   const val = Number.parseFloat(m[1]);
   const unit = (m[2] || "deg").toLowerCase();
@@ -500,15 +664,127 @@ function parseCssAngleDeg(tok) {
 
 function parseCssAlpha(tok) {
   const s = String(tok || "").trim();
-  const isPct = s.endsWith("%");
+  if (/^none$/i.test(s)) return 0;
+  const am = /^[+-]?(?:\d+(?:\.\d+)?|\.\d+)(?:[eE][+-]?\d+)?(%?)$/.exec(s);
+  if (!am) return null;
+  const isPct = am[1] === "%";
   const n = Number.parseFloat(isPct ? s.slice(0, -1) : s);
   if (!Number.isFinite(n)) return null;
   return isPct ? n / 100 : n;
 }
 
-function parseCssColorToRgba(trimmed) {
+function xyzD65ToSrgb(X, Y, Z) {
+  const lr = +3.2409699419045213 * X - 1.5373831775700935 * Y - 0.4986107602930033 * Z;
+  const lg = -0.9692436362808798 * X + 1.8759675015077206 * Y + 0.0415550574071756 * Z;
+  const lb = +0.0556300796969936 * X - 0.2039769588889765 * Y + 1.0569715142428786 * Z;
+  return [linearSrgbChannelToSrgb255(lr), linearSrgbChannelToSrgb255(lg), linearSrgbChannelToSrgb255(lb)];
+}
+
+function xyzD50ToD65(X, Y, Z) {
+  return [
+    +0.9554734527042182 * X - 0.0230985368742614 * Y + 0.0632593086610217 * Z,
+    -0.0283697069632081 * X + 1.0099954580058226 * Y + 0.0210413989669430 * Z,
+    +0.0123140016883199 * X - 0.0205076964334779 * Y + 1.3303659366080753 * Z,
+  ];
+}
+
+function linSrgbChannelInv(c) {
+  const sgn = c < 0 ? -1 : 1;
+  const a = Math.abs(c);
+  return a <= 0.04045 ? c / 12.92 : sgn * Math.pow((a + 0.055) / 1.055, 2.4);
+}
+
+export function labToSrgb(L, a, b) {
+  const kappa = 24389 / 27;
+  const epsilon = 216 / 24389;
+  const fy = (L + 16) / 116;
+  const fx = a / 500 + fy;
+  const fz = fy - b / 200;
+  const xr = Math.pow(fx, 3) > epsilon ? Math.pow(fx, 3) : (116 * fx - 16) / kappa;
+  const yr = L > kappa * epsilon ? Math.pow((L + 16) / 116, 3) : L / kappa;
+  const zr = Math.pow(fz, 3) > epsilon ? Math.pow(fz, 3) : (116 * fz - 16) / kappa;
+  const [x65, y65, z65] = xyzD50ToD65(xr * (0.3457 / 0.3585), yr * 1.0, zr * ((1 - 0.3457 - 0.3585) / 0.3585));
+  return xyzD65ToSrgb(x65, y65, z65);
+}
+
+export function hwbToSrgb(hDeg, wPct, bPct) {
+  const w = Math.max(0, wPct);
+  const b = Math.max(0, bPct);
+  if (w + b >= 1) {
+    const v = Math.round(clamp01(w / (w + b)) * 255);
+    return [v, v, v];
+  }
+  const base = hslToSrgb(hDeg, 1, 0.5);
+  return base.map((c) => Math.round(clamp01((c / 255) * (1 - w - b) + w) * 255));
+}
+
+export function colorSpaceComponentsToSrgb(csName, c0, c1, c2) {
+  const cs = String(csName || "srgb").toLowerCase();
+  if (cs === "srgb") {
+    return [Math.round(clamp01(c0) * 255), Math.round(clamp01(c1) * 255), Math.round(clamp01(c2) * 255)];
+  }
+  if (cs === "srgb-linear") {
+    return [linearSrgbChannelToSrgb255(c0), linearSrgbChannelToSrgb255(c1), linearSrgbChannelToSrgb255(c2)];
+  }
+  if (cs === "display-p3") {
+    const [r, g, b] = [linSrgbChannelInv(c0), linSrgbChannelInv(c1), linSrgbChannelInv(c2)];
+    return xyzD65ToSrgb(
+      0.4865709486482162 * r + 0.2656676931690931 * g + 0.1982172852343625 * b,
+      0.2289745640697488 * r + 0.6917385218365064 * g + 0.0792869140937450 * b,
+      0.0451133818589026 * g + 1.0439443689009760 * b
+    );
+  }
+  if (cs === "a98-rgb") {
+    const inv = (v) => (v < 0 ? -1 : 1) * Math.pow(Math.abs(v), 563 / 256);
+    const [r, g, b] = [inv(c0), inv(c1), inv(c2)];
+    return xyzD65ToSrgb(
+      0.5766690429101305 * r + 0.1855582379065463 * g + 0.1882286462349947 * b,
+      0.2973449752505360 * r + 0.6273635662554661 * g + 0.0752914584939979 * b,
+      0.0270313613864123 * r + 0.0706888525358272 * g + 0.9913375368376388 * b
+    );
+  }
+  if (cs === "prophoto-rgb") {
+    const inv = (v) => {
+      const s = v < 0 ? -1 : 1;
+      const a = Math.abs(v);
+      return a <= 16 / 512 ? v / 16 : s * Math.pow(a, 1.8);
+    };
+    const [r, g, b] = [inv(c0), inv(c1), inv(c2)];
+    const [x65, y65, z65] = xyzD50ToD65(
+      0.7977604896723027 * r + 0.1351858371757403 * g + 0.0313493495815248 * b,
+      0.2880711282292934 * r + 0.7118432178101014 * g + 0.0000856539606052 * b,
+      0.8251046025104601 * b
+    );
+    return xyzD65ToSrgb(x65, y65, z65);
+  }
+  if (cs === "rec2020") {
+    const alpha = 1.09929682680944;
+    const beta = 0.018053968510807;
+    const inv = (v) => {
+      const s = v < 0 ? -1 : 1;
+      const a = Math.abs(v);
+      return a < beta * 4.5 ? v / 4.5 : s * Math.pow((a + alpha - 1) / alpha, 1 / 0.45);
+    };
+    const [r, g, b] = [inv(c0), inv(c1), inv(c2)];
+    return xyzD65ToSrgb(
+      0.6369580483012914 * r + 0.1446169035862083 * g + 0.1688809751641721 * b,
+      0.2627002120112671 * r + 0.6779980715188708 * g + 0.0593017164698619 * b,
+      0.0280726930490874 * g + 1.0609850577107910 * b
+    );
+  }
+  if (cs === "xyz" || cs === "xyz-d65") {
+    return xyzD65ToSrgb(c0, c1, c2);
+  }
+  if (cs === "xyz-d50") {
+    const [x65, y65, z65] = xyzD50ToD65(c0, c1, c2);
+    return xyzD65ToSrgb(x65, y65, z65);
+  }
+  return null;
+}
+
+export function parseCssColorToRgba(trimmed) {
   if (/^transparent$/i.test(trimmed)) return [0, 0, 0, 0];
-  const m = /^(oklch|oklab|rgba?|hsla?)\s*\(([^()]+)\)$/i.exec(trimmed);
+  const m = /^(oklch|oklab|rgba?|hsla?|hwb|lab|lch|color)\s*\(([^()]+)\)$/i.exec(trimmed);
   if (!m) return null;
   const fn = m[1].toLowerCase();
   const body = m[2].trim();
@@ -522,12 +798,26 @@ function parseCssColorToRgba(trimmed) {
     mainStr = body.slice(0, slashIdx).trim();
   }
   const parts = mainStr.includes(",") ? mainStr.split(",").map((p) => p.trim()) : mainStr.split(/\s+/);
-  if (fn === "rgb" || fn === "rgba" || fn === "hsl" || fn === "hsla") {
-    if (mainStr.includes(",") && parts.length === 4) {
+  if (fn === "color") {
+    if (parts.length !== 4) return null;
+    const cs = parts[0].toLowerCase();
+    const vals = parts.slice(1).map((p) => {
+      if (/^none$/i.test(p)) return 0;
+      const isPct = p.endsWith("%");
+      const n = Number.parseFloat(isPct ? p.slice(0, -1) : p);
+      if (!Number.isFinite(n)) return NaN;
+      return isPct ? n / 100 : n;
+    });
+    if (!vals.every(Number.isFinite)) return null;
+    const rgb = colorSpaceComponentsToSrgb(cs, vals[0], vals[1], vals[2]);
+    return rgb ? [...rgb, alpha] : null;
+  }
+  if (fn === "rgb" || fn === "rgba" || fn === "hsl" || fn === "hsla" || fn === "hwb") {
+    if (fn !== "hwb" && mainStr.includes(",") && parts.length === 4) {
       const aVal = parseCssAlpha(parts[3]);
       if (aVal === null) return null;
       alpha = clamp01(aVal);
-    } else if (parts.length !== 3 && !(mainStr.includes(",") && parts.length === 4)) {
+    } else if (parts.length !== 3 && !(fn !== "hwb" && mainStr.includes(",") && parts.length === 4)) {
       return null;
     }
     if (fn === "rgb" || fn === "rgba") {
@@ -540,10 +830,10 @@ function parseCssColorToRgba(trimmed) {
       return ch.every(Number.isFinite) ? [...ch, alpha] : null;
     }
     const h = parseCssAngleDeg(/^none$/i.test(parts[0]) ? "0" : parts[0]);
-    const sat = /^none$/i.test(parts[1]) ? 0 : Number.parseFloat(parts[1]) / 100;
-    const lig = /^none$/i.test(parts[2]) ? 0 : Number.parseFloat(parts[2]) / 100;
-    if (h === null || !Number.isFinite(sat) || !Number.isFinite(lig)) return null;
-    const rgb = hslToSrgb(h, sat, lig);
+    const p1 = /^none$/i.test(parts[1]) ? 0 : Number.parseFloat(parts[1]) / 100;
+    const p2 = /^none$/i.test(parts[2]) ? 0 : Number.parseFloat(parts[2]) / 100;
+    if (h === null || !Number.isFinite(p1) || !Number.isFinite(p2)) return null;
+    const rgb = fn === "hwb" ? hwbToSrgb(h, p1, p2) : hslToSrgb(h, p1, p2);
     return [...rgb, alpha];
   }
   if (parts.length !== 3) return null;
@@ -554,6 +844,21 @@ function parseCssColorToRgba(trimmed) {
     if (!Number.isFinite(n)) return NaN;
     return isPct ? (n / 100) * pctScale : n;
   };
+  if (fn === "lab" || fn === "lch") {
+    const L = parseUnitOrPct(parts[0], 100);
+    if (!Number.isFinite(L)) return null;
+    if (fn === "lab") {
+      const a = parseUnitOrPct(parts[1], 125);
+      const b = parseUnitOrPct(parts[2], 125);
+      if (!Number.isFinite(a) || !Number.isFinite(b)) return null;
+      return [...labToSrgb(L, a, b), alpha];
+    }
+    const C = parseUnitOrPct(parts[1], 150);
+    const h = /^none$/i.test(parts[2]) ? 0 : parseCssAngleDeg(parts[2]);
+    if (!Number.isFinite(C) || h === null) return null;
+    const hr = (h * Math.PI) / 180;
+    return [...labToSrgb(L, C * Math.cos(hr), C * Math.sin(hr)), alpha];
+  }
   const L = parseUnitOrPct(parts[0], 1);
   if (!Number.isFinite(L)) return null;
   if (fn === "oklab") {
@@ -594,6 +899,8 @@ function resolveColorRgba(val, byPath, stack = [], mode = null) {
           const mid = `${t.slice(0, dotIdx)}.${mp}.${t.slice(dotIdx + 1)}`;
           if (byPath.has(mid) && !stack.includes(mid)) return mid;
         }
+        const suf = `${t}.${mp}`;
+        if (byPath.has(suf) && !stack.includes(suf)) return suf;
       }
     }
     return byPath.has(t) && !stack.includes(t) ? t : null;
@@ -628,9 +935,32 @@ function resolveColorRgba(val, byPath, stack = [], mode = null) {
       if (cs === "oklch") return [...oklchToSrgb(nums[0], nums[1], nums[2]), alpha];
       if (cs === "oklab") return [...oklabToSrgb(nums[0], nums[1], nums[2]), alpha];
       if (cs === "hsl") return [...hslToSrgb(nums[0], nums[1] / 100, nums[2] / 100), alpha];
-      if (cs !== "srgb") return null;
-      const scale = nums.every((n) => n >= 0 && n <= 1) ? 255 : 1;
-      return [Math.round(nums[0] * scale), Math.round(nums[1] * scale), Math.round(nums[2] * scale), alpha];
+      if (cs === "hwb") return [...hwbToSrgb(nums[0], nums[1] / 100, nums[2] / 100), alpha];
+      if (cs === "lab") return [...labToSrgb(nums[0], nums[1], nums[2]), alpha];
+      if (cs === "lch") {
+        const hr = (nums[2] * Math.PI) / 180;
+        return [...labToSrgb(nums[0], nums[1] * Math.cos(hr), nums[1] * Math.sin(hr)), alpha];
+      }
+      if (cs !== "srgb") {
+        const converted = colorSpaceComponentsToSrgb(cs, nums[0], nums[1], nums[2]);
+        if (converted) return [...converted, alpha];
+        if (typeof val.hex === "string" && val.hex.trim()) {
+          const hexRgba = parseHexToRgba(val.hex.trim()) || parseCssColorToRgba(val.hex.trim());
+          if (hexRgba) {
+            return [
+              hexRgba[0],
+              hexRgba[1],
+              hexRgba[2],
+              typeof val.alpha === "number" && Number.isFinite(val.alpha) ? clamp01(val.alpha) : hexRgba[3],
+            ];
+          }
+        }
+        return null;
+      }
+      const isLegacy255 = nums.every((n) => n >= 0 && n <= 255) && nums.some((n) => n > 2);
+      const scale = isLegacy255 ? 1 : 255;
+      const clampChan = (n) => Math.max(0, Math.min(255, Math.round(n * scale)));
+      return [clampChan(nums[0]), clampChan(nums[1]), clampChan(nums[2]), alpha];
     }
   }
   return null;
@@ -1732,7 +2062,13 @@ function extractSpacingValueBranches(rawExpr) {
           const se = findBalLocal(expr, tk + 1, "{", "}", r - 1);
           if (se !== -1) {
             if (tk > tStart) out.push(expr.slice(tStart, tk));
+            const beforeLen = out.length;
             visit(tk + 2, se);
+            if (/^px\b/i.test(expr.slice(se + 1, r - 1))) {
+              for (let oi = beforeLen; oi < out.length; oi++) {
+                out[oi] = attachPxToBareNumbers(out[oi]);
+              }
+            }
             tk = se + 1;
             tStart = tk;
             continue;
@@ -1749,6 +2085,10 @@ function extractSpacingValueBranches(rawExpr) {
   return out.join(" ");
 }
 
+function attachPxToBareNumbers(str) {
+  return String(str || "").replace(/(?<![a-zA-Z0-9_.#$:-])['"]?(\d+(?:\.\d+)?)(?!\d|\.)['"]?(?=$|[\s,)'"])/g, "$1px");
+}
+
 function extractHtmlStyleValForSpacing(valStr) {
   const v = String(valStr || "");
   if (!v.includes("{")) return v;
@@ -1760,7 +2100,8 @@ function extractHtmlStyleValForSpacing(valStr) {
       const endB = findBalIdx(v, i, "{", "}");
       if (endB !== -1) {
         if (i > segStart) parts.push(v.slice(segStart, i));
-        parts.push(extractSpacingValueBranches(v.slice(i + 1, endB)));
+        const exprBranches = extractSpacingValueBranches(v.slice(i + 1, endB));
+        parts.push(/^px\b/i.test(v.slice(endB + 1)) ? attachPxToBareNumbers(exprBranches) : exprBranches);
         i = endB + 1;
         segStart = i;
         continue;
@@ -2180,13 +2521,13 @@ const NON_THEME_DTCG_LEAF_TYPES = new Set(["fontweight", "fontfamily", "duration
 function countOffGridSpacing(text, isStyleFile) {
   let hits = 0;
   const scanValue = (valStr) => {
-    for (const m of stripCssVarNames(valStr).matchAll(/(?<!\d\.)\b(\d+(?:\.\d+)?)px\b/g)) {
+    for (const m of stripCssVarNames(valStr).matchAll(PX_VALUE_RE)) {
       const n = Number.parseFloat(m[1]);
       if (isOffGridPxValue(n)) hits++;
     }
   };
   if (isStyleFile) {
-    for (const m of maskCssQuotedStringsPreservingLines(text).matchAll(/(?<![a-zA-Z0-9_$-:])([a-zA-Z-]+)\s*:\s*([^;{}]+)/g)) {
+    for (const m of maskCssQuotedStringsPreservingLines(text).matchAll(/(?<![a-zA-Z0-9_$:-])([a-zA-Z-]+)\s*:\s*((?:[^#;{}]|#\{[^{}]*\}|#(?!\{))+)/g)) {
       if (SPACING_RADIUS_CSS_PROP_RE.test(m[1])) scanValue(m[2]);
     }
   } else {
@@ -2557,6 +2898,9 @@ export function scanTarget(targetPath, options = {}) {
           isAstro: /\.astro$/i.test(lowerCf),
         };
 
+    const rawStyleRanges = [];
+    let rawCssInJsRanges = [];
+    let rawMarkupCtx = null;
     if (isStyle) {
       for (const tv of extractAtThemeVars(commentFreeRaw)) themeVars.add(tv);
       const maskedDefsRaw = extractStyleQueryVarsAndMaskPreludes(maskCssQuotedStringsPreservingLines(commentFreeRaw), usedVars);
@@ -2568,8 +2912,10 @@ export function scanTarget(targetPath, options = {}) {
         }
       }
     } else {
-      const rawMarkupCtx = scanMarkupContexts(commentFreeRaw, markupOpts);
+      rawMarkupCtx = scanMarkupContexts(commentFreeRaw, markupOpts);
+      rawCssInJsRanges = extractCssInJsTemplateRanges(commentFreeRaw, rawMarkupCtx);
       for (const blk of extractRealStyleBlocks(commentFreeRaw, rawMarkupCtx, markupOpts)) {
+        rawStyleRanges.push([blk.bodyStart, blk.bodyEnd]);
         const maskedStyleInner = extractStyleQueryVarsAndMaskPreludes(maskCssQuotedStringsPreservingLines(blk.text), usedVars);
         for (const m of maskedStyleInner.matchAll(/(?<![a-zA-Z0-9_.&-])--([a-zA-Z0-9_-]+)\s*:(?!:)/g)) {
           const name = `--${m[1]}`;
@@ -2591,12 +2937,14 @@ export function scanTarget(targetPath, options = {}) {
           }
         }
       }
-      for (const sd of findSvelteStyleDirectives(commentFreeRaw)) {
-        if (!sd.isCustomProp) continue;
-        if (!isFrameworkInternalVar(sd.prop)) {
-          definedVars.add(sd.prop);
-          if (!varDefLocations.has(sd.prop)) {
-            varDefLocations.set(sd.prop, { file: rel, line: offsetToLine(commentFreeRaw, sd.start) });
+      if (lowerCf.endsWith(".svelte")) {
+        for (const sd of findSvelteStyleDirectives(commentFreeRaw)) {
+          if (!sd.isCustomProp || !isRealOpenTagAttrPos(rawMarkupCtx, sd.start)) continue;
+          if (!isFrameworkInternalVar(sd.prop)) {
+            definedVars.add(sd.prop);
+            if (!varDefLocations.has(sd.prop)) {
+              varDefLocations.set(sd.prop, { file: rel, line: offsetToLine(commentFreeRaw, sd.start) });
+            }
           }
         }
       }
@@ -2611,22 +2959,29 @@ export function scanTarget(targetPath, options = {}) {
         }
       }
     }
-    for (const m of commentFreeRaw.matchAll(/var\(\s*--([a-zA-Z0-9_-]+)/g)) {
+    const varUsageSurface = isStyle
+      ? commentFreeRaw
+      : maskProseAndDocStringsPreservingLines(commentFreeRaw, {
+          ...markupOpts,
+          markupCtx: rawMarkupCtx,
+          excludeSpans: [...rawStyleRanges, ...rawCssInJsRanges.map((r) => [r.start, r.end])],
+        });
+    for (const m of varUsageSurface.matchAll(/var\(\s*--([a-zA-Z0-9_-]+)/g)) {
       const name = `--${m[1]}`;
       if (!isFrameworkInternalVar(name)) usedVars.add(name);
       if (/^--(gray|slate|zinc|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose|palette|raw)-?\d+/i.test(name)) {
         primitiveVarsUsed.add(name);
       }
     }
-    for (const m of commentFreeRaw.matchAll(/(?<=^|[\s"'`:!])-?[a-z][a-z0-9-]*-\((?:[a-z-]+:)?--([a-zA-Z0-9_-]+)\)/g)) {
+    for (const m of varUsageSurface.matchAll(/(?<=^|[\s"'`:!])-?[a-z][a-z0-9-]*-\((?:[a-z-]+:)?--([a-zA-Z0-9_-]+)\)/g)) {
       const name = `--${m[1]}`;
       if (!isFrameworkInternalVar(name)) usedVars.add(name);
     }
-    for (const m of commentFreeRaw.matchAll(/\b(?:getPropertyValue|setProperty)\(\s*["']--([a-zA-Z0-9_-]+)["']/g)) {
+    for (const m of varUsageSurface.matchAll(/\b(?:getPropertyValue|setProperty)\(\s*["']--([a-zA-Z0-9_-]+)["']/g)) {
       const name = `--${m[1]}`;
       if (!isFrameworkInternalVar(name)) usedVars.add(name);
     }
-    for (const m of commentFreeRaw.matchAll(/(?:^|[\s"'`:/!])-?([a-z]+-[a-z0-9-]+)/g)) {
+    for (const m of varUsageSurface.matchAll(/(?:^|[\s"'`:/!])-?([a-z]+-[a-z0-9-]+)/g)) {
       seenUtilityClasses.add(m[1]);
     }
 
@@ -2667,12 +3022,14 @@ export function scanTarget(targetPath, options = {}) {
     if (isStyle) {
       linePreservingNonVar = blankCssCustomPropDeclsPreservingLines(linePreservingSurface);
     } else {
+      const nvMarkupCtx = scanMarkupContexts(linePreservingSurface, markupOpts);
       const nvChars = linePreservingSurface.split("");
       for (const r of embeddedStyleRanges) {
         const sliceRep = blankCssCustomPropDeclsPreservingLines(linePreservingSurface.slice(r.start, r.end));
         for (let k = 0; k < sliceRep.length && r.start + k < r.end; k++) nvChars[r.start + k] = sliceRep[k];
       }
       for (const attrMatch of linePreservingSurface.matchAll(/(?<![a-zA-Z0-9_:-])style\s*=\s*(?:"([^"]*)"|'([^']*)')/gi)) {
+        if (!isRealOpenTagAttrPos(nvMarkupCtx, attrMatch.index)) continue;
         const val = attrMatch[1] !== undefined ? attrMatch[1] : attrMatch[2];
         const qChar = attrMatch[1] !== undefined ? '"' : "'";
         const attrStart = attrMatch.index + attrMatch[0].indexOf(qChar) + 1;
@@ -2681,8 +3038,9 @@ export function scanTarget(targetPath, options = {}) {
           nvChars[attrStart + k] = attrRep[k];
         }
       }
-      for (const sd of findSvelteStyleDirectives(linePreservingSurface)) {
-        if (sd.isCustomProp) {
+      if (lowerCf.endsWith(".svelte")) {
+        for (const sd of findSvelteStyleDirectives(linePreservingSurface)) {
+          if (!sd.isCustomProp || !isRealOpenTagAttrPos(nvMarkupCtx, sd.start)) continue;
           maskRangePreservingLines(nvChars, sd.valStart, sd.valEnd);
         }
       }
@@ -2691,15 +3049,21 @@ export function scanTarget(targetPath, options = {}) {
         markupOpts
       );
     }
+    const varRefSurface = isStyle
+      ? linePreservingNonVar
+      : maskProseAndDocStringsPreservingLines(linePreservingNonVar, {
+          ...markupOpts,
+          excludeSpans: [...embeddedStyleRanges, ...cssInJsRanges].map((r) => [r.start, r.end]),
+        });
     const varRefsInFile =
-      (linePreservingNonVar.match(/var\(\s*--[a-zA-Z0-9_-]+/g) || []).length +
-      (linePreservingNonVar.match(/(?<=^|[\s"'`:!])-?[a-z][a-z0-9-]*-\((?:[a-z-]+:)?--[a-zA-Z0-9_-]+\)/g) || []).length;
+      (varRefSurface.match(/var\(\s*--[a-zA-Z0-9_-]+/g) || []).length +
+      (varRefSurface.match(/(?<=^|[\s"'`:!])-?[a-z][a-z0-9-]*-\((?:[a-z-]+:)?--[a-zA-Z0-9_-]+\)/g) || []).length;
     colorTokenRefs += varRefsInFile;
 
     const twArbColorRe =
-      /(?<=^|[\s"'`:!])((?:bg|text|border(?:-(?:t|r|b|l|x|y|s|e))?|divide|fill|stroke|ring(?:-offset)?|from|to|via|accent|outline|decoration|shadow|caret|placeholder)-\[#[^\]\s]+\]!?)/g;
+      /(?<=^|[\s"'`:!])((?:bg|text|border(?:-(?:t|r|b|l|x|y|s|e))?|divide|fill|stroke|ring(?:-offset)?|from|to|via|accent|outline|decoration|shadow|caret|placeholder)-\[(?:color:)?(?:#[^\]\s]+|(?:rgba?|hsla?|oklch|oklab|hwb|lab|lch)\([^\]\s]+\))\]!?|\[(?:color|background-color|background|border-color|outline-color|fill|stroke|accent-color|caret-color):(?:#[0-9a-fA-F]{3,8}|(?:rgba?|hsla?|oklch|oklab|hwb|lab|lch)\([^\]\s]+\))\]!?)/g;
     const twArbSpaceRe =
-      /(?<=^|[\s"'`:!])(-?(?:p|px|py|pt|pr|pb|pl|ps|pe|m|mx|my|mt|mr|mb|ml|ms|me|gap|gap-x|gap-y|space-x|space-y|rounded(?:-[a-z]+)?)-\[\d+(?:\.\d+)?px\]!?)/g;
+      /(?<=^|[\s"'`:!])(-?(?:p|px|py|pt|pr|pb|pl|ps|pe|m|mx|my|mt|mr|mb|ml|ms|me|gap|gap-x|gap-y|space-x|space-y|rounded(?:-[a-z]+)?|(?:min-|max-)?(?:w|h|size)|inset(?:-[xy])?|top|right|bottom|left|start|end)-\[-?\d+(?:\.\d+)?px\]!?|\[(?:padding|margin|gap|row-gap|column-gap|width|height|min-width|max-width|min-height|max-height|inset|top|right|bottom|left|border-radius)(?:-(?:top|right|bottom|left|inline|block)(?:-(?:start|end))?)?:\s*-?\d+(?:\.\d+)?px\]!?)/g;
     const twPrimColorRe =
       /(?<=^|[\s"'`:!])(?:bg|text|border|ring)-(?:slate|gray|zinc|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose)-(?:50|[1-9]00|950)!?(?![a-zA-Z0-9_-])/g;
 
@@ -2769,9 +3133,9 @@ export function scanTarget(targetPath, options = {}) {
     let fileOffGrid = 0;
     const scanCssSpacingSlice = (sliceText, baseOffset) => {
       const maskedSlice = maskCssQuotedStringsPreservingLines(sliceText);
-      for (const m of maskedSlice.matchAll(/(?<![a-zA-Z0-9_$-:])([a-zA-Z-]+)\s*:\s*([^;{}]+)/g)) {
+      for (const m of maskedSlice.matchAll(/(?<![a-zA-Z0-9_$:-])([a-zA-Z-]+)\s*:\s*((?:[^#;{}]|#\{[^{}]*\}|#(?!\{))+)/g)) {
         if (!SPACING_RADIUS_CSS_PROP_RE.test(m[1])) continue;
-        for (const pxm of stripCssVarNames(m[2]).matchAll(/(?<!\d\.)\b(\d+(?:\.\d+)?)px\b/g)) {
+        for (const pxm of stripCssVarNames(m[2]).matchAll(PX_VALUE_RE)) {
           const n = Number.parseFloat(pxm[1]);
           if (isOffGridPxValue(n)) {
             fileOffGrid++;
@@ -2791,7 +3155,7 @@ export function scanTarget(targetPath, options = {}) {
       for (const d of splitCssStyleDecls(attrVal)) {
         if (!SPACING_RADIUS_CSS_PROP_RE.test(d.prop)) continue;
         const resolvedVal = extractHtmlStyleValForSpacing(d.val);
-        for (const pxm of stripCssVarNames(resolvedVal).matchAll(/(?<!\d\.)\b(\d+(?:\.\d+)?)px\b/g)) {
+        for (const pxm of stripCssVarNames(resolvedVal).matchAll(PX_VALUE_RE)) {
           const n = Number.parseFloat(pxm[1]);
           if (isOffGridPxValue(n)) {
             fileOffGrid++;
@@ -2808,11 +3172,11 @@ export function scanTarget(targetPath, options = {}) {
       }
     };
     if (isStyle) {
-      scanCssSpacingSlice(linePreservingNonVar, 0);
+      scanCssSpacingSlice(maskAtApplyDeclsPreservingLines(linePreservingNonVar), 0);
     } else {
       const jsChars = linePreservingNonVar.split("");
       for (const r of embeddedStyleRanges) {
-        scanCssSpacingSlice(linePreservingNonVar.slice(r.start, r.end), r.start);
+        scanCssSpacingSlice(maskAtApplyDeclsPreservingLines(linePreservingNonVar.slice(r.start, r.end)), r.start);
         maskRangePreservingLines(jsChars, r.start, r.end);
       }
       for (const r of cssInJsRanges) {
@@ -2832,18 +3196,19 @@ export function scanTarget(targetPath, options = {}) {
           }
         }
         const maskedTpl = maskCssQuotedStringsPreservingLines(tplChars.join(""));
-        for (const m of maskedTpl.matchAll(/(?<![a-zA-Z0-9_$-:])([a-zA-Z-]+)\s*:\s*([^;{}]+)/g)) {
+        for (const m of maskedTpl.matchAll(/(?<![a-zA-Z0-9_$:-])([a-zA-Z-]+)\s*:\s*((?:[^#;{}]|#\{[^{}]*\}|#(?!\{))+)/g)) {
           if (!SPACING_RADIUS_CSS_PROP_RE.test(m[1])) continue;
           const valStart = m.index + m[0].length - m[2].length;
           const valEnd = m.index + m[0].length;
           const expandedParts = [m[2]];
           for (const ph of placeholders) {
             if (ph.start >= valStart && ph.start < valEnd && maskedTpl[ph.start] === "_") {
-              expandedParts.push(ph.val);
+              const hasTrailingPx = /^px\b/i.test(maskedTpl.slice(ph.end, valEnd));
+              expandedParts.push(hasTrailingPx ? attachPxToBareNumbers(ph.val) : ph.val);
             }
           }
           const expandedVal = expandedParts.join(" ");
-          for (const pxm of stripCssVarNames(expandedVal).matchAll(/(?<!\d\.)\b(\d+(?:\.\d+)?)px\b/g)) {
+          for (const pxm of stripCssVarNames(expandedVal).matchAll(PX_VALUE_RE)) {
             const n = Number.parseFloat(pxm[1]);
             if (isOffGridPxValue(n)) {
               fileOffGrid++;
@@ -2885,7 +3250,7 @@ export function scanTarget(targetPath, options = {}) {
                 ? extractHtmlStyleValForSpacing(valText)
                 : valText
               : extractSpacingValueBranches(valText);
-          for (const pxm of stripCssVarNames(branchVal).matchAll(/(?<!\d\.)\b(\d+(?:\.\d+)?)px\b/g)) {
+          for (const pxm of stripCssVarNames(branchVal).matchAll(PX_VALUE_RE)) {
             const n = Number.parseFloat(pxm[1]);
             if (isOffGridPxValue(n)) {
               fileOffGrid++;
@@ -2988,7 +3353,7 @@ export function scanTarget(targetPath, options = {}) {
         for (const e of extractJsStyleSpacingEntries(jsSpacingSurface.slice(spStart, spEnd), spStart)) {
           if (seenEntryKeys.has(e.index)) continue;
           seenEntryKeys.add(e.index);
-          for (const pxm of e.val.matchAll(/(?<!\d\.)\b(\d+(?:\.\d+)?)px\b/g)) {
+          for (const pxm of e.val.matchAll(PX_VALUE_RE)) {
             const n = Number.parseFloat(pxm[1]);
             if (isOffGridPxValue(n)) {
               fileOffGrid++;
@@ -3154,11 +3519,11 @@ export function scanTarget(targetPath, options = {}) {
       ) {
         usedVars.add(tv);
       }
-    } else if (tv.startsWith("--font-") && seenUtilityClasses.has("font-" + tv.slice(7))) {
+    } else if (tv.startsWith("--font-") && seenUtilityClasses.has("font-" + tv.slice(7).split("--")[0])) {
       usedVars.add(tv);
     } else if (tv.startsWith("--shadow-") && seenUtilityClasses.has("shadow-" + tv.slice(9))) {
       usedVars.add(tv);
-    } else if (tv.startsWith("--text-") && seenUtilityClasses.has("text-" + tv.slice(7))) {
+    } else if (tv.startsWith("--text-") && seenUtilityClasses.has("text-" + tv.slice(7).split("--")[0])) {
       usedVars.add(tv);
     } else if (tv.startsWith("--animate-") && seenUtilityClasses.has("animate-" + tv.slice(10))) {
       usedVars.add(tv);
@@ -4910,6 +5275,267 @@ function runSelfTest() {
     );
     const r30TokScan = scanTarget(r30TokDir);
     assert.equal(r30TokScan.drift.hardcodedColorHits, 2, "R30 A2-H1/M2: both #ff00aa and #123456 must count as hardcoded colors");
+
+    // Round 31 (A2-M10): SCSS #{} interpolation before px spacing must not truncate declaration scan
+    const r31TokDir = join(scratch, "r31-tok-dir");
+    mkdirSync(r31TokDir, { recursive: true });
+    writeFileSync(
+      join(r31TokDir, "interp.scss"),
+      ".a { padding: #{$gap} 13px; margin: #{$top} #{$right} 15px; }\n"
+    );
+    const r31TokScan = scanTarget(r31TokDir);
+    assert.equal(r31TokScan.drift.offGridSpacingHits, 2, "R31 A2-M10: SCSS #{...} before 13px/15px must not mask off-grid spacing");
+    assert.equal(
+      r31TokScan.ciFindings.active.filter((f) => f.ruleId === "dsaf/off-grid-spacing").length,
+      2,
+      "R31 A2-M10: ciFindings must include both 13px and 15px after #{...}"
+    );
+
+    // Round 32 (A2-M5): prose, JS doc strings, and fake style:--* inside JSX prose/strings must not count as token usage or definitions
+    const r32TokDir = join(scratch, "r32-tok-prose");
+    mkdirSync(r32TokDir, { recursive: true });
+    writeFileSync(join(r32TokDir, "tokens.css"), ":root { --brand-primary: #112233; }\n");
+    writeFileSync(
+      join(r32TokDir, "Docs.tsx"),
+      [
+        'const doc = "Do not use var(--brand-primary) in raw code";',
+        'const snippet = "style:--fake-token={x}";',
+        'const fakeInline = "style=\\"--prose-inline: #ffffff\\"";',
+        'export function Docs() { return <p>Example: var(--brand-primary) and bg-(--brand-primary) and style:--prose-var="red"</p>; }',
+      ].join("\n") + "\n"
+    );
+    const r32TokScan = scanTarget(r32TokDir);
+    assert.equal(r32TokScan.drift.usedCssVariables, 0, "R32 A2-M5: prose/doc var(--brand-primary) must not count as used");
+    assert.equal(r32TokScan.drift.semanticOrphanCount, 1, "R32 A2-M5: unused --brand-primary must stay orphan, fake style:--* must not register");
+    assert.equal(r32TokScan.drift.colorTokenRefs, 0, "R32 A2-M5: prose/doc var() must not inflate colorTokenRefs");
+    assert.equal(r32TokScan.drift.definedCssVariables, 1, "R32 A2-M5: only :root --brand-primary counts as defined CSS var");
+
+    // Round 33 (A2-M4 & A2-M7): DTCG $root tokens, display-p3 .hex fallback, and extended Tailwind arbitrary color/sizing/property utilities
+    const r33Dtcg = {
+      surface: {
+        $root: { $type: "color", $value: "#ffffff" },
+        subtle: { $type: "color", $value: "{surface.$root}" },
+      },
+      text: {
+        primary: {
+          $type: "color",
+          $value: { colorSpace: "display-p3", components: [0.07, 0.09, 0.14], hex: "#111827" },
+        },
+        muted: { $type: "color", $value: "#b3b3b3" },
+        refPtr: { $type: "color", $ref: "#/surface/$root/$value" },
+      },
+    };
+    const r33Flat = flattenTokens(r33Dtcg);
+    assert.ok(r33Flat.some((t) => t.path === "surface" && t.value === "#ffffff"), "R33 A2-M4: $root token must flatten at group path 'surface'");
+    const r33Val = validateDtcgTokens(r33Dtcg);
+    assert.deepEqual(r33Val.blockingIssues, [], `R33 A2-M4: {surface.$root} and #/surface/$root/$value must resolve, got ${JSON.stringify(r33Val.blockingIssues)}`);
+    const r33Modes = analyzeDtcgModesAndContrast(r33Dtcg);
+    assert.ok(r33Modes.contrast.pairsEvaluated >= 2, "R33 A2-M4: display-p3 .hex text.primary and $root surface must produce contrast pairs");
+    assert.ok(r33Modes.contrast.failingPairs.some((p) => p.fg === "text.muted"), "R33 A2-M4: #b3b3b3 must fail contrast against #ffffff");
+    assert.ok(!r33Modes.contrast.failingPairs.some((p) => p.fg === "text.primary"), "R33 A2-M4: display-p3 .hex #111827 must pass contrast");
+
+    const r33TwDir = join(scratch, "r33-tw-arb");
+    mkdirSync(r33TwDir, { recursive: true });
+    writeFileSync(
+      join(r33TwDir, "Card.tsx"),
+      '<div className="bg-[oklch(0.6_0.2_250)] text-[rgb(255,0,0)] [color:#112233] w-[317px] min-h-[53px] inset-x-[13px] [padding-inline:15px] [width:200px]" />\n'
+    );
+    const r33TwScan = scanTarget(r33TwDir);
+    assert.equal(r33TwScan.drift.tailwind.arbitraryColors, 3, "R33 A2-M7: must count bg-[oklch(...)], text-[rgb(...)], and [color:#...]");
+    assert.equal(r33TwScan.drift.tailwind.arbitrarySpacing, 5, "R33 A2-M7: must count w-[317px], min-h-[53px], inset-x-[13px], [padding-inline:15px], [width:200px]");
+    assert.equal(r33TwScan.drift.hardcodedColorHits, 0, "R33 A2-M7: Tailwind arbitrary colors must not double-count as hardcodedColorHits");
+
+    // Round 34 (A2-M7 DTCG 2025.10/CSS4 color spaces, A2-M8 $extends, A2-M9 @apply spacing no double-count, A2-L10 @theme modifier vars, A2-L11 composite aliasCount):
+    const r34ColorModes = analyzeDtcgModesAndContrast({
+      color: {
+        bg: { default: { $type: "color", $value: "#ffffff" } },
+        fg: {
+          objP3: { $type: "color", $value: { colorSpace: "display-p3", components: [0.99, 0.99, 0.99] } },
+          objSrgbLin: { $type: "color", $value: { colorSpace: "srgb-linear", components: [0.99, 0.99, 0.99] } },
+          cssP3: { $type: "color", $value: "color(display-p3 0.99 0.99 0.99)" },
+          cssHwb: { $type: "color", $value: "hwb(0 98% 2%)" },
+          cssLab: { $type: "color", $value: "lab(97 0 0)" },
+        },
+      },
+    });
+    assert.ok(r34ColorModes.contrast.wcagFailures >= 5, `R34 A2-M7: DTCG P3/srgb-linear and CSS4 color()/hwb()/lab() low-contrast tokens must fail WCAG, got ${r34ColorModes.contrast.wcagFailures}`);
+
+    const r34ExtendsVal = validateDtcgTokens({
+      base: { $type: "color", bg: { $value: "#ffffff" }, fg: { $value: "#111111" } },
+      dark: { $extends: "{base}", bg: { $value: "#09090b" } },
+      shadow: {
+        card: { $type: "shadow", $value: { color: "{base.fg}", offsetX: "0px", offsetY: "2px", blur: "4px", spread: "0px" } },
+      },
+    });
+    assert.deepEqual(r34ExtendsVal.missingTypeIssues, [], "R34 A2-M8: $extends must inherit $type and sibling members");
+    assert.equal(r34ExtendsVal.tokenCount, 5, "R34 A2-M8: base(2) + dark(2 inherited+overridden) + shadow.card(1)");
+    assert.equal(r34ExtendsVal.typedCount, 5);
+    assert.equal(r34ExtendsVal.aliasCount, 1, "R34 A2-L11: nested composite {base.fg} alias must increment aliasCount");
+
+    const r34ApplyThemeDir = join(scratch, "r34-apply-theme");
+    mkdirSync(r34ApplyThemeDir, { recursive: true });
+    writeFileSync(
+      join(r34ApplyThemeDir, "styles.css"),
+      "@theme { --text-sm: 0.875rem; --text-sm--line-height: 1.25rem; }\n.card { @apply [padding:13px]; }\n"
+    );
+    writeFileSync(join(r34ApplyThemeDir, "View.tsx"), 'export const View = () => <p className="text-sm">Hi</p>;\n');
+    const r34Scan = scanTarget(r34ApplyThemeDir);
+    assert.equal(r34Scan.drift.offGridSpacingHits, 0, "R34 A2-M9: @apply [padding:13px] must not double-count as offGridSpacingHits");
+    assert.equal(r34Scan.drift.tailwind.arbitrarySpacing, 1, "R34 A2-M9: @apply [padding:13px] must count once as tailwind.arbitrarySpacing");
+    assert.equal(r34Scan.drift.semanticOrphanCount, 0, "R34 A2-L10: --text-sm--line-height must resolve via text-sm usage");
+
+    // Round 36 (R35-A2-H6 out-of-gamut srgb DTCG color objects scale by 255 + clamp):
+    const r36GamutPass = analyzeDtcgModesAndContrast({
+      color: {
+        bg: { default: { $type: "color", $value: { colorSpace: "srgb", components: [1.093, -0.226, -0.15] } } },
+        fg: { default: { $type: "color", $value: "#000000" } },
+      },
+    });
+    assert.equal(r36GamutPass.contrast.wcagFailures, 0, "R36 A2-H6: #000000 on out-of-gamut srgb red [1.093,-0.226,-0.15] (~#ff0000, 5.25:1) must PASS");
+    const r36GamutFail = analyzeDtcgModesAndContrast({
+      color: {
+        bg: { default: { $type: "color", $value: { colorSpace: "srgb", components: [1.093, -0.226, -0.15] } } },
+        fg: { default: { $type: "color", $value: "#ffffff" } },
+      },
+    });
+    assert.equal(r36GamutFail.contrast.wcagFailures, 1, "R36 A2-H6: #ffffff on out-of-gamut srgb red [1.093,-0.226,-0.15] (~#ff0000, 4.00:1) must FAIL");
+
+    // Round 37 (R36-A2-L2 / none alpha + R36-A2-M1 SFC <script> cast):
+    assert.deepEqual(parseCssColorToRgba("rgb(0 0 0 / none)"), [0, 0, 0, 0], "R37 A2-L2: rgb(0 0 0 / none) must parse alpha 0");
+    const r37OkNone = parseCssColorToRgba("oklch(0.6 0.2 30 / none)");
+    assert.ok(Array.isArray(r37OkNone) && r37OkNone[3] === 0, "R37 A2-L2: oklch(... / none) must parse alpha 0");
+    const r37NoneContrast = analyzeDtcgModesAndContrast({
+      surface: { bg: { $type: "color", $value: "#ffffff" } },
+      text: { noneAlpha: { $type: "color", $value: "rgb(0 0 0 / none)" } },
+    });
+    assert.ok(r37NoneContrast.contrast.pairsEvaluated >= 1, "R37 A2-L2: rgb(0 0 0 / none) token must be evaluated in contrast check");
+    const r37AppVueDir = join(scratch, "r37-app-vue");
+    mkdirSync(r37AppVueDir, { recursive: true });
+    writeFileSync(
+      join(r37AppVueDir, "App.vue"),
+      [
+        '<script setup lang="ts">',
+        'const el = <HTMLElement>document.getElementById("x");',
+        "const B = styled.button`color: #ff00aa;`;",
+        "</script>",
+        '<template><div style="color: #112233">ok</div></template>',
+      ].join("\n")
+    );
+    const r37TokVue = scanTarget(r37AppVueDir);
+    assert.equal(r37TokVue.drift.hardcodedColorHits, 2, "R37 A2-M1: audit-tokens must detect #ff00aa after TS cast in App.vue <script>");
+
+    // Round 38 (R37-A2-M3 leaf .light/.dark aliases + R37-A2-L1 $extensions.mode scoping + R37-A2-L2 legacy value override):
+    const r38LeafDoc = {
+      color: {
+        $type: "color",
+        bg: { light: { $value: "#ffffff" }, dark: { $value: "#111111" } },
+        cardText: { light: { $value: "{color.bg}" }, dark: { $value: "{color.bg}" } },
+        fg: { light: { $value: "#111111" }, dark: { $value: "#ffffff" } },
+      },
+    };
+    assert.equal(validateDtcgTokens(r38LeafDoc).blockingIssues.length, 0, "R38 A2-M3: leaf .light/.dark alias targets must validate without unresolved_reference");
+    assert.ok(analyzeDtcgModesAndContrast(r38LeafDoc).contrast.pairsEvaluated >= 2, "R38 A2-M3: leaf .light/.dark alias targets must resolve colors for contrast");
+
+    const r38ExtModeDoc = {
+      dark: { secret: { $type: "color", $value: "#111111" } },
+      light: { bg: { $type: "color", $value: "#ffffff" } },
+      card: { $type: "color", $value: "#ffffff", $extensions: { mode: { light: "{secret}", dark: "{secret}" } } },
+    };
+    assert.ok(
+      validateDtcgTokens(r38ExtModeDoc).blockingIssues.some((iss) => iss.type === "unresolved_reference" && iss.path === "card" && iss.target === "secret"),
+      "R38 A2-L1: $extensions.mode.light reference missing light.secret must fail even when dark.secret exists"
+    );
+
+    const r38ExtLegacy = resolveDtcgExtends({
+      base: { fg: { $type: "color", $value: "#000000" }, link: { $type: "color", $ref: "#/base/fg" } },
+      text: { $extends: "{base}", fg: { value: "#ffffff" }, link: { value: "#ffffff" } },
+    });
+    assert.equal(validateDtcgTokens({ surface: { bg: { $type: "color", $value: "#000000" } }, ...r38ExtLegacy }).blockingIssues.length, 0);
+    const r38ExtC = analyzeDtcgModesAndContrast({ surface: { bg: { $type: "color", $value: "#000000" } }, ...r38ExtLegacy });
+    assert.ok(r38ExtC.contrast.pairsEvaluated >= 2, "R38 A2-L2: text.fg and text.link must evaluate in contrast check");
+    assert.equal(
+      r38ExtC.contrast.failingPairs.filter((p) => p.fg.startsWith("text.")).length,
+      0,
+      "R38 A2-L2: child legacy value override must clear inherited $value and $ref"
+    );
+
+    // Round 39 (R38-A2-M2 mode-scoped runCycleCheck + R38-A2-L1 spacing after paren/comma + R38-A2-L2 CSS-in-JS ${expr}px):
+    const r39CycleFp = {
+      light: { x: { $type: "color", $value: "{a.bg}" } },
+      dark: { x: { $type: "color", $value: "#000000" } },
+      a: { bg: { $type: "color", $value: "#ffffff", $extensions: { mode: { dark: "{x}" } } } },
+    };
+    assert.equal(
+      validateDtcgTokens(r39CycleFp).blockingIssues.filter((i) => i.type === "circular_reference").length,
+      0,
+      "R39 A2-M2: dark $extensions.mode ref must resolve dark.x without false circular_reference via light.x"
+    );
+    const r39CycleFn = {
+      color: { x: { $type: "color", $value: "#111111" } },
+      dark: { color: { x: { $type: "color", $value: "{a.bg}" } } },
+      a: { bg: { $type: "color", $value: "#ffffff", $extensions: { mode: { dark: "{color.x}" } } } },
+    };
+    assert.equal(
+      validateDtcgTokens(r39CycleFn).blockingIssues.filter((i) => i.type === "circular_reference").length,
+      1,
+      "R39 A2-M2: dark $extensions.mode ref must resolve dark.color.x and catch dark-mode cycle"
+    );
+    const r39CrossMode = {
+      light: { a: { $type: "color", $value: "{b}" } },
+      dark: { b: { $type: "color", $value: "{light.a}" } },
+      c: { $type: "color", $value: "#ffffff", $extensions: { mode: { dark: "{dark.b}" } } },
+    };
+    assert.equal(
+      validateDtcgTokens(r39CrossMode).blockingIssues.filter((i) => i.type === "circular_reference").length,
+      0,
+      "R39 A2-M2: light.a -> {b} with dark.b -> {light.a} must not create false cycle in dark mode"
+    );
+
+    const r39SpacingDir = join(scratch, "r39-spacing");
+    mkdirSync(r39SpacingDir, { recursive: true });
+    writeFileSync(join(r39SpacingDir, "a.css"), "@supports (padding: 13px) { .a { gap: 4px; } }\n");
+    writeFileSync(
+      join(r39SpacingDir, "Card.tsx"),
+      [
+        'import styled from "styled-components";',
+        "export const Bad = styled.div`padding: ${isBig ? 13 : 8}px;`;",
+        "export const Ok = styled.div`padding: ${isBig ? 8 : 4}px;`;",
+      ].join("\n") + "\n"
+    );
+    const r39SpRes = scanTarget(r39SpacingDir);
+    assert.equal(r39SpRes.drift.offGridSpacingHits, 2, "R39 A2-L1/L2: must detect @supports (padding: 13px) and styled.div `${isBig ? 13 : 8}px`");
+
+    // Round 40 (R39-A2-M6 $extensions.mode-only tokens + R39-A2-L8 leading-dot fractional px like .5px):
+    const r40ExtOnlyDoc = {
+      color: {
+        $type: "color",
+        surface: { $extensions: { mode: { light: "#ffffff", dark: "#000000" } } },
+        text: { $extensions: { mode: { dark: "#111111" } } },
+        groupWithExt: {
+          $extensions: { mode: { light: "#eeeeee" } },
+          nested: { $value: "#1d4ed8" },
+        },
+      },
+    };
+    const r40ExtVal = validateDtcgTokens(r40ExtOnlyDoc);
+    assert.equal(r40ExtVal.tokenCount, 3, "R40 A2-M6: $extensions.mode-only tokens + nested children must all flatten (3 tokens)");
+    const r40ExtModes = analyzeDtcgModesAndContrast(r40ExtOnlyDoc);
+    assert.equal(r40ExtModes.parity.hasModes, true, "R40 A2-M6: $extensions.mode-only tokens must report hasModes=true");
+    assert.equal(r40ExtModes.parity.lightCount, 1);
+    assert.equal(r40ExtModes.parity.darkCount, 2);
+    assert.deepEqual(r40ExtModes.parity.missingInLight, ["color.text"]);
+
+    const r40SubPxDir = join(scratch, "r40-subpx");
+    mkdirSync(r40SubPxDir, { recursive: true });
+    writeFileSync(join(r40SubPxDir, "a.css"), ".a { padding: .5px; border-radius: .25px; margin: -.5px; }\n");
+    writeFileSync(join(r40SubPxDir, "b.tsx"), 'export const B = () => <div style={{ margin: ".5px", padding: "foo5px" }} />;\n');
+    writeFileSync(join(r40SubPxDir, "c.svelte"), '<div style="padding: .5px;" style:margin={".25px"}>ok</div>\n');
+    writeFileSync(
+      join(r40SubPxDir, "d.tsx"),
+      'import styled from "styled-components";\nexport const D = styled.div`padding: ${ok ? .5 : 0.25}px;`;\n'
+    );
+    const r40SubPxRes = scanTarget(r40SubPxDir);
+    assert.equal(r40SubPxRes.drift.offGridSpacingHits, 0, "R40 A2-L8: leading-dot .5px/.25px/-0.5px must not trigger offGridSpacingHits");
 
     console.log("AUDIT_TOKENS_SELF_TEST_PASSED (DTCG + scoped CSS/@theme/Tailwind + fixture/OG + SVG/swatch + SARIF/waivers)");
     return 0;

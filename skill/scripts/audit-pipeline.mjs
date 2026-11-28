@@ -17,12 +17,14 @@ import { parseArgs } from "node:util";
 import { scanTarget } from "./audit-tokens.mjs";
 import { compareVertices, renderMarkdown as renderFigmaMarkdown } from "./audit-figma-diff.mjs";
 import { checkTarget, discoverExternalDsCss } from "./dsaf-hook.mjs";
-import { assertWritableOutputDir, assertWritableOutputFile, CI_REPORT_VERSION, formatGithubAnnotations, formatSarif, isDirectCliEntry } from "./ci-report.mjs";
+import { assertWritableOutputDir, assertWritableOutputFile, CI_REPORT_VERSION, escMdCell, formatGithubAnnotations, formatMdCodeSpan, formatSarif, isDirectCliEntry } from "./ci-report.mjs";
 import { parseArgs as parseRuntimeArgs } from "./audit-runtime.mjs";
 import { generatePersonas } from "./generate-personas.mjs";
 import { renderHtmlReport } from "./generate-html-report.mjs";
+import { diffScorecards } from "./audit-diff.mjs";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
+export const PIPELINE_VERSION = "0.9.3";
 const TIER_RANK = { floor: 0, reflex: 1, finish: 2 };
 
 export function resolveScopedDir(target, rawScope) {
@@ -74,7 +76,22 @@ function runSubScript(scriptName, args) {
 }
 
 function loadOrGeneratePersonas(target, recon) {
-  const existingPath = join(target, ".dsaf", "personas.json");
+  const dsafDir = join(target, ".dsaf");
+  let dsafLst = null;
+  try {
+    dsafLst = lstatSync(dsafDir);
+  } catch (err) {
+    if (err?.code !== "ENOENT" && err?.code !== "ENOTDIR") throw err;
+  }
+  if (dsafLst) {
+    if (dsafLst.isSymbolicLink()) {
+      throw new Error("Invalid .dsaf directory: symlinks are not allowed.");
+    }
+    if (!statSync(dsafDir).isDirectory()) {
+      throw new Error("Invalid .dsaf path: expected a directory.");
+    }
+  }
+  const existingPath = join(dsafDir, "personas.json");
   let lst = null;
   try {
     lst = lstatSync(existingPath);
@@ -82,11 +99,17 @@ function loadOrGeneratePersonas(target, recon) {
     if (err?.code !== "ENOENT" && err?.code !== "ENOTDIR") throw err;
   }
   if (lst) {
-    if (lst.isSymbolicLink() && !existsSync(existingPath)) {
-      throw new Error("Invalid .dsaf/personas.json: broken symlink.");
+    if (lst.isSymbolicLink()) {
+      throw new Error("Invalid .dsaf/personas.json: symlinks are not allowed.");
     }
     if (!statSync(existingPath).isFile()) {
       throw new Error("Invalid .dsaf/personas.json: expected a regular file.");
+    }
+    const realRoot = realpathSync(resolve(target));
+    const realFile = realpathSync(existingPath);
+    const rootPref = realRoot.endsWith(sep) ? realRoot : realRoot + sep;
+    if (!realFile.startsWith(rootPref)) {
+      throw new Error(`Invalid .dsaf/personas.json: resolves outside target root '${target}'.`);
     }
     let parsed;
     try {
@@ -146,12 +169,15 @@ export function mapFindingToPersonas(finding, personas = []) {
 
 export function buildRuntimeArgs(opts = {}, rtPath = null) {
   const rtArgs = [];
-  if (opts.url) rtArgs.push("--live");
-  if (opts.cdp) rtArgs.push("--cdp", String(opts.cdp));
+  const urlVal = opts.url ? String(opts.url).trim() : "";
+  const cdpVal = opts.cdp ? String(opts.cdp).trim() : "";
+  const sbVal = opts.storybook ? String(opts.storybook).trim() : "";
+  if (urlVal) rtArgs.push("--live");
+  if (cdpVal) rtArgs.push("--cdp", cdpVal);
   if (opts.cdpTarget) rtArgs.push("--target", opts.cdpTarget);
   if (opts.extendedViewports) rtArgs.push("--extended-viewports");
   if (opts.noHideOverlays) rtArgs.push("--no-hide-overlays");
-  if (opts.storybook) rtArgs.push("--storybook", opts.storybook);
+  if (sbVal) rtArgs.push("--storybook", sbVal);
   if (opts.routes) rtArgs.push("--routes", opts.routes);
   if (opts.axePath) rtArgs.push("--axe", opts.axePath);
   if (opts.executablePath) rtArgs.push("--executable-path", opts.executablePath);
@@ -161,7 +187,7 @@ export function buildRuntimeArgs(opts = {}, rtPath = null) {
   } else {
     rtArgs.push("--json");
   }
-  if (opts.url) rtArgs.push("--", opts.url);
+  if (urlVal) rtArgs.push("--", urlVal);
   return rtArgs;
 }
 
@@ -331,27 +357,28 @@ export function runAuditPipeline(opts = {}) {
       }
       scoreDocs.push(parsedScore);
     }
-    if (scoreDocs[0].type !== scoreDocs[1].type) {
-      throw new Error(`Scorecard type mismatch between --baseline (${scoreDocs[0].type}) and --current (${scoreDocs[1].type}).`);
-    }
+    diffScorecards(scoreDocs[0], scoreDocs[1], "before");
   }
+  const trimmedUrl = opts.url ? String(opts.url).trim() : null;
+  const trimmedStorybook = opts.storybook ? String(opts.storybook).trim() : null;
+  const trimmedCdp = opts.cdp ? String(opts.cdp).trim() : null;
   if (opts.routes !== undefined && opts.routes !== null) {
-    if (!opts.url && !opts.storybook) {
+    if (!trimmedUrl && !trimmedStorybook) {
       throw new Error("Parameter '--routes' requires either '--url' or '--storybook'.");
     }
     if (String(opts.routes).split(",").some((s) => !s.trim())) {
       throw new Error(`Parameter '--routes' must contain non-empty comma-separated route paths (got '${opts.routes}').`);
     }
   }
-  if (opts.url) {
-    if (/^data:/i.test(opts.url)) {
-      if (!/^data:[^,]*,/i.test(opts.url)) {
+  if (trimmedUrl) {
+    if (/^data:/i.test(trimmedUrl)) {
+      if (!/^data:[^,]*,/i.test(trimmedUrl)) {
         throw new Error(`Invalid data: URL for --url: ${opts.url}`);
       }
-    } else if (/^file:/i.test(opts.url)) {
+    } else if (/^file:/i.test(trimmedUrl)) {
       let fsUrlPath;
       try {
-        const fu = new URL(opts.url);
+        const fu = new URL(trimmedUrl);
         if (fu.protocol !== "file:") throw new Error("not file");
         fsUrlPath = fileURLToPath(fu);
       } catch {
@@ -360,20 +387,23 @@ export function runAuditPipeline(opts = {}) {
       if (!existsSync(fsUrlPath) || !statSync(fsUrlPath).isFile()) {
         throw new Error(`Runtime --url file target not found or not a file: ${fsUrlPath}`);
       }
-    } else if (/^https?:/i.test(opts.url)) {
+    } else if (/^https?:/i.test(trimmedUrl)) {
+      if (!/^https?:\/\//i.test(trimmedUrl)) {
+        throw new Error(`Invalid runtime --url (must start with http:// or https://): ${opts.url}`);
+      }
       let u;
       try {
-        u = new URL(opts.url);
+        u = new URL(trimmedUrl);
       } catch {
         throw new Error(`Invalid runtime --url: ${opts.url}`);
       }
       if ((u.protocol !== "http:" && u.protocol !== "https:") || !u.hostname) {
         throw new Error(`Invalid runtime --url (hostname required): ${opts.url}`);
       }
-    } else if (/^[a-z][a-z0-9+.-]*:/i.test(opts.url)) {
+    } else if (/^[a-z][a-z0-9+.-]*:/i.test(trimmedUrl)) {
       throw new Error(`Unsupported runtime --url scheme: ${opts.url}`);
     } else {
-      const absUrl = resolve(opts.url);
+      const absUrl = resolve(trimmedUrl);
       let uLst = null;
       try {
         uLst = lstatSync(absUrl);
@@ -406,21 +436,24 @@ export function runAuditPipeline(opts = {}) {
       }
     }
   }
-  if (opts.storybook) {
-    if (/^https?:/i.test(opts.storybook)) {
+  if (trimmedStorybook) {
+    if (/^https?:/i.test(trimmedStorybook)) {
+      if (!/^https?:\/\//i.test(trimmedStorybook)) {
+        throw new Error(`Invalid --storybook URL (must start with http:// or https://): ${opts.storybook}`);
+      }
       let su;
       try {
-        su = new URL(opts.storybook);
+        su = new URL(trimmedStorybook);
       } catch {
         throw new Error(`Invalid --storybook URL: ${opts.storybook}`);
       }
       if ((su.protocol !== "http:" && su.protocol !== "https:") || !su.hostname) {
         throw new Error(`Invalid --storybook URL (hostname required): ${opts.storybook}`);
       }
-    } else if (/^[a-z][a-z0-9+.-]*:/i.test(opts.storybook)) {
+    } else if (/^[a-z][a-z0-9+.-]*:/i.test(trimmedStorybook)) {
       throw new Error(`Unsupported --storybook URL scheme: ${opts.storybook}`);
     } else {
-      const absSb = resolve(opts.storybook);
+      const absSb = resolve(trimmedStorybook);
       let sbLst = null;
       try {
         sbLst = lstatSync(absSb);
@@ -448,8 +481,8 @@ export function runAuditPipeline(opts = {}) {
       }
     }
   }
-  if (opts.cdp) {
-    const rawCdp = String(opts.cdp).trim();
+  if (trimmedCdp) {
+    const rawCdp = trimmedCdp;
     if (/^\d+$/.test(rawCdp)) {
       const port = Number(rawCdp);
       if (!Number.isSafeInteger(port) || port < 1 || port > 65535) {
@@ -529,13 +562,13 @@ export function runAuditPipeline(opts = {}) {
     let runtime = null;
     let runtimePassed = true;
     let runtimeFileForDiff = null;
-    if (opts.url || opts.storybook || opts.cdp) {
+    if (trimmedUrl || trimmedStorybook || trimmedCdp) {
       const rtPath = outDir ? join(outDir, "runtime.json") : null;
       if (rtPath) {
         if (existsSync(rtPath)) rmSync(rtPath, { force: true });
         runtimeFileForDiff = rtPath;
       }
-      const rtArgs = buildRuntimeArgs(opts, rtPath);
+      const rtArgs = buildRuntimeArgs({ ...opts, url: trimmedUrl, storybook: trimmedStorybook, cdp: trimmedCdp }, rtPath);
       const rtRes = runSubScript("audit-runtime.mjs", rtArgs);
       runtimePassed = rtRes.status === 0;
       if (rtRes.error) {
@@ -726,7 +759,7 @@ export function runAuditPipeline(opts = {}) {
 
     const summary = {
       schema: "dsaf-audit/1",
-      engine_version: "0.9.3",
+      engine_version: PIPELINE_VERSION,
       generated: new Date().toISOString(),
       dataTier: "tier_0_readonly",
       target,
@@ -821,11 +854,12 @@ export function renderAuditMarkdown(summary) {
   const d = summary.tokens.drift;
   const r = summary.recon;
   const cg = summary.ciGate || { floor: 0, reflex: 0, finish: 0, waived: 0, unusedIgnores: 0 };
+  const escCell = escMdCell;
   const lines = [
-    "# DSAF Unified Audit Summary (`v0.9.3` · Tier 0 Read-Only)",
+    `# DSAF Unified Audit Summary (\`v${PIPELINE_VERSION}\` · Tier 0 Read-Only)`,
     "",
-    `- **Target:** \`${summary.target}\``,
-    `- **Topology / Surface / Maturity:** \`Mode ${r.recommendedMode}\` (${r.topologyLabel}) | Surface: \`${r.surfaceMode || "persuade"}\` | \`${r.estimatedMaturity}\` | \`T2-Mock required: ${r.t2MockRequired}\``,
+    `- **Target:** ${formatMdCodeSpan(summary.target, false)}`,
+    `- **Topology / Surface / Maturity:** \`Mode ${escCell(r.recommendedMode)}\` (${escCell(r.topologyLabel)}) | Surface: ${formatMdCodeSpan(r.surfaceMode || "persuade", false)} | ${formatMdCodeSpan(r.estimatedMaturity, false)} | \`T2-Mock required: ${Boolean(r.t2MockRequired)}\``,
     `- **Pipeline Status:** ${summary.passed ? "PASS" : "FAIL"}`,
     `- **CI Gate & Waivers:** Floor=${cg.floor} · Reflex=${cg.reflex} · Finish=${cg.finish} · Waived=${cg.waived} · Unused Ignores=${cg.unusedIgnores}`,
     "",
@@ -839,19 +873,19 @@ export function renderAuditMarkdown(summary) {
     `| \`!important\` / Off-Grid Spacing | ${d.importantOverrides} / ${d.offGridSpacingHits} |`,
     `| Tailwind Arbitrary / Primitive | colors=${d.tailwind.arbitraryColors}, spacing=${d.tailwind.arbitrarySpacing}, primitive=${d.tailwind.primitiveColors} |`,
   ];
-  if (d.recommendedScope) lines.push(`| Recommended App Scope | \`${d.recommendedScope}\` |`);
+  if (d.recommendedScope) lines.push(`| Recommended App Scope | ${formatMdCodeSpan(d.recommendedScope, true)} |`);
   lines.push("");
 
   if (summary.personas?.items?.length > 0) {
     lines.push(
-      `## Persona Impact Matrix (${summary.personas.count} Personas · \`${summary.personas.source}\`)`,
+      `## Persona Impact Matrix (${summary.personas.count} Personas · ${formatMdCodeSpan(summary.personas.source, false)})`,
       "",
       "| ID | Persona | Axis | Impacted Findings | Rules |",
       "|---|---|---|---|---|"
     );
     for (const p of summary.personas.items) {
       lines.push(
-        `| \`${p.id}\` | ${p.name} | ${p.axis} | ${p.impactedCount} | ${p.findingRules.slice(0, 3).map((x) => `\`${x}\``).join(", ") || "—"} |`
+        `| ${formatMdCodeSpan(p.id, true)} | ${escCell(p.name)} | ${escCell(p.axis)} | ${p.impactedCount} | ${p.findingRules.slice(0, 3).map((x) => formatMdCodeSpan(x, true)).join(", ") || "—"} |`
       );
     }
     lines.push("");
@@ -1404,6 +1438,121 @@ function runSelfTest() {
       const r30Parsed = parseRuntimeArgs(r30RtArgs);
       assert.deepEqual(r30Parsed.targets, ["-page.html"]);
       assert.equal(r30Parsed.live, true);
+    }
+
+    // R31 (A1-L2, A1-L4): renderAuditMarkdown table escaping and whitespace-padded URL/Storybook handling
+    {
+      const r31Md = renderAuditMarkdown({
+        target: r23App,
+        passed: true,
+        recon: { recommendedMode: "P", topologyLabel: "Product", surfaceMode: "operate", estimatedMaturity: "tier_2_baseline", t2MockRequired: false },
+        tokens: {
+          filesScanned: { uiAndStyle: 1, tokenJson: 0 },
+          drift: {
+            demoFilesSkipped: [],
+            serverImageFiles: [],
+            tokenCompliancePct: 100,
+            colorTokenRefs: 1,
+            hardcodedColorHits: 0,
+            orphanCssVariableCount: 0,
+            semanticOrphanCount: 0,
+            paletteScaleUnusedCount: 0,
+            importantOverrides: 0,
+            offGridSpacingHits: 0,
+            tailwind: { arbitraryColors: 0, arbitrarySpacing: 0, primitiveColors: 0 },
+          },
+        },
+        ciGate: { floor: 0, reflex: 0, finish: 0, waived: 0, unusedIgnores: 0 },
+        personas: {
+          count: 1,
+          source: "custom|source",
+          items: [
+            {
+              id: "id|1`bad",
+              name: "Alice | Admin\nLine2",
+              axis: "kb|motion",
+              impactedCount: 2,
+              findingRules: ["dsaf/rule|a`1"],
+            },
+          ],
+        },
+      });
+      const pRow = r31Md.split("\n").find((l) => l.startsWith("| ``id"));
+      assert.ok(pRow, "R31 A1-L2: escaped persona row must exist");
+      assert.ok(!/\n/.test(pRow));
+      assert.equal(pRow.match(/(?<!\\)\|/g)?.length, 6, "R31 A1-L2: persona row must have exactly 6 unescaped pipes");
+      assert.match(pRow, /\\\|/, "R31 A1-L2: pipes inside cells must be escaped");
+      assert.ok(pRow.includes("``id\\|1`bad``") && pRow.includes("``dsaf/rule\\|a`1``"), "R31 A1-L2: backticks inside code cells must use CommonMark multi-backtick fences");
+
+      const r31TrimArgs = buildRuntimeArgs(
+        { url: "  https://example.com  ", storybook: "  https://example.com/index.json  ", cdp: " 9222 " },
+        null
+      );
+      assert.deepEqual(r31TrimArgs, [
+        "--live",
+        "--cdp",
+        "9222",
+        "--storybook",
+        "https://example.com/index.json",
+        "--json",
+        "--",
+        "https://example.com",
+      ]);
+      assert.throws(() => runAuditPipeline({ target: r23App, url: "  ftp://bad.example  " }), /Unsupported runtime --url scheme/i);
+      assert.throws(() => runAuditPipeline({ target: r23App, url: "  https://[::1  " }), /Invalid runtime --url/i);
+      assert.throws(() => runAuditPipeline({ target: r23App, storybook: "  ftp://bad.example/index.json  " }), /Unsupported --storybook URL scheme/i);
+      assert.throws(() => runAuditPipeline({ target: r23App, storybook: "  https://[::1/index.json  " }), /Invalid --storybook URL/i);
+      assert.throws(() => runAuditPipeline({ target: r23App, url: "http:127.0.0.1:19999" }), /must start with http:\/\/ or https:\/\//i);
+      assert.throws(() => runAuditPipeline({ target: r23App, storybook: "http:127.0.0.1:19999" }), /must start with http:\/\/ or https:\/\//i);
+
+      // R33 A1-M2: reject escaping symlinks on .dsaf/personas.json and .dsaf/
+      const r33ExtJson = join(scratch, "r33-secret-personas.json");
+      writeFileSync(r33ExtJson, JSON.stringify({ personas: [{ id: "P01", name: "Leaked" }] }));
+      const r33SymFileRepo = join(scratch, "r33-sym-personas-file");
+      mkdirSync(join(r33SymFileRepo, ".dsaf"), { recursive: true });
+      writeFileSync(join(r33SymFileRepo, "index.html"), "<main><h1>Ok</h1></main>\n");
+      symlinkSync(r33ExtJson, join(r33SymFileRepo, ".dsaf/personas.json"));
+      assert.throws(
+        () => runAuditPipeline({ target: r33SymFileRepo }),
+        /symlinks are not allowed|outside target root/i,
+        "R33 A1-M2: escaping .dsaf/personas.json symlink must be rejected"
+      );
+      const r33ExtDir = join(scratch, "r33-ext-dsaf-dir");
+      mkdirSync(r33ExtDir, { recursive: true });
+      writeFileSync(join(r33ExtDir, "personas.json"), JSON.stringify({ personas: [{ id: "P01", name: "LeakedDir" }] }));
+      const r33SymDirRepo = join(scratch, "r33-sym-personas-dir");
+      mkdirSync(r33SymDirRepo, { recursive: true });
+      writeFileSync(join(r33SymDirRepo, "index.html"), "<main><h1>Ok</h1></main>\n");
+      symlinkSync(r33ExtDir, join(r33SymDirRepo, ".dsaf"));
+      assert.throws(
+        () => runAuditPipeline({ target: r33SymDirRepo }),
+        /symlinks are not allowed|outside target root/i,
+        "R33 A1-M2: symlinked .dsaf directory must be rejected"
+      );
+
+      // R37 (R36-A1-L1): invalid scorecard type or weight mismatch must fail upfront with exit 2 before mkdirSync
+      const r37AbortOut = join(scratch, "r37-abort-out");
+      const r37BogusA = join(scratch, "r37-bogus-a.json");
+      const r37BogusB = join(scratch, "r37-bogus-b.json");
+      writeFileSync(r37BogusA, JSON.stringify({ schema: "dsaf-scores/2", type: "bogus", criteria: { before: {} }, phases: { before: { total: 50 } } }));
+      writeFileSync(r37BogusB, JSON.stringify({ schema: "dsaf-scores/2", type: "bogus", criteria: { before: {} }, phases: { before: { total: 60 } } }));
+      assert.equal(
+        spawnSync(process.execPath, [r25PipeSelf, r23App, "--baseline", r37BogusA, "--current", r37BogusB, "--out", r37AbortOut], { encoding: "utf8" }).status,
+        2,
+        "R36 A1-L1: bogus audit type on both scorecards must fail upfront with exit 2"
+      );
+      assert.equal(existsSync(r37AbortOut), false, "R36 A1-L1: bogus audit type must not create --out");
+
+      const r37WeightA = join(scratch, "r37-weight-a.json");
+      const r37WeightB = join(scratch, "r37-weight-b.json");
+      writeFileSync(r37WeightA, JSON.stringify({ schema: "dsaf-scores/2", type: "usability", weights: { a: 0.5, b: 0.5 }, criteria: { before: {} }, phases: { before: { total: 50 } } }));
+      writeFileSync(r37WeightB, JSON.stringify({ schema: "dsaf-scores/2", type: "usability", weights: { a: 0.8, b: 0.2 }, criteria: { before: {} }, phases: { before: { total: 60 } } }));
+      assert.equal(
+        spawnSync(process.execPath, [r25PipeSelf, r23App, "--baseline", r37WeightA, "--current", r37WeightB, "--out", r37AbortOut], { encoding: "utf8" }).status,
+        2,
+        "R36 A1-L1: mismatched pillar weights must fail upfront with exit 2"
+      );
+      assert.equal(existsSync(r37AbortOut), false, "R36 A1-L1: mismatched weights must not create --out");
     }
 
     console.log("AUDIT_PIPELINE_SELF_TEST_PASSED (recon + scoped tokens + personas + html + figma-diff + SARIF)");

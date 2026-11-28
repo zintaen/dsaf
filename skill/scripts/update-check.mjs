@@ -71,13 +71,15 @@ export function getDefaultCachePath() {
 export function shouldSuppressUpdateCheck({ command = "", argv = [], env = process.env } = {}) {
   if (env.DSAF_NO_UPDATE_CHECK === "1" || env.DSAF_NO_UPDATE_CHECK === "true") return true;
   if (env.CI === "true" || env.CI === "1") return true;
-  if (["mcp", "hook", "integrity", "verify", "version", "update", "upgrade", "doctor"].includes(String(command || "").toLowerCase())) {
+  if (["mcp", "hook", "integrity", "verify", "version", "update", "upgrade", "doctor", "help"].includes(String(command || "").toLowerCase())) {
     return true;
   }
   const args = Array.isArray(argv) ? argv : [];
   for (let i = 0; i < args.length; i++) {
     const low = String(args[i]).toLowerCase();
     if (
+      low === "--help" ||
+      low === "-h" ||
       low === "--json" ||
       low === "--sarif" ||
       low.startsWith("--sarif=") ||
@@ -391,6 +393,9 @@ async function runSelfTest() {
     assert.equal(parseSemver("0.9.3+."), null);
     assert.equal(parseSemver("0.9.3-rc.1."), null);
     assert.deepEqual(parseSemver("v0.9.3-rc.1+build.2"), { major: 0, minor: 9, patch: 3, pre: ["rc", "1"] });
+    assert.equal(shouldSuppressUpdateCheck({ command: "help", argv: [], env: {} }), true, "R33 A5-M1: help command suppresses update check");
+    assert.equal(shouldSuppressUpdateCheck({ command: "check", argv: ["--help"], env: {} }), true, "R34 A1-L1: --help flag suppresses update check");
+    assert.equal(shouldSuppressUpdateCheck({ command: "check", argv: ["-h"], env: {} }), true, "R34 A1-L1: -h flag suppresses update check");
 
     console.log("UPDATE_CHECK_SELF_TEST_PASSED (semver + suppression + 24h cache + offline fail-open + stderr notice)");
     return 0;

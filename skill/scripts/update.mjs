@@ -15,7 +15,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { basename, dirname, join, relative, resolve } from "node:path";
+import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { generateGuardrails } from "./generate-guardrails.mjs";
@@ -86,6 +86,46 @@ function canonicalCompareKey(p) {
   return process.platform === "darwin" || process.platform === "win32" ? full.toLowerCase() : full;
 }
 
+function assertContainedProjectReadPath(absTarget, targetPath, label) {
+  assertPathWithinRoot(absTarget, targetPath, label, { allowEqual: false });
+  const relSegs = relative(resolve(absTarget), resolve(targetPath))
+    .split(/[/\\]+/)
+    .filter(Boolean);
+  let cur = resolve(absTarget);
+  for (const seg of relSegs) {
+    cur = join(cur, seg);
+    let lst = null;
+    try {
+      lst = lstatSync(cur);
+    } catch (err) {
+      if (err?.code === "ENOENT" || err?.code === "ENOTDIR") return false;
+      throw err;
+    }
+    if (lst.isSymbolicLink()) {
+      let curKey = null;
+      try {
+        curKey = canonicalCompareKey(cur);
+      } catch {
+        curKey = null;
+      }
+      if (curKey) {
+        const rootKeyNow = canonicalCompareKey(absTarget);
+        const rootPrefNow = rootKeyNow.endsWith(sep) ? rootKeyNow : rootKeyNow + sep;
+        if (curKey !== rootKeyNow && !curKey.startsWith(rootPrefNow)) {
+          throw new Error(`Project path '${label}' escapes target root '${absTarget}': ${cur}`);
+        }
+      }
+    }
+  }
+  const rootKey = canonicalCompareKey(absTarget);
+  const rootPref = rootKey.endsWith(sep) ? rootKey : rootKey + sep;
+  const targetKey = canonicalCompareKey(targetPath);
+  if (targetKey !== rootKey && !targetKey.startsWith(rootPref)) {
+    throw new Error(`Project path '${label}' escapes target root '${absTarget}': ${targetPath}`);
+  }
+  return true;
+}
+
 function isRegularFile(p) {
   try {
     return existsSync(p) && statSync(p).isFile();
@@ -110,6 +150,7 @@ function collectSkillTargets({ absTarget, scope, allAgents, home }) {
       if (seenPaths.has(canonEntry)) continue;
       seenPaths.add(canonEntry);
       const skillMd = join(entry.path, "SKILL.md");
+      if (sc === "project" && !assertContainedProjectReadPath(absTarget, skillMd, relPath(absTarget, skillMd))) continue;
       if (!isRegularFile(skillMd)) continue;
       const body = readFileSync(skillMd, "utf8");
       const m =
@@ -139,21 +180,57 @@ function stripWorkflowRefDelims(rawRef) {
   return ref;
 }
 
+function splitYamlCodeAndComment(line) {
+  let quote = null;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (quote === "'") {
+      if (ch === "'") {
+        if (line[i + 1] === "'") {
+          i++;
+          continue;
+        }
+        quote = null;
+      }
+      continue;
+    }
+    if (quote === '"') {
+      if (ch === "\\" && i + 1 < line.length) {
+        i++;
+        continue;
+      }
+      if (ch === '"') quote = null;
+      continue;
+    }
+    if (ch === "'" || ch === '"') {
+      quote = ch;
+    } else if (ch === "#" && (i === 0 || /[ \t]/.test(line[i - 1]))) {
+      return { code: line.slice(0, i), comment: line.slice(i) };
+    }
+  }
+  return { code: line, comment: "" };
+}
+
 function rewriteWorkflowPins(raw, targetVersion = UPDATE_VERSION) {
-  let next = String(raw || "");
-  next = next.replace(
-    /(?<![A-Za-z0-9_@./-])zintaen\/dsaf(\/[A-Za-z0-9._/-]+)?@([vV]?\d+\.\d+\.\d+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?)(?=[\s"'#,;:)\]}\`&|]|\.(?:[\s,;:)\]}\`"'#&|]|$)|$)/g,
-    (full, sub, ref) => (isOlderSemver(ref, targetVersion) ? `zintaen/dsaf${sub || ""}@v${targetVersion}` : full)
-  );
-  next = next.replace(
-    /(?<![A-Za-z0-9_@./-])@zintaen\/dsaf@([vV]?\d+\.\d+\.\d+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?)(?=[\s"'#,;:)\]}\`&|]|\.(?:[\s,;:)\]}\`"'#&|]|$)|$)/g,
-    (full, ref) => (isOlderSemver(ref, targetVersion) ? `@zintaen/dsaf@${targetVersion}` : full)
-  );
-  return next;
+  const parts = String(raw || "").split(/(\r?\n)/);
+  for (let idx = 0; idx < parts.length; idx += 2) {
+    const { code, comment } = splitYamlCodeAndComment(parts[idx]);
+    let nextCode = code.replace(
+      /(?<![A-Za-z0-9_@./-])zintaen\/dsaf(\/[A-Za-z0-9._/-]+)?@([vV]?\d+\.\d+\.\d+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?)(?=[\s"'#,;:)\]}\`&|]|\.(?:[\s,;:)\]}\`"'#&|]|$)|$)/g,
+      (full, sub, ref) => (isOlderSemver(ref, targetVersion) ? `zintaen/dsaf${sub || ""}@v${targetVersion}` : full)
+    );
+    nextCode = nextCode.replace(
+      /(?<![A-Za-z0-9_@./-])@zintaen\/dsaf@([vV]?\d+\.\d+\.\d+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?)(?=[\s"'#,;:)\]}\`&|]|\.(?:[\s,;:)\]}\`"'#&|]|$)|$)/g,
+      (full, ref) => (isOlderSemver(ref, targetVersion) ? `@zintaen/dsaf@${targetVersion}` : full)
+    );
+    parts[idx] = nextCode + comment;
+  }
+  return parts.join("");
 }
 
 function collectWorkflowTargets(absTarget) {
   const wfDir = join(absTarget, ".github", "workflows");
+  if (!assertContainedProjectReadPath(absTarget, wfDir, ".github/workflows")) return [];
   try {
     if (!existsSync(wfDir) || !statSync(wfDir).isDirectory()) return [];
   } catch {
@@ -163,17 +240,22 @@ function collectWorkflowTargets(absTarget) {
   for (const name of readdirSync(wfDir).sort()) {
     if (!/\.(ya?ml)$/i.test(name)) continue;
     const full = join(wfDir, name);
+    const rel = relPath(absTarget, full);
+    if (!assertContainedProjectReadPath(absTarget, full, rel)) continue;
     try {
       if (!statSync(full).isFile()) continue;
     } catch {
       continue;
     }
-    const rel = relPath(absTarget, full);
     const raw = readFileSync(full, "utf8");
-    const actionRefs = [...raw.matchAll(/(?<![A-Za-z0-9_@./-])zintaen\/dsaf(?:\/[A-Za-z0-9._/-]+)?@([^\s"'#,;:)\]}\`&|]+)/g)]
+    const codeOnly = raw
+      .split(/\r?\n/)
+      .map((line) => splitYamlCodeAndComment(line).code)
+      .join("\n");
+    const actionRefs = [...codeOnly.matchAll(/(?<![A-Za-z0-9_@./-])zintaen\/dsaf(?:\/[A-Za-z0-9._/-]+)?@([^\s"'#,;:)\]}\`&|]+)/g)]
       .map((m) => stripWorkflowRefDelims(m[1]))
       .filter(Boolean);
-    const npmRefs = [...raw.matchAll(/(?<![A-Za-z0-9_@./-])@zintaen\/dsaf@([^\s"'#,;:)\]}\`&|]+)/g)]
+    const npmRefs = [...codeOnly.matchAll(/(?<![A-Za-z0-9_@./-])@zintaen\/dsaf@([^\s"'#,;:)\]}\`&|]+)/g)]
       .map((m) => stripWorkflowRefDelims(m[1]))
       .filter(Boolean);
     const refs = [...actionRefs, ...npmRefs];
@@ -228,6 +310,8 @@ function collectMcpTargets({ absTarget, scope, allAgents, home }) {
       const canonEntry = canonicalCompareKey(entry.path);
       if (seenPaths.has(canonEntry)) continue;
       seenPaths.add(canonEntry);
+      const displayPath = sc === "project" ? relPath(absTarget, entry.path) : entry.path;
+      if (sc === "project" && !assertContainedProjectReadPath(absTarget, entry.path, displayPath)) continue;
       let lst = null;
       try {
         lst = lstatSync(entry.path);
@@ -235,7 +319,6 @@ function collectMcpTargets({ absTarget, scope, allAgents, home }) {
         if (err?.code === "ENOENT" || err?.code === "ENOTDIR") continue;
         throw err;
       }
-      const displayPath = sc === "project" ? relPath(absTarget, entry.path) : entry.path;
       if (lst.isSymbolicLink() && !existsSync(entry.path)) {
         throw new Error(`Existing ${displayPath} is a broken symlink: ${entry.path}`);
       }
@@ -270,6 +353,7 @@ function collectMcpTargets({ absTarget, scope, allAgents, home }) {
 
 function inspectPersonas(absTarget) {
   const personasPath = join(absTarget, ".dsaf", "personas.json");
+  if (!assertContainedProjectReadPath(absTarget, personasPath, ".dsaf/personas.json")) return null;
   try {
     lstatSync(personasPath);
   } catch (err) {
@@ -279,9 +363,11 @@ function inspectPersonas(absTarget) {
   const personasDoc = readJsonObjectStrict(personasPath, ".dsaf/personas.json");
   const personasVer = typeof personasDoc?.version === "string" ? personasDoc.version : null;
   const personasDepth = ["quick", "auto", "deep"].includes(personasDoc?.depth) ? personasDoc.depth : null;
-  const personasMaxCap = typeof personasDoc?.maxCap === "number" && personasDoc.maxCap > 0 ? personasDoc.maxCap : null;
-  const surfaceMode = typeof personasDoc?.surfaceMode === "string" ? personasDoc.surfaceMode : null;
-  const mode = typeof personasDoc?.recommendedMode === "string" ? personasDoc.recommendedMode : null;
+  const personasMaxCap = Number.isSafeInteger(personasDoc?.maxCap) && personasDoc.maxCap > 0 ? personasDoc.maxCap : null;
+  const rawSurface = typeof personasDoc?.surfaceMode === "string" ? personasDoc.surfaceMode.trim().toLowerCase() : "";
+  const surfaceMode = ["persuade", "operate", "read", "experience"].includes(rawSurface) ? rawSurface : null;
+  const rawMode = typeof personasDoc?.recommendedMode === "string" ? personasDoc.recommendedMode.trim().toUpperCase() : "";
+  const mode = ["S", "C", "P"].includes(rawMode) ? rawMode : null;
 
   const cmp = personasVer ? compareSemver(personasVer, UPDATE_VERSION) : null;
   const personasNewer = cmp !== null && cmp > 0;
@@ -302,10 +388,13 @@ function inspectPersonas(absTarget) {
 
 function inspectGuardrails(absTarget) {
   const guardDir = join(absTarget, ".dsaf-guardrails");
+  if (!assertContainedProjectReadPath(absTarget, guardDir, ".dsaf-guardrails")) return null;
   const checkerPath = join(guardDir, "check-design-discipline.mjs");
   const rulesPath = join(guardDir, "AGENTS-dsaf-rules.md");
   const ymlPath = join(guardDir, "dsaf-regression-gate.yml");
-  const existing = [checkerPath, rulesPath, ymlPath].filter((p) => isRegularFile(p));
+  const existing = [checkerPath, rulesPath, ymlPath].filter(
+    (p) => assertContainedProjectReadPath(absTarget, p, relPath(absTarget, p)) && isRegularFile(p)
+  );
   if (existing.length === 0) return null;
 
   const versions = new Set();
@@ -415,6 +504,9 @@ function planAndValidateApply({ absTarget, home, before }) {
   let personaUpdatePlan = null;
   if (before.personas?.status === "outdated") {
     const dsafDir = join(absTarget, ".dsaf");
+    assertWritableTargetType(dsafDir, true, ".dsaf", absTarget);
+    assertWritableTargetType(join(dsafDir, "personas.json"), false, ".dsaf/personas.json", absTarget);
+    assertWritableTargetType(join(dsafDir, "personas.custom.json"), false, ".dsaf/personas.custom.json", absTarget);
     const recon = analyzeDirectory(absTarget);
     const mode = before.personas.mode || recon.recommendedMode || "P";
     const surfaceMode = before.personas.surfaceMode || recon.surfaceMode || "persuade";
@@ -437,10 +529,6 @@ function planAndValidateApply({ absTarget, home, before }) {
     guardrailUpdatePlan = { stack, mode };
   }
 
-  if (personaUpdatePlan) {
-    assertWritableTargetType(personaUpdatePlan.dsafDir, true, ".dsaf", absTarget);
-    assertWritableTargetType(join(personaUpdatePlan.dsafDir, "personas.json"), false, ".dsaf/personas.json", absTarget);
-  }
   if (guardrailUpdatePlan) {
     const guardDir = join(absTarget, ".dsaf-guardrails");
     assertWritableTargetType(guardDir, true, ".dsaf-guardrails", absTarget);
@@ -898,6 +986,131 @@ async function runSelfTest() {
     assert.equal(readFileSync(r30SharedMcp, "utf8"), r30OrigMcp);
     assert.match(readFileSync(join(r30McpSymRepo, ".claude/skills/dsaf/SKILL.md"), "utf8"), /v0\.0\.1/);
     assert.equal(JSON.parse(readFileSync(join(r30McpSymRepo, ".dsaf/personas.json"), "utf8")).version, "0.0.1");
+
+    // R31 (A1-L3): fractional/invalid positive personas.json maxCap must behave identically in --check and --dry-run/apply
+    const r31FracRepo = join(scratch, "r31-frac-cap");
+    mkdirSync(join(r31FracRepo, ".dsaf"), { recursive: true });
+    writeFileSync(
+      join(r31FracRepo, ".dsaf/personas.json"),
+      JSON.stringify({ version: "0.9.2", maxCap: 4.5, personas: [{ id: "p1", name: "Keep" }] }, null, 2)
+    );
+    const r31CheckRes = await inspectProjectUpdates(r31FracRepo, { offline: true, scope: "project", home: fakeHome });
+    assert.equal(r31CheckRes.personas.maxCap, null, "R31 A1-L3: inspectPersonas must ignore fractional maxCap");
+    const r31DryRun = await runUpdate(r31FracRepo, { offline: true, scope: "project", dryRun: true, home: fakeHome });
+    assert.equal(r31DryRun.mode, "dry-run");
+    assert.ok(r31DryRun.updated.some((u) => u.includes(".dsaf/personas.json")));
+    const r31ApplyRun = await runUpdate(r31FracRepo, { offline: true, scope: "project", dryRun: false, home: fakeHome });
+    assert.equal(r31ApplyRun.mode, "applied");
+    assert.equal(r31ApplyRun.outdatedCount, 0);
+    assert.equal(JSON.parse(readFileSync(join(r31FracRepo, ".dsaf/personas.json"), "utf8")).version, UPDATE_VERSION);
+
+    const r31IntRepo = join(scratch, "r31-int-cap");
+    mkdirSync(join(r31IntRepo, ".dsaf"), { recursive: true });
+    writeFileSync(
+      join(r31IntRepo, ".dsaf/personas.json"),
+      JSON.stringify({ version: "0.9.2", maxCap: 5, personas: [{ id: "p1", name: "Keep" }] }, null, 2)
+    );
+    const r31IntCheck = await inspectProjectUpdates(r31IntRepo, { offline: true, scope: "project", home: fakeHome });
+    assert.equal(r31IntCheck.personas.maxCap, 5, "R31 A1-L3: valid integer maxCap must still be preserved");
+
+    // Round 32 regressions (A1-M1 custom symlink escape, A1-L2 invalid surfaceMode/mode, A1-L3 YAML comment pin ignore)
+    const r32SymCustomRepo = join(scratch, "r32-sym-custom");
+    const r32SecretCustom = join(scratch, "r32-secret-custom.json");
+    mkdirSync(join(r32SymCustomRepo, ".dsaf"), { recursive: true });
+    writeFileSync(r32SymCustomRepo + "/.dsaf/personas.json", JSON.stringify({ version: "0.9.0", personas: [{ id: "p1", name: "Old" }] }));
+    writeFileSync(r32SecretCustom, JSON.stringify({ personas: [{ name: "Secret External Persona", axis: "Ext" }] }));
+    symlinkSync(r32SecretCustom, join(r32SymCustomRepo, ".dsaf/personas.custom.json"));
+    await assert.rejects(
+      () => runUpdate(r32SymCustomRepo, { offline: true, scope: "project", home: fakeHome }),
+      /symlink|escapes/i,
+      "R32 A1-M1: update must refuse symlinked/escaping .dsaf/personas.custom.json"
+    );
+    assert.doesNotMatch(readFileSync(join(r32SymCustomRepo, ".dsaf/personas.json"), "utf8"), /Secret External Persona/);
+
+    const r32BadModesRepo = join(scratch, "r32-bad-modes");
+    mkdirSync(join(r32BadModesRepo, ".dsaf"), { recursive: true });
+    writeFileSync(
+      join(r32BadModesRepo, ".dsaf/personas.json"),
+      JSON.stringify({ version: "0.9.0", surfaceMode: "   ", recommendedMode: "INVALID", personas: [] })
+    );
+    const r32BadModesCheck = await inspectProjectUpdates(r32BadModesRepo, { offline: true, scope: "project", home: fakeHome });
+    assert.equal(r32BadModesCheck.personas.surfaceMode, null);
+    assert.equal(r32BadModesCheck.personas.mode, null);
+    await runUpdate(r32BadModesRepo, { offline: true, scope: "project", dryRun: false, home: fakeHome });
+    const r32RegenPersonas = JSON.parse(readFileSync(join(r32BadModesRepo, ".dsaf/personas.json"), "utf8"));
+    assert.ok(["persuade", "operate", "read", "experience"].includes(r32RegenPersonas.surfaceMode));
+    assert.ok(["S", "C", "P"].includes(r32RegenPersonas.recommendedMode));
+
+    const r32WfRepo = join(scratch, "r32-wf-comment");
+    mkdirSync(join(r32WfRepo, ".github/workflows"), { recursive: true });
+    const r32WfPath = join(r32WfRepo, ".github/workflows/ci.yml");
+    const r32WfOrig = [
+      "name: CI",
+      "jobs:",
+      "  audit:",
+      "    steps:",
+      "      - uses: zintaen/dsaf@v0",
+      "      - run: npx @zintaen/dsaf@" + UPDATE_VERSION + " check . # keep comment zintaen/dsaf@0.9.0",
+      "      # comment zintaen/dsaf@0.9.0 and @zintaen/dsaf@0.9.0",
+    ].join("\n") + "\n";
+    writeFileSync(r32WfPath, r32WfOrig);
+    const r32WfCheck = await inspectProjectUpdates(r32WfRepo, { offline: true, home: fakeHome });
+    assert.equal(r32WfCheck.outdatedCount, 0, "R32 A1-L3: commented-out workflow pins must not mark workflow outdated");
+    assert.equal(
+      spawnSync(process.execPath, [updateSelfPath, r32WfRepo, "--check", "--offline", "--fail-if-outdated"], { encoding: "utf8" }).status,
+      0
+    );
+    await runUpdate(r32WfRepo, { offline: true, dryRun: false, home: fakeHome });
+    assert.equal(readFileSync(r32WfPath, "utf8"), r32WfOrig, "R32 A1-L3: update must not rewrite commented workflow refs");
+
+    // Round 33 (A1-M3): reject escaping symlinks during inspect/check & even when external files look up_to_date
+    const r33ExtDir = join(scratch, "r33-ext");
+    mkdirSync(r33ExtDir, { recursive: true });
+    writeFileSync(join(r33ExtDir, "personas.json"), JSON.stringify({ version: UPDATE_VERSION, depth: "auto", personas: [] }));
+    writeFileSync(join(r33ExtDir, "ci.yml"), `steps:\n  - uses: zintaen/dsaf@v${UPDATE_VERSION}\n`);
+    writeFileSync(join(r33ExtDir, "mcp.json"), JSON.stringify({ mcpServers: { dsaf: { args: ["-y", "@zintaen/dsaf@latest"] } } }));
+    writeFileSync(join(r33ExtDir, "SKILL.md"), `---\nname: dsaf\ndescription: "DSAF v${UPDATE_VERSION}"\n---\n`);
+    writeFileSync(join(r33ExtDir, "checker.mjs"), `// DSAF v${UPDATE_VERSION}\n`);
+
+    const makeR33SymRepo = (name, setupFn) => {
+      const d = join(scratch, name);
+      mkdirSync(d, { recursive: true });
+      setupFn(d);
+      return d;
+    };
+    const r33Cases = [
+      makeR33SymRepo("r33-p", (d) => {
+        mkdirSync(join(d, ".dsaf"), { recursive: true });
+        symlinkSync(join(r33ExtDir, "personas.json"), join(d, ".dsaf/personas.json"));
+      }),
+      makeR33SymRepo("r33-w", (d) => {
+        mkdirSync(join(d, ".github/workflows"), { recursive: true });
+        symlinkSync(join(r33ExtDir, "ci.yml"), join(d, ".github/workflows/ci.yml"));
+      }),
+      makeR33SymRepo("r33-m", (d) => {
+        symlinkSync(join(r33ExtDir, "mcp.json"), join(d, ".mcp.json"));
+      }),
+      makeR33SymRepo("r33-s", (d) => {
+        mkdirSync(join(d, ".claude/skills/dsaf"), { recursive: true });
+        symlinkSync(join(r33ExtDir, "SKILL.md"), join(d, ".claude/skills/dsaf/SKILL.md"));
+      }),
+      makeR33SymRepo("r33-g", (d) => {
+        mkdirSync(join(d, ".dsaf-guardrails"), { recursive: true });
+        symlinkSync(join(r33ExtDir, "checker.mjs"), join(d, ".dsaf-guardrails/check-design-discipline.mjs"));
+      }),
+    ];
+    for (const r33Dir of r33Cases) {
+      await assert.rejects(
+        () => inspectProjectUpdates(r33Dir, { offline: true, scope: "project", home: fakeHome }),
+        /symlink|escapes/i,
+        `R33 A1-M3: inspectProjectUpdates must reject symlink in ${r33Dir}`
+      );
+      await assert.rejects(
+        () => runUpdate(r33Dir, { offline: true, scope: "project", home: fakeHome }),
+        /symlink|escapes/i,
+        `R33 A1-M3: runUpdate must reject symlink in ${r33Dir}`
+      );
+    }
 
     console.log("DSAF_UPDATE_SELF_TEST_PASSED (CLI check + skills + personas preserve + guardrails + workflows + MCP)");
     return 0;
