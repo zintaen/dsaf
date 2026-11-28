@@ -124,7 +124,10 @@ function isProtectedPath(absFile, rulesCtx) {
     for (const relFromRoot of candidates) {
       if (relFromRoot === ".." || relFromRoot.startsWith("../") || isAbsolute(relFromRoot)) continue;
       const base = basename(relFromRoot);
-      if (relFromRoot === cleanPat || relFromRoot.startsWith(`${cleanPat.replace(/\/+$/, "")}/`)) return true;
+      const isCiFs = process.platform === "darwin" || process.platform === "win32";
+      const relCmp = isCiFs ? relFromRoot.toLowerCase() : relFromRoot;
+      const patCmp = isCiFs ? cleanPat.toLowerCase() : cleanPat;
+      if (relCmp === patCmp || relCmp.startsWith(`${patCmp.replace(/\/+$/, "")}/`)) return true;
       if (globToRegex(cleanPat).test(relFromRoot)) return true;
       if (!cleanPat.includes("/") && (base.toLowerCase() === cleanPat.toLowerCase() || globToRegex(cleanPat).test(base))) return true;
     }
@@ -193,9 +196,61 @@ function buildFocusReplacementEdits(sliceText, raw, baseOffset, activeOutlineLin
   const edits = [];
   const skipped = [];
   const blocks = Array.isArray(opts.blocks) ? opts.blocks : extractCssRuleBlocks(sliceText);
-  const allCandidateBlocks = Array.isArray(opts.docBlocks) ? opts.docBlocks : [...blocks, ...(Array.isArray(externalCssBlocks) ? externalCssBlocks : [])];
+  const docCandidateBlocks = Array.isArray(opts.docBlocks) ? opts.docBlocks : blocks;
+  const extBlocksArr = Array.isArray(externalCssBlocks) ? externalCssBlocks : [];
+  const allCandidateBlocks = extBlocksArr.length > 0 ? [...new Set([...docCandidateBlocks, ...extBlocksArr])] : docCandidateBlocks;
   const isSelectorSafeForOutlineNone = typeof opts.checker === "function" ? opts.checker : createFocusSafetyChecker(blocks, externalCssBlocks);
   const getBlockOrder = (b) => (typeof b?.docBodyStart === "number" ? b.docBodyStart : typeof b?.bodyStart === "number" ? b.bodyStart : null);
+  const normBaseKey = (sel) =>
+    String(sel || "")
+      .replace(/(?<!\\):focus(?:-visible|-within)?(?![a-z-])/gi, "")
+      .replace(/\s*([>+~])\s*/g, " $1 ")
+      .replace(/\s+/g, " ")
+      .trim()
+      .toLowerCase();
+  const condCovers = (otherBlk, targetBlk) => {
+    const reqConds = Array.isArray(otherBlk?.conditions) ? otherBlk.conditions : [];
+    if (reqConds.length === 0) return true;
+    const targetConds = new Set(Array.isArray(targetBlk?.conditions) ? targetBlk.conditions : []);
+    return reqConds.every((c) => targetConds.has(c));
+  };
+  const directPatchedFvBody = new Map();
+  const scheduledFvEntries = [];
+  for (const preBlk of blocks) {
+    const preMatches = findOutlineRemovals(preBlk.body);
+    if (preMatches.length === 0) continue;
+    const preLines = preMatches.map((m) => offsetToLine(cleanComments, baseOffset + preBlk.bodyStart + m.index));
+    if (!preLines.some((ln) => activeOutlineLines.has(ln))) continue;
+    const preEffSel = preBlk.resolvedSelector || preBlk.selector;
+    const preSupp = isSelectorSafeForOutlineNone.getBorderSuppression ? isSelectorSafeForOutlineNone.getBorderSuppression(preEffSel, preBlk) : {};
+    if (hasVisibleFocusIndicator(preBlk.body, preEffSel, preSupp) || isSelectorSafeForOutlineNone(preEffSel, preBlk)) continue;
+    const preSpan = sliceText.slice(preBlk.selectorStart, preBlk.bodyStart - 1);
+    const preSelStart = baseOffset + preBlk.selectorStart + (preSpan.length - preSpan.trimStart().length);
+    const preSelEnd = baseOffset + preBlk.bodyStart - 1 - (preSpan.length - preSpan.trimEnd().length);
+    if (/\/\*|\/\//.test(raw.slice(preSelStart, preSelEnd))) continue;
+    const preRawBrs = splitTopLevelCommas(preSpan.trim()).map((rb) => rb.trim()).filter(Boolean);
+    if (preRawBrs.length === 0 || preRawBrs.some((b) => !isSimpleFocusSelector(b))) continue;
+    const preResBrs = splitTopLevelCommas(preBlk.resolvedSelector || preBlk.selector || "").map((rb) => rb.trim()).filter(Boolean);
+    if (preResBrs.length > 0 && preResBrs.every((b) => /(?<!\\):focus-visible(?![a-z-])/i.test(stripNotPseudo(b)))) {
+      const preResBases = new Set(preResBrs.map(normBaseKey).filter(Boolean));
+      const needsImp =
+        preMatches.some((om) => om.isImportant) ||
+        allCandidateBlocks.some((other) => {
+          if (other === preBlk || !condCovers(other, preBlk)) return false;
+          const oRem = findOutlineRemovals(other.body);
+          if (!oRem.some((om) => om.isImportant)) return false;
+          return splitTopLevelCommas(other.resolvedSelector || other.selector || "").some((ob) =>
+            preResBases.has(normBaseKey(ob))
+          );
+        });
+      directPatchedFvBody.set(
+        preBlk,
+        needsImp
+          ? "outline: 2px solid var(--focus, currentColor) !important; outline-offset: 2px;"
+          : "outline: 2px solid var(--focus, currentColor); outline-offset: 2px;"
+      );
+    }
+  }
 
   for (const blk of blocks) {
     const outMatches = findOutlineRemovals(blk.body);
@@ -309,6 +364,7 @@ function buildFocusReplacementEdits(sliceText, raw, baseOffset, activeOutlineLin
     const isDirectFocusVisible = resBranches.length > 0 && resBranches.every((b) => /(?<!\\):focus-visible(?![a-z-])/i.test(stripNotPseudo(b)));
 
     if (isDirectFocusVisible) {
+      const patchedDecl = directPatchedFvBody.get(blk) || "outline: 2px solid var(--focus, currentColor); outline-offset: 2px;";
       for (let idx = 0; idx < outMatches.length; idx++) {
         const om = outMatches[idx];
         const mAbsStart = bodyStartAbs + om.index;
@@ -321,7 +377,7 @@ function buildFocusReplacementEdits(sliceText, raw, baseOffset, activeOutlineLin
         edits.push({
           start: mAbsStart,
           end: repEnd,
-          replacement: isLast ? "outline: 2px solid var(--focus, currentColor); outline-offset: 2px;" : "",
+          replacement: isLast ? patchedDecl : "",
           ruleId: "dsaf/no-outline-none-naked",
           line: offsetToLine(cleanComments, mAbsStart),
           findingCount: isLast ? 1 : 0,
@@ -459,7 +515,7 @@ function buildFocusReplacementEdits(sliceText, raw, baseOffset, activeOutlineLin
       const keepsPlainFocus = !canRewriteSelector || nonRewrittenFv.has(fvSel);
       const mustFollowBlk = !canRewriteSelector && (plainFocusFvTargets.has(fvSel) || hasApplyFocusRemoval);
       const visOpts = keepsPlainFocus ? { suppressedProps, importantSuppressedProps } : {};
-      return targets.every((tNorm) =>
+      const coveredByExisting = targets.every((tNorm) =>
         allCandidateBlocks.some((other) => {
           if (other === blk || !conditionsCover(other, blk)) return false;
           const layerCmp = compareCascadeLayerOrder(other, blk);
@@ -482,13 +538,27 @@ function buildFocusReplacementEdits(sliceText, raw, baseOffset, activeOutlineLin
             const otherBorderSupp = isSelectorSafeForOutlineNone.getBorderSuppression
               ? isSelectorSafeForOutlineNone.getBorderSuppression(trimOs, other, keepsPlainFocus ? blk : null)
               : {};
-            return hasVisibleFocusIndicator(other.body, trimOs, {
+            const effOtherBody = directPatchedFvBody.get(other) ?? other.body;
+            return hasVisibleFocusIndicator(effOtherBody, trimOs, {
               ...visOpts,
               requireImportantOutlineOnly,
               outlineUnrecoverable,
               ...otherBorderSupp,
             });
           });
+        })
+      );
+      if (coveredByExisting) return true;
+      return targets.every((tNorm) =>
+        scheduledFvEntries.some((entry) => {
+          if (!entry.normTargets.has(tNorm) || !conditionsCover(entry.blk, blk)) return false;
+          const layerCmp = compareCascadeLayerOrder(entry.blk, blk);
+          if (importantSuppressedProps.length > 0 && (layerCmp > 0 || layerCmp === 0)) return false;
+          if (layerCmp < 0) return false;
+          if (mustFollowBlk && layerCmp === 0 && (entry.blkOrder === null || blkOrder === null || entry.blkOrder <= blkOrder)) {
+            return false;
+          }
+          return true;
         })
       );
     };
@@ -511,14 +581,61 @@ function buildFocusReplacementEdits(sliceText, raw, baseOffset, activeOutlineLin
       });
     }
     if (missingFv.length > 0) {
-      edits.push({
+      let inheritedFindings = 0;
+      const inheritedLines = [];
+      const missingNormTargets = new Set(missingFv.flatMap((fv) => resolvedTargetsForFv(fv).map(collapseFocusFv)));
+      for (let si = scheduledFvEntries.length - 1; si >= 0; si--) {
+        const entry = scheduledFvEntries[si];
+        if (
+          entry.blockEndAbs < blockEndAbs &&
+          conditionsCover(blk, entry.blk) &&
+          conditionsCover(entry.blk, blk) &&
+          compareCascadeLayerOrder(blk, entry.blk) === 0
+        ) {
+          const keptSelectors = entry.selectors.filter(
+            (s) => !entry.resolvedFor(s).some((tn) => missingNormTargets.has(tn))
+          );
+          if (keptSelectors.length < entry.selectors.length) {
+            if (keptSelectors.length === 0) {
+              const eIdx = edits.indexOf(entry.edit);
+              if (eIdx !== -1) edits.splice(eIdx, 1);
+              inheritedFindings += entry.edit.findingCount;
+              if (Array.isArray(entry.edit.coveredLines) && entry.edit.coveredLines.length > 0) {
+                inheritedLines.push(...entry.edit.coveredLines);
+              } else if (entry.edit.findingCount > 0) {
+                for (let k = 0; k < entry.edit.findingCount; k++) inheritedLines.push(entry.edit.line);
+              }
+              scheduledFvEntries.splice(si, 1);
+            } else {
+              entry.selectors = keptSelectors;
+              entry.normTargets = new Set(keptSelectors.flatMap((s) => entry.resolvedFor(s)));
+              entry.edit.replacement = `\n${entry.indent}${keptSelectors.join(", ")} { outline: 2px solid var(--focus, currentColor); outline-offset: 2px; }`;
+              entry.edit.summary = `Insert visible :focus-visible fallback for ${keptSelectors.join(", ")}`;
+            }
+          }
+        }
+      }
+      const ownCovered = canRewriteSelector ? [] : [ruleLine];
+      const insertEdit = {
         start: blockEndAbs,
         end: blockEndAbs,
         replacement: fvRule,
         ruleId: "dsaf/no-outline-none-naked",
         line: ruleLine,
-        findingCount: canRewriteSelector ? 0 : 1,
+        findingCount: (canRewriteSelector ? 0 : 1) + inheritedFindings,
+        coveredLines: [...ownCovered, ...inheritedLines],
         summary: `Insert visible :focus-visible fallback for ${missingFv.join(", ")}`,
+      };
+      edits.push(insertEdit);
+      scheduledFvEntries.push({
+        edit: insertEdit,
+        selectors: [...missingFv],
+        resolvedFor: (s) => resolvedTargetsForFv(s).map(collapseFocusFv),
+        normTargets: missingNormTargets,
+        blk,
+        blockEndAbs,
+        blkOrder,
+        indent,
       });
     }
   }
@@ -604,19 +721,15 @@ function buildFileFixPlan(absFile, relDisplay, activeFindings, ruleFilter, exter
           const val = blk.body.slice(m.index + m[0].indexOf(m[2]), m.index + m[0].length).trim();
           let replacement = null;
           if (terminatedHere) {
-            if (prop === "transition-property" && /^all(?:\s*!\s*important)?$/i.test(val)) {
-              const imp = /\s*!\s*important$/i.test(val) ? " !important" : "";
+            const impM = /\s*!\s*important$/i.exec(val);
+            const imp = impM ? " !important" : "";
+            const cleanVal = (impM ? val.slice(0, impM.index) : val).trim();
+            if (prop === "transition-property" && /^all$/i.test(cleanVal)) {
               replacement = `${m[1]}: color, background-color, border-color, opacity, transform${imp}`;
             } else if (prop === "transition") {
-              const allMatch = /^all(?:\s+(.+))?$/i.exec(val);
+              const allMatch = /^all(?:\s+(.+))?$/i.exec(cleanVal);
               if (allMatch) {
-                let rest = allMatch[1] ? allMatch[1].trim() : "";
-                let imp = "";
-                const impM = /\s*!\s*important$/i.exec(rest);
-                if (impM) {
-                  imp = " !important";
-                  rest = rest.slice(0, impM.index).trim();
-                }
+                const rest = allMatch[1] ? allMatch[1].trim() : "";
                 if (!rest) {
                   replacement = `transition-property: color, background-color, border-color, opacity, transform${imp}`;
                 } else if (splitTopLevelCommas(rest).length === 1) {
@@ -645,17 +758,26 @@ function buildFileFixPlan(absFile, relDisplay, activeFindings, ruleFilter, exter
       }
 
       if (vwLines.size > 0) {
-        for (const m of cssDeclBody.matchAll(/(?<![a-zA-Z0-9_$-])((?:min-|max-)?(?:width|inline-size))\s*:\s*100vw\b/gi)) {
+        for (const m of cssDeclBody.matchAll(/(?<![a-zA-Z0-9_$-])(((?:min-|max-)?(?:width|inline-size))\s*:\s*100vw\b)([^;{}]*)/gi)) {
           const ln = offsetToLine(cleanComments, bodyOffset + m.index);
           if (!vwLines.has(ln)) continue;
-          edits.push({
-            start: bodyOffset + m.index,
-            end: bodyOffset + m.index + m[0].length,
-            replacement: `${m[1]}: 100%`,
-            ruleId: "dsaf/no-100vw",
-            line: ln,
-            summary: `Replace ${m[1]}: 100vw with ${m[1]}: 100%`,
-          });
+          const tailTrim = (m[3] || "").trim();
+          if (tailTrim === "" || /^!\s*important$/i.test(tailTrim)) {
+            edits.push({
+              start: bodyOffset + m.index,
+              end: bodyOffset + m.index + m[1].length,
+              replacement: `${m[2]}: 100%`,
+              ruleId: "dsaf/no-100vw",
+              line: ln,
+              summary: `Replace ${m[2]}: 100vw with ${m[2]}: 100%`,
+            });
+          } else {
+            skipped.push({
+              line: ln,
+              ruleId: "dsaf/no-100vw",
+              reason: "compound 100vw expression — review manually",
+            });
+          }
         }
       }
 
@@ -663,23 +785,37 @@ function buildFileFixPlan(absFile, relDisplay, activeFindings, ruleFilter, exter
         const applyMatches = [...maskedBody.matchAll(/(?<![a-zA-Z0-9_$-])@apply\s+((?:[^#;{}]|#\{[^{}]*\}|#(?!\{))+)/gi)].map((am) => {
           const appRelStart = am.index + am[0].indexOf(am[1]);
           const rawAppText = String(blk.body || "").slice(appRelStart, appRelStart + am[1].length);
+          const appText = maskCssQuotedStringsPreservingLines(rawAppText, "_");
+          const stmtImp = /\s*!\s*important\s*$/i.test(appText);
+          const cleanAppText = stmtImp ? appText.replace(/\s*!\s*important\s*$/i, "") : appText;
           return {
             appBase: bodyOffset + appRelStart,
             rawAppText,
-            appText: maskCssQuotedStringsPreservingLines(rawAppText, "_"),
+            appText,
+            cleanAppText,
+            stmtImp,
           };
         });
+        const formatSiblingApply = (entry) => {
+          if (!entry.stmtImp) return entry.cleanAppText;
+          return entry.cleanAppText
+            .trim()
+            .split(/\s+/)
+            .filter(Boolean)
+            .map((tok) => (/(?:^|:)!|!$/.test(tok) ? tok : `!${tok}`))
+            .join(" ");
+        };
         const applyTransRe = new RegExp(`(?<=^|\\s)(!?(?:${TW_VARIANT_SEG})*!?)(${TW_TRANS_ALL_CORE})(!?)(?=$|[\\s;])`, "g");
         const applyVwRe = new RegExp(`(?<=^|\\s)(!?(?:${TW_VARIANT_SEG})*!?)(${TW_VW_CORE})(!?)(?=$|[\\s;])`, "g");
         for (let amIdx = 0; amIdx < applyMatches.length; amIdx++) {
-          const { appBase, rawAppText, appText } = applyMatches[amIdx];
+          const { appBase, rawAppText, appText, cleanAppText, stmtImp } = applyMatches[amIdx];
           const prevApplyText = applyMatches
             .slice(0, amIdx)
-            .map((x) => x.appText)
+            .map(formatSiblingApply)
             .join(" ");
           const afterApplyText = applyMatches
             .slice(amIdx + 1)
-            .map((x) => x.appText)
+            .map(formatSiblingApply)
             .join(" ");
           if (transLines.size > 0) {
             for (const tm of appText.matchAll(applyTransRe)) {
@@ -747,13 +883,29 @@ function buildFileFixPlan(absFile, relDisplay, activeFindings, ruleFilter, exter
             }
           }
           if (outLines.size > 0) {
-            const appOut = analyzeTailwindOutline(appText, afterApplyText, prevApplyText);
+            const appOut = analyzeTailwindOutline(cleanAppText, afterApplyText, prevApplyText, { forceMainImportant: stmtImp });
             const appUncovered = appOut.uncovered || (appOut.firstRemoval ? [appOut.firstRemoval] : []);
+            const appRelStart = appBase - bodyOffset;
+            const appRelEnd = appRelStart + rawAppText.length;
+            const testCandidateRepl = (remItem, replStr) => {
+              const insOff = remItem.tokIdx + remItem.tokStr.length;
+              const candAppText = cleanAppText.slice(0, insOff) + replStr + cleanAppText.slice(insOff);
+              const candRawApp = rawAppText.slice(0, insOff) + replStr + rawAppText.slice(insOff);
+              const candOut = analyzeTailwindOutline(candAppText, afterApplyText, prevApplyText, { forceMainImportant: stmtImp });
+              if (candOut.uncovered.some((u) => u.tokIdx === remItem.tokIdx)) return false;
+              const candBody = String(blk.body || "").slice(0, appRelStart) + candRawApp + String(blk.body || "").slice(appRelEnd);
+              return (
+                hasVisibleFocusIndicator(candBody, effSel, { ignoreApplyOutline: false, ...applyBorderSupp }) ||
+                isSelectorSafeForOutlineNone(effSel, blk)
+              );
+            };
+            const applyBorderSupp = isSelectorSafeForOutlineNone.getBorderSuppression
+              ? isSelectorSafeForOutlineNone.getBorderSuppression(effSel, blk)
+              : {};
             if (appOut.hasRemoval && appOut.naked && appUncovered.length > 0) {
               const firstLn = offsetToLine(cleanComments, appBase + appOut.firstRemoval.tokIdx);
               const anyInOutLines = appUncovered.some((u) => outLines.has(offsetToLine(cleanComments, appBase + u.tokIdx))) || outLines.has(firstLn);
               const ignoreApplyOutline = !/(?<!\\):focus-visible(?![a-z-])/i.test(stripNotPseudo(effSel));
-              const applyBorderSupp = isSelectorSafeForOutlineNone.getBorderSuppression ? isSelectorSafeForOutlineNone.getBorderSuppression(effSel, blk) : {};
               const selfCovered = hasVisibleFocusIndicator(blk.body, effSel, { ignoreApplyOutline, ...applyBorderSupp }) || isSelectorSafeForOutlineNone(effSel, blk);
               const targetCovered = isSelectorSafeForOutlineNone(effSel, blk, { targetOnly: true });
               const effectiveUncovered = anyInOutLines
@@ -785,15 +937,37 @@ function buildFileFixPlan(absFile, relDisplay, activeFindings, ruleFilter, exter
                       : "";
                   if (seenTargetPrefs.has(targetPref)) continue;
                   const isFocusRule = /(?<!\\):focus(?:-visible)?(?![a-z-])/i.test(stripNotPseudo(effSel));
-                  const allApplyToks = applyMatches.flatMap((am) => am.appText.trim().split(/\s+/).filter(Boolean));
+                  const allApplyToks = applyMatches.flatMap((am) =>
+                    am.cleanAppText
+                      .trim()
+                      .split(/\s+/)
+                      .filter(Boolean)
+                      .map((tok) => (am.stmtImp && !/(?:^|:)!|!$/.test(tok) ? `!${tok}` : tok))
+                  );
                   const conflictingRingTok = allApplyToks.find((tok) => {
                     const util = getTwUtilityPart(tok).toLowerCase();
-                    if (!/^ring(?:-|$)/i.test(util) || /^ring-(?:offset-|inset\b)/i.test(util)) return false;
+                    const isRingKiller = /^ring(?:-|$)/i.test(util) && !/^ring-(?:offset-|inset\b)/i.test(util);
+                    const isShadowKiller = /^shadow-none$/i.test(util) || /^shadow-\[|^\[box-shadow:/i.test(util);
+                    if (!isRingKiller && !isShadowKiller) return false;
                     if (!isInvisibleTwFocusUtility(tok)) return false;
                     const info = splitTailwindVariants(tok);
                     const tokHasImp = /(?:^|:)!|!$/.test(tok);
                     const isRingWidthOnly = /^ring-(?:0|\[0(?:px|rem|em)?\])$/i.test(util);
-                    if (info.focusKind !== "focus" && info.focusKind !== "focus-visible" && !isFocusRule && !(info.focusKind === null && (tokHasImp || !isRingWidthOnly))) return false;
+                    if (isShadowKiller) {
+                      const killsFocus =
+                        info.focusKind === "focus" ||
+                        info.focusKind === "focus-visible" ||
+                        (isFocusRule && info.focusKind === null) ||
+                        (info.focusKind === null && tokHasImp && !rem.isImportant);
+                      if (!killsFocus) return false;
+                    } else if (
+                      info.focusKind !== "focus" &&
+                      info.focusKind !== "focus-visible" &&
+                      !isFocusRule &&
+                      !(info.focusKind === null && (tokHasImp || !isRingWidthOnly))
+                    ) {
+                      return false;
+                    }
                     if (info.targetPrefixes.size !== remInfo.targetPrefixes.size || ![...info.targetPrefixes].every((x) => remInfo.targetPrefixes.has(x))) {
                       return false;
                     }
@@ -809,22 +983,80 @@ function buildFileFixPlan(absFile, relDisplay, activeFindings, ruleFilter, exter
                     return true;
                   });
                   if (conflictingRingTok) {
+                    const conflictingIsShadow = /^(?:shadow-none|shadow-\[|\[box-shadow:)/i.test(getTwUtilityPart(conflictingRingTok));
                     skipped.push({
                       line: uLn,
                       ruleId: "dsaf/no-outline-none-naked",
-                      reason: `conflicting @apply focus ring suppression (${conflictingRingTok}) — review focus ring manually`,
+                      reason: `conflicting @apply focus ${conflictingIsShadow ? "shadow" : "ring"} suppression (${conflictingRingTok}) — review focus ring manually`,
                     });
                     continue;
+                  }
+                  const ringDesc = `${targetPref}focus-visible:ring-2 ${targetPref}focus-visible:ring-offset-2`;
+                  const ringRepl = ` ${ringDesc}`;
+                  let chosenDesc = ringDesc;
+                  let chosenRepl = ringRepl;
+                  if (!targetPref && !testCandidateRepl(rem, ringRepl)) {
+                    const impPref = rem.isImportant ? "!" : "";
+                    const outlineDesc = `${impPref}focus-visible:outline-2 ${impPref}focus-visible:outline-offset-2`;
+                    const outlineRepl = ` ${outlineDesc}`;
+                    if (testCandidateRepl(rem, outlineRepl)) {
+                      chosenDesc = outlineDesc;
+                      chosenRepl = outlineRepl;
+                    } else {
+                      skipped.push({
+                        line: uLn,
+                        ruleId: "dsaf/no-outline-none-naked",
+                        reason: `@apply ${rawTokStr} focus indicator is suppressed by CSS declarations — review focus ring manually`,
+                      });
+                      continue;
+                    }
                   }
                   seenTargetPrefs.add(targetPref);
                   const insertPos = appBase + rem.tokIdx + rem.tokStr.length;
                   edits.push({
                     start: insertPos,
                     end: insertPos,
-                    replacement: ` ${targetPref}focus-visible:ring-2 ${targetPref}focus-visible:ring-offset-2`,
+                    replacement: chosenRepl,
                     ruleId: "dsaf/no-outline-none-naked",
                     line: uLn,
-                    summary: `Pair @apply ${rawTokStr} with ${targetPref}focus-visible:ring-2 ${targetPref}focus-visible:ring-offset-2`,
+                    summary: `Pair @apply ${rawTokStr} with ${chosenDesc}`,
+                  });
+                }
+              }
+            } else if (
+              appOut.hasRemoval &&
+              !appOut.naked &&
+              appOut.firstRemoval &&
+              !(appOut.firstRemoval.targetPrefixes?.size > 0)
+            ) {
+              const rem = appOut.firstRemoval;
+              const firstLn = offsetToLine(cleanComments, appBase + rem.tokIdx);
+              const selfCovered =
+                hasVisibleFocusIndicator(blk.body, effSel, { ignoreApplyOutline: false, ...applyBorderSupp }) ||
+                isSelectorSafeForOutlineNone(effSel, blk);
+              if (outLines.has(firstLn) && !selfCovered) {
+                const rawTokStr = rawAppText.slice(rem.tokIdx, rem.tokIdx + rem.tokStr.length);
+                const impPref = rem.isImportant ? "!" : "";
+                const candidates = [
+                  `${impPref}focus-visible:outline-2 ${impPref}focus-visible:outline-offset-2`,
+                  `${impPref}focus-visible:ring-2 ${impPref}focus-visible:ring-offset-2`,
+                ];
+                const winningDesc = candidates.find((desc) => testCandidateRepl(rem, ` ${desc}`));
+                if (winningDesc) {
+                  const insertPos = appBase + rem.tokIdx + rem.tokStr.length;
+                  edits.push({
+                    start: insertPos,
+                    end: insertPos,
+                    replacement: ` ${winningDesc}`,
+                    ruleId: "dsaf/no-outline-none-naked",
+                    line: firstLn,
+                    summary: `Pair @apply ${rawTokStr} with ${winningDesc}`,
+                  });
+                } else {
+                  skipped.push({
+                    line: firstLn,
+                    ruleId: "dsaf/no-outline-none-naked",
+                    reason: `@apply ${rawTokStr} paired indicator is suppressed by CSS declarations — review focus ring manually`,
                   });
                 }
               }
@@ -965,12 +1197,26 @@ function buildFileFixPlan(absFile, relDisplay, activeFindings, ruleFilter, exter
           const allAttrToks = `${maskedContent} ${maskedSiblings}`.trim().split(/\s+/).filter(Boolean);
           const conflictingRingTok = allAttrToks.find((tok) => {
             const util = getTwUtilityPart(tok).toLowerCase();
-            if (!/^ring(?:-|$)/i.test(util) || /^ring-(?:offset-|inset\b)/i.test(util)) return false;
+            const isRingKiller = /^ring(?:-|$)/i.test(util) && !/^ring-(?:offset-|inset\b)/i.test(util);
+            const isShadowKiller = /^shadow-none$/i.test(util) || /^shadow-\[|^\[box-shadow:/i.test(util);
+            if (!isRingKiller && !isShadowKiller) return false;
             if (!isInvisibleTwFocusUtility(tok)) return false;
             const info = splitTailwindVariants(tok);
             const tokHasImp = /(?:^|:)!|!$/.test(tok);
             const isRingWidthOnly = /^ring-(?:0|\[0(?:px|rem|em)?\])$/i.test(util);
-            if (info.focusKind !== "focus" && info.focusKind !== "focus-visible" && !(info.focusKind === null && (tokHasImp || !isRingWidthOnly))) return false;
+            if (isShadowKiller) {
+              const killsFocus =
+                info.focusKind === "focus" ||
+                info.focusKind === "focus-visible" ||
+                (info.focusKind === null && tokHasImp);
+              if (!killsFocus) return false;
+            } else if (
+              info.focusKind !== "focus" &&
+              info.focusKind !== "focus-visible" &&
+              !(info.focusKind === null && (tokHasImp || !isRingWidthOnly))
+            ) {
+              return false;
+            }
             if (info.targetPrefixes.size !== remInfo.targetPrefixes.size || ![...info.targetPrefixes].every((x) => remInfo.targetPrefixes.has(x))) {
               return false;
             }
@@ -986,10 +1232,22 @@ function buildFileFixPlan(absFile, relDisplay, activeFindings, ruleFilter, exter
             return true;
           });
           if (conflictingRingTok) {
+            const conflictingIsShadow = /^(?:shadow-none|shadow-\[|\[box-shadow:)/i.test(getTwUtilityPart(conflictingRingTok));
             skipped.push({
               line: ln,
               ruleId: "dsaf/no-outline-none-naked",
-              reason: `conflicting focus ring suppression (${conflictingRingTok}) — review focus ring manually`,
+              reason: `conflicting focus ${conflictingIsShadow ? "shadow" : "ring"} suppression (${conflictingRingTok}) — review focus ring manually`,
+            });
+            continue;
+          }
+          const candReplText = `${origTokStr} ${targetPref}focus-visible:ring-2 ${targetPref}focus-visible:ring-offset-2`;
+          const candMasked = maskedContent.slice(0, tokIdx) + candReplText + maskedContent.slice(tokIdx + tokStr.length);
+          const candOut = analyzeTailwindOutline(candMasked, maskedSiblings);
+          if (candOut.uncovered.some((u) => u.tokIdx === tokIdx)) {
+            skipped.push({
+              line: ln,
+              ruleId: "dsaf/no-outline-none-naked",
+              reason: `paired focus ring for ${origTokStr} would remain suppressed — review focus ring manually`,
             });
             continue;
           }
@@ -997,7 +1255,7 @@ function buildFileFixPlan(absFile, relDisplay, activeFindings, ruleFilter, exter
           edits.push({
             start,
             end: start + origTokStr.length,
-            replacement: `${origTokStr} ${targetPref}focus-visible:ring-2 ${targetPref}focus-visible:ring-offset-2`,
+            replacement: candReplText,
             ruleId: "dsaf/no-outline-none-naked",
             line: ln,
             summary: `Pair Tailwind ${origTokStr} with ${targetPref}focus-visible:ring-2 ${targetPref}focus-visible:ring-offset-2`,
@@ -1037,6 +1295,13 @@ function buildFileFixPlan(absFile, relDisplay, activeFindings, ruleFilter, exter
 
   const patchedCounts = new Map();
   for (const e of edits) {
+    if (Array.isArray(e.coveredLines) && e.coveredLines.length > 0) {
+      for (const cl of e.coveredLines) {
+        const key = `${e.ruleId}:${cl}`;
+        patchedCounts.set(key, (patchedCounts.get(key) || 0) + 1);
+      }
+      continue;
+    }
     const key = `${e.ruleId}:${e.line}`;
     const weight = typeof e.findingCount === "number" ? e.findingCount : 1;
     if (weight > 0) {
@@ -1368,7 +1633,7 @@ function runSelfTest() {
     const r2Applied = applyFloorFixes(r2Fix);
     assert.equal(r2Applied.protectedSkipped.length, 1, "src/v?.css must protect src/v1.css without throwing on ?.css");
     const r2Patched = readFileSync(r2Css, "utf8");
-    assert.match(r2Patched, /\.imp-fv:focus-visible \{ outline: 2px solid var\(--focus, currentColor\); outline-offset: 2px; \}/);
+    assert.match(r2Patched, /\.imp-fv:focus-visible \{ outline: 2px solid var\(--focus, currentColor\) !important; outline-offset: 2px; \}/);
     assert.match(r2Patched, /\.cmt-fv:focus-visible \{ outline: 2px solid var\(--focus, currentColor\); outline-offset: 2px; \/\* fix; later \*\/ \}/);
     assert.match(r2Patched, /\.zero-fv:focus-visible \{ outline: 2px solid/);
     assert.match(r2Patched, /\.multi-ln \{\n  transition: all\n    200ms ease;\n\}/, "Multiline transition must stay uncorrupted");
@@ -2164,6 +2429,173 @@ function runSelfTest() {
     );
     const r39ApplyBorder = applyFloorFixes(join(r38FixDir, "apply-border-imp.css"), { dryRun: false });
     assert.equal(r39ApplyBorder.afterFloor, 0, "R39 A2-H1: fix-floor must patch .btn:focus-visible blocked by base border: 0 !important");
+
+    // Round 41 (R40-A2-M1 case-insensitive protectedFiles prefix + R40-A2-M2 direct !important preservation & sibling dedup):
+    const r41FixDir = join(scratch, "r41-fix");
+    mkdirSync(join(r41FixDir, ".dsaf"), { recursive: true });
+    mkdirSync(join(r41FixDir, "src/DS"), { recursive: true });
+    writeFileSync(join(r41FixDir, ".dsaf/rules.json"), JSON.stringify({ protectedFiles: ["src/ds"] }));
+    writeFileSync(join(r41FixDir, "src/DS/btn.css"), ".btn { outline: none; }\n");
+    if (process.platform === "darwin" || process.platform === "win32") {
+      const r41ProtPlan = planFloorFixes(r41FixDir);
+      assert.equal(r41ProtPlan.patchesPlanned, 0, "R41 A2-M1: src/ds prefix must protect src/DS/btn.css on case-insensitive FS");
+      assert.equal(r41ProtPlan.protectedSkipped.length, 1);
+    }
+
+    const r41ImpOverrideCss = join(r41FixDir, "imp-override.css");
+    writeFileSync(r41ImpOverrideCss, ".btn { outline: none !important; }\n.btn:focus-visible { outline: 0 !important; }\n");
+    const r41ImpApply = applyFloorFixes(r41ImpOverrideCss, { dryRun: false });
+    assert.equal(r41ImpApply.afterFloor, 0, "R41 A2-M2: direct :focus-visible repair must preserve !important against base !important");
+    assert.match(readFileSync(r41ImpOverrideCss, "utf8"), /\.btn:focus-visible \{ outline: 2px solid [^;]+ !important; outline-offset: 2px; \}/);
+
+    const r41CoexistCss = join(r41FixDir, "coexist.css");
+    writeFileSync(r41CoexistCss, ".btn:focus { outline: none !important; }\n.btn:focus-visible { outline: 0 !important; }\n");
+    const r41CoexistApply = applyFloorFixes(r41CoexistCss, { dryRun: false });
+    assert.equal(r41CoexistApply.afterFloor, 0, "R41 A2-M2: coexisting :focus + :focus-visible outline:0 !important must fix cleanly");
+    assert.equal((readFileSync(r41CoexistCss, "utf8").match(/\.btn:focus-visible\b/g) || []).length, 1, "R41 A2-M2: must NOT insert duplicate .btn:focus-visible rule");
+
+    // Round 42 (R41-A2-M4 deduplicate repeated scheduled :focus-visible fallback + R41-A2-M3 external partial @layer topo order):
+    const r42MultiCss = join(r41FixDir, "multi-nonrewritable.css");
+    writeFileSync(r42MultiCss, ".btn:focus { color: red; outline: none; }\n.btn:focus { background: blue; outline: none; }\n");
+    const r42MultiApply = applyFloorFixes(r42MultiCss, { dryRun: false });
+    assert.equal(r42MultiApply.afterFloor, 0, "R42 A2-M4: multiple non-rewritable :focus rules must fix cleanly");
+    assert.equal(r42MultiApply.manualSkipped.length, 0, "R43 A2-L1: coalesced fallback must credit all inherited lines in patchedCounts");
+    assert.equal(
+      (readFileSync(r42MultiCss, "utf8").match(/\.btn:focus-visible\b/g) || []).length,
+      1,
+      "R42 A2-M4: must insert .btn:focus-visible fallback only once after final rule"
+    );
+
+    const r42LayerDs = join(r41FixDir, "layer-ds.css");
+    const r42LayerApp = join(r41FixDir, "layer-app.css");
+    writeFileSync(r42LayerDs, "@layer components { .btn:focus-visible { outline: 2px solid #1d4ed8; } }\n");
+    writeFileSync(r42LayerApp, "@layer base, components;\n@layer base { .btn:focus { color: red; outline: none; } }\n");
+    const r42LayerPlan = planFloorFixes(r42LayerApp, { dsCss: [r42LayerDs] });
+    assert.equal(r42LayerPlan.patchesPlanned, 0, "R42 A2-M3: fix-floor must recognize external higher-layer :focus-visible");
+
+    // Round 43 (R42-A2-H4 @apply suppressed by CSS box-shadow, R42-A2-M10 transition: all!important):
+    const r43ApplyBoxSup = join(r41FixDir, "apply-box-sup.css");
+    writeFileSync(
+      r43ApplyBoxSup,
+      ".btn { @apply outline-none focus-visible:ring-2; box-shadow: none !important; }\n.btn2 { @apply outline-none; box-shadow: none !important; }\n"
+    );
+    const r43ApplyBoxRes = applyFloorFixes(r43ApplyBoxSup, { dryRun: false });
+    assert.equal(r43ApplyBoxRes.afterFloor, 0, "R43 A2-H4: suppressed @apply ring must fall back to focus-visible:outline-2");
+    assert.match(readFileSync(r43ApplyBoxSup, "utf8"), /focus-visible:outline-2/);
+
+    const r43ApplyUnrecov = join(r41FixDir, "apply-unrecov.css");
+    writeFileSync(
+      r43ApplyUnrecov,
+      ".btn { @apply outline-none focus-visible:ring-2; box-shadow: none !important; outline: none !important; }\n"
+    );
+    const r43UnrecovPlan = planFloorFixes(r43ApplyUnrecov);
+    assert.equal(r43UnrecovPlan.patchesPlanned, 0, "R43 A2-H4: unrecoverable CSS outline + box-shadow suppression must skip safely");
+    assert.ok(r43UnrecovPlan.manualSkipped.length >= 1, "R43 A2-H4: unrecoverable @apply suppression must report manualSkipped");
+
+    const r43TransImp = join(r41FixDir, "trans-imp.css");
+    writeFileSync(r43TransImp, ".card { transition: all!important; }\n.chip { transition: all 0.2s ease!important; }\n");
+    const r43TransRes = applyFloorFixes(r43TransImp, { dryRun: false });
+    assert.equal(r43TransRes.patchesApplied, 2, "R43 A2-M10: transition: all!important and timed all!important must both patch");
+    assert.doesNotMatch(readFileSync(r43TransImp, "utf8"), /\btransition(?:-property)?:\s*all/i);
+
+    // Round 44 (R43-A2-H9 !shadow-none / [box-shadow:none]! conflict detection):
+    const r44TwShadow = join(r41FixDir, "tw-shadow-conflict.tsx");
+    writeFileSync(
+      r44TwShadow,
+      [
+        'export const A = () => <button className="!shadow-none outline-none">A</button>;',
+        'export const B = () => <button className="[box-shadow:none]! outline-none">B</button>;',
+        'export const C = () => <button className="shadow-none outline-none">C</button>;',
+      ].join("\n") + "\n"
+    );
+    const r44TwRes = applyFloorFixes(r44TwShadow, { dryRun: false });
+    assert.equal(r44TwRes.patchesApplied, 1, "R44 A2-H9: only base shadow-none must auto-patch while !shadow-none & [box-shadow:none]! skip");
+    assert.ok(r44TwRes.manualSkipped.length >= 2, "R44 A2-H9: conflicting !shadow-none & [box-shadow:none]! must report manualSkipped");
+    const r44TwBody = readFileSync(r44TwShadow, "utf8");
+    assert.doesNotMatch(r44TwBody, /!shadow-none[^\n]*focus-visible:ring-2/);
+    assert.doesNotMatch(r44TwBody, /\[box-shadow:none\]![^\n]*focus-visible:ring-2/);
+    assert.match(r44TwBody, /shadow-none outline-none focus-visible:ring-2/);
+
+    const r44ApplyShadow = join(r41FixDir, "apply-shadow-conflict.css");
+    writeFileSync(r44ApplyShadow, ".btn { @apply outline-none [box-shadow:none]!; }\n");
+    const r44ApplyPlan = planFloorFixes(r44ApplyShadow);
+    assert.equal(r44ApplyPlan.patchesPlanned, 0, "R44 A2-H9: @apply [box-shadow:none]! conflict must skip");
+    assert.ok(r44ApplyPlan.manualSkipped.length >= 1);
+
+    // Round 46 (R45 A2-H1 light-dark/color-mix zero-alpha focus outline detection + remediation):
+    const r46ZeroMixCss = join(r41FixDir, "zero-mix-focus.css");
+    writeFileSync(r46ZeroMixCss, ".b:focus { outline: none; }\n.b:focus-visible { outline: 2px solid light-dark(transparent, #1d4ed8); }\n");
+    const r46ZeroMixRes = applyFloorFixes(r46ZeroMixCss, { dryRun: false });
+    assert.ok(r46ZeroMixRes.patchesApplied >= 1, "R46 A2-H1: invisible light-dark focus outline must be remediated");
+    assert.equal(r46ZeroMixRes.afterFloor, 0, "R46 A2-H1: remediated light-dark focus outline must pass Floor");
+
+    // Round 47 (A2-M6 externalCssBlocks merged into allCandidateBlocks in buildFocusReplacementEdits):
+    const r47ExtDir = join(scratch, "r47-ext-ds");
+    mkdirSync(r47ExtDir, { recursive: true });
+    const r47DsCss = join(r47ExtDir, "ds.css");
+    writeFileSync(
+      r47DsCss,
+      [
+        ".ext-btn:focus-visible { outline: 2px solid #005fcc; outline-offset: 2px; }",
+        ".ext-imp:focus { outline: none !important; box-shadow: 0 0 0 2px #005fcc; }",
+      ].join("\n") + "\n"
+    );
+    const r47CompCss = join(r47ExtDir, "comp.css");
+    writeFileSync(
+      r47CompCss,
+      [
+        ".ext-btn:focus { outline: none; }",
+        ".ext-imp:focus-visible { outline: none; box-shadow: none; }",
+      ].join("\n") + "\n"
+    );
+    const r47ExtRes = applyFloorFixes(r47CompCss, { dryRun: false, dsCss: [r47DsCss] });
+    assert.equal(r47ExtRes.afterFloor, 0, "R47 A2-M6: fix-floor with --ds-css must remediate to 0 Floor violations");
+    const r47CompAfter = readFileSync(r47CompCss, "utf8");
+    assert.doesNotMatch(r47CompAfter, /\.ext-btn:focus-visible/, "R47 A2-M6: must not insert duplicate .ext-btn:focus-visible already provided by --ds-css");
+    assert.match(r47CompAfter, /\.ext-imp:focus-visible\s*\{[^}]*!important/, "R47 A2-M6: must emit !important when --ds-css has .ext-imp:focus { outline: none !important }");
+
+    // Round 48 (A2-H1 external suppression rules in --ds-css without visible focus indicator):
+    const r48ExtDir = join(scratch, "r48-ext-supp");
+    mkdirSync(r48ExtDir, { recursive: true });
+    const r48DsCss = join(r48ExtDir, "ds.css");
+    writeFileSync(
+      r48DsCss,
+      [
+        ".ext-base { border: 0 !important; box-shadow: none !important; }",
+        ".ext-fv-fail:focus-visible { box-shadow: none !important; outline: none; }",
+        ".ext-only-imp:focus { outline: none !important; }",
+      ].join("\n") + "\n"
+    );
+    const r48CompCss = join(r48ExtDir, "comp.css");
+    writeFileSync(
+      r48CompCss,
+      [
+        ".ext-base:focus-visible { outline: none; box-shadow: 0 0 0 2px #005fcc; }",
+        ".ext-fv-fail:focus { outline: none; }",
+        ".ext-only-imp:focus-visible { outline: none; }",
+      ].join("\n") + "\n"
+    );
+    const r48PreCheck = checkTarget(r48CompCss, { tier: "floor", dsCss: [r48DsCss] });
+    assert.equal(r48PreCheck.counts.floor, 3, "R48 A2-H1: external base/focus suppressions must trigger Floor violations before fix");
+    const r48ExtRes = applyFloorFixes(r48CompCss, { dryRun: false, dsCss: [r48DsCss] });
+    assert.equal(r48ExtRes.afterFloor, 0, "R48 A2-H1: fix-floor with external suppression --ds-css must remediate to 0 Floor violations");
+    const r48CompAfter = readFileSync(r48CompCss, "utf8");
+    assert.match(r48CompAfter, /\.ext-only-imp:focus-visible\s*\{[^}]*outline:[^;]*!important/, "R48 A2-H1: must emit !important against external .ext-only-imp:focus { outline: none !important }");
+
+    // Round 50 (R50-A2-M5 compound 100vw arithmetic must skip cleanly while plain / !important / commented 100vw rewrite):
+    const r50VwDir = join(scratch, "r50-vw");
+    mkdirSync(r50VwDir, { recursive: true });
+    const r50VwScss = join(r50VwDir, "comp.scss");
+    writeFileSync(r50VwScss, ".a { width: 100vw - 2vw; }\n");
+    const r50VwSkipRes = applyFloorFixes(r50VwScss, { dryRun: false });
+    assert.equal(r50VwSkipRes.patchesApplied, 0, "R50 A2-M5: compound width: 100vw - 2vw must not be rewritten");
+    assert.equal(readFileSync(r50VwScss, "utf8"), ".a { width: 100vw - 2vw; }\n");
+    assert.ok(r50VwSkipRes.manualSkipped.some((s) => s.ruleId === "dsaf/no-100vw"));
+    const r50VwOkCss = join(r50VwDir, "ok.css");
+    writeFileSync(r50VwOkCss, ".b { width: 100vw !important; }\n.c { inline-size: 100vw /* full */; }\n");
+    const r50VwOkRes = applyFloorFixes(r50VwOkCss, { dryRun: false });
+    assert.equal(r50VwOkRes.afterFloor, 0, "R50 A2-M5: standalone 100vw !important and commented 100vw must remediate cleanly");
+    assert.equal(readFileSync(r50VwOkCss, "utf8"), ".b { width: 100% !important; }\n.c { inline-size: 100% /* full */; }\n");
 
     console.log("DSAF_FIX_SELF_TEST_PASSED (dry-run + protectedFiles + backup + CSS/Tailwind/video remediation)");
     return 0;

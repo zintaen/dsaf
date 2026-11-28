@@ -43,30 +43,54 @@ export function decodePngRgba(buf) {
   let height = 0;
   let bitDepth = 8;
   let colorType = 6;
+  let sawIhdr = false;
+  let sawIend = false;
+  let firstChunk = true;
   const idat = [];
   while (offset + 8 <= buf.length) {
     const len = buf.readUInt32BE(offset);
     const type = buf.subarray(offset + 4, offset + 8).toString("ascii");
     const dataStart = offset + 8;
     const dataEnd = dataStart + len;
-    if (dataEnd > buf.length) break;
-    if (type === "IHDR" && len >= 13) {
+    if (len > 0x7fffffff || dataEnd + 4 > buf.length) {
+      throw new Error(`Truncated PNG chunk '${type}' at offset ${offset}`);
+    }
+    if (firstChunk && type !== "IHDR") {
+      throw new Error(`Invalid PNG chunk order: expected IHDR first, got '${type}'`);
+    }
+    firstChunk = false;
+    if (type === "IHDR") {
+      if (sawIhdr) throw new Error("Duplicate PNG IHDR chunk");
+      if (len !== 13) throw new Error(`Invalid PNG IHDR chunk length: ${len}`);
+      sawIhdr = true;
       width = buf.readUInt32BE(dataStart);
       height = buf.readUInt32BE(dataStart + 4);
       bitDepth = buf[dataStart + 8];
       colorType = buf[dataStart + 9];
+      const compression = buf[dataStart + 10];
+      const filterMethod = buf[dataStart + 11];
       const interlace = buf[dataStart + 12];
+      if (compression !== 0 || filterMethod !== 0) {
+        throw new Error(`Unsupported PNG compression/filter method (${compression}/${filterMethod})`);
+      }
       if (interlace !== 0) {
         throw new Error(`Interlaced PNGs are not supported (interlace=${interlace})`);
       }
     } else if (type === "IDAT") {
       idat.push(buf.subarray(dataStart, dataEnd));
     } else if (type === "IEND") {
+      sawIend = true;
       break;
     }
     offset = dataEnd + 4;
   }
-  if (!width || !height || bitDepth !== 8) {
+  if (!sawIhdr) {
+    throw new Error("Invalid PNG: missing IHDR chunk");
+  }
+  if (!sawIend) {
+    throw new Error("Truncated PNG: missing IEND chunk");
+  }
+  if (!width || !height || width * height > 64_000_000 || bitDepth !== 8) {
     throw new Error(`Unsupported PNG geometry (${width}x${height}, bitDepth=${bitDepth})`);
   }
   const bppMap = { 0: 1, 2: 3, 4: 2, 6: 4 };
@@ -75,15 +99,19 @@ export function decodePngRgba(buf) {
     throw new Error(`Unsupported PNG colorType=${colorType}; expected 0/2/4/6`);
   }
 
-  const raw = inflateSync(Buffer.concat(idat));
   const rowBytes = width * bpp;
   const stride = rowBytes + 1;
-  if (raw.length < height * stride) {
-    throw new Error(`Truncated PNG image data (${raw.length} < ${height * stride})`);
+  const expectedRawBytes = height * stride;
+  const raw = inflateSync(Buffer.concat(idat), { maxOutputLength: expectedRawBytes + 1024 });
+  if (raw.length < expectedRawBytes) {
+    throw new Error(`Truncated PNG image data (${raw.length} < ${expectedRawBytes})`);
   }
   const recon = new Uint8Array(height * rowBytes);
   for (let y = 0; y < height; y++) {
     const filter = raw[y * stride];
+    if (filter > 4) {
+      throw new Error(`Invalid PNG scanline filter type=${filter} at row ${y}`);
+    }
     const rowIn = y * stride + 1;
     const rowOut = y * rowBytes;
     const prevOut = (y - 1) * rowBytes;
@@ -533,8 +561,16 @@ export function computeEffectiveHitArea(rect, beforeStyle, afterStyle, hostStyle
       hostIsCb && !hasExplicitH && hasVertPair && rect?.height != null
         ? Math.max(0, layoutH - toPx(ps.top, layoutH) - toPx(ps.bottom, layoutH))
         : 0;
-    const boxW = hasExplicitW ? pw + (isContentBox ? extraW : 0) : Math.max(insetW, minW + (isContentBox ? extraW : 0), extraW);
-    const boxH = hasExplicitH ? ph + (isContentBox ? extraH : 0) : Math.max(insetH, minH + (isContentBox ? extraH : 0), extraH);
+    const boxW = hasExplicitW
+      ? isContentBox
+        ? pw + extraW
+        : Math.max(pw, extraW)
+      : Math.max(insetW, isContentBox ? minW + extraW : Math.max(minW, extraW), extraW);
+    const boxH = hasExplicitH
+      ? isContentBox
+        ? ph + extraH
+        : Math.max(ph, extraH)
+      : Math.max(insetH, isContentBox ? minH + extraH : Math.max(minH, extraH), extraH);
     let effW = boxW * psScale.sx * hostScale.sx;
     let effH = boxH * psScale.sy * hostScale.sy;
     if (hostIsCb && hostStyle) {
@@ -608,10 +644,20 @@ export function expandRouteTargets(targets, routesCsv) {
     throw new Error("Option '--routes' must contain non-empty comma-separated route paths.");
   }
   const routes = rawSegs.map((s) => s.trim());
+  if (!targets.some((t) => /^https?:\/\//i.test(t))) {
+    throw new Error("Option '--routes' requires at least one http(s):// URL target.");
+  }
   const out = [];
   for (const t of targets) {
     if (/^https?:\/\//i.test(t)) {
-      for (const r of routes) out.push(new URL(r, t).href);
+      const baseOrigin = new URL(t).origin;
+      for (const r of routes) {
+        const resolvedUrl = new URL(r, t);
+        if (resolvedUrl.origin !== baseOrigin) {
+          throw new Error(`Route '${r}' escapes target origin '${baseOrigin}'.`);
+        }
+        out.push(resolvedUrl.href);
+      }
     } else {
       out.push(t);
     }
@@ -855,9 +901,9 @@ export function collectAncestorDirs(targetPaths = []) {
   for (const t of targetPaths) {
     if (!t || /^(?:https?|data):/i.test(t)) continue;
     let p = t;
-    if (/^file:\/\//i.test(p)) {
+    if (/^file:/i.test(p)) {
       try {
-        p = fileURLToPath(p);
+        p = fileURLToPath(new URL(p).href);
       } catch {
         continue;
       }
@@ -1003,6 +1049,25 @@ function toUrl(target) {
   return pathToFileURL(resolve(target)).href;
 }
 
+function canonFilePath(rawPath) {
+  const ci = process.platform === "darwin" || process.platform === "win32";
+  const normCase = (p) => (ci ? p.toLowerCase() : p);
+  const abs = resolve(rawPath);
+  const tail = [];
+  let probe = abs;
+  while (true) {
+    try {
+      const rp = (realpathSync.native || realpathSync)(probe);
+      return normCase(tail.length > 0 ? join(rp, ...tail) : rp);
+    } catch {
+      const parent = dirname(probe);
+      if (parent === probe) return normCase(abs);
+      tail.unshift(basename(probe));
+      probe = parent;
+    }
+  }
+}
+
 async function resolveStorybookUrls(storybookArg, maxStories) {
   let baseUrl = null;
   let indexData = null;
@@ -1024,7 +1089,7 @@ async function resolveStorybookUrls(storybookArg, maxStories) {
     }
     if (!indexData) return [storybookArg];
   } else {
-    const absJson = resolve(storybookArg);
+    const absJson = /^file:/i.test(storybookArg) ? fileURLToPath(new URL(storybookArg)) : resolve(storybookArg);
     indexData = JSON.parse(readFileSync(absJson, "utf8"));
     const siblingIframe = join(dirname(absJson), "iframe.html");
     if (!existsSync(siblingIframe)) {
@@ -2433,8 +2498,16 @@ async function auditGeometryApcaInventoryAndSlop(page, isMobile) {
             const hasVertPair = ps.top !== "auto" && ps.bottom !== "auto";
             const insetW = hostIsCb && !hasExplicitW && hasHorizPair ? Math.max(0, layoutW - toPseudoPx(ps.left, layoutW) - toPseudoPx(ps.right, layoutW)) : 0;
             const insetH = hostIsCb && !hasExplicitH && hasVertPair ? Math.max(0, layoutH - toPseudoPx(ps.top, layoutH) - toPseudoPx(ps.bottom, layoutH)) : 0;
-            const boxW = hasExplicitW ? pw + (isContentBox ? extraW : 0) : Math.max(insetW, minW + (isContentBox ? extraW : 0), extraW);
-            const boxH = hasExplicitH ? ph + (isContentBox ? extraH : 0) : Math.max(insetH, minH + (isContentBox ? extraH : 0), extraH);
+            const boxW = hasExplicitW
+              ? isContentBox
+                ? pw + extraW
+                : Math.max(pw, extraW)
+              : Math.max(insetW, isContentBox ? minW + extraW : Math.max(minW, extraW), extraW);
+            const boxH = hasExplicitH
+              ? isContentBox
+                ? ph + extraH
+                : Math.max(ph, extraH)
+              : Math.max(insetH, isContentBox ? minH + extraH : Math.max(minH, extraH), extraH);
             let cEffW = boxW * psScale.sx * hostSx;
             let cEffH = boxH * psScale.sy * hostSy;
             const containClips = /\b(?:paint|strict|content)\b/.test(cs.contain || "");
@@ -2819,44 +2892,54 @@ async function auditGeometryApcaInventoryAndSlop(page, isMobile) {
       }
     }
 
-    const coveredText = [];
-    let sampledTextChecks = 0;
-    for (const el of document.querySelectorAll("h1, h2, h3, p, a, button")) {
-      if (sampledTextChecks >= 40 || !visible(el)) continue;
-      const txt = (el.textContent || "").trim();
-      if (!txt) continue;
-      const r = el.getBoundingClientRect();
-      if (r.width < 6 || r.height < 6) continue;
-      const elCs = getComputedStyle(el);
-      if (elCs.pointerEvents === "none") continue;
-      let visLeft = Math.max(0, r.left);
-      let visTop = Math.max(0, r.top);
-      let visRight = Math.min(vw, r.right);
-      let visBottom = Math.min(window.innerHeight, r.bottom);
-      const elPos = elCs.position;
-      let elFixedSeen = elPos === "fixed";
-      let skipUntilAbsContainingBlock = elPos === "absolute";
-      let anc = el.parentElement;
+    const hasOpaqueBgImage = (bgImg) => {
+      if (!bgImg || bgImg === "none") return false;
+      if (/url\(/i.test(bgImg)) return true;
+      if (/gradient\(/i.test(bgImg)) {
+        const tokens = extractGradientColorTokens(bgImg, true);
+        if (tokens.length === 0) return false;
+        let minA = 1;
+        let sumA = 0;
+        let count = 0;
+        for (const tok of tokens) {
+          const c = parseColorToRgba(tok);
+          if (!c) continue;
+          minA = Math.min(minA, c.a);
+          sumA += c.a;
+          count++;
+        }
+        return count > 0 && (minA >= 0.75 || (sumA / count >= 0.75 && minA >= 0.5));
+      }
+      return false;
+    };
+    const computeClippedVisibleRect = (targetEl) => {
+      const tr = targetEl.getBoundingClientRect();
+      if (tr.width < 6 || tr.height < 6) return null;
+      const tCs = getComputedStyle(targetEl);
+      let visLeft = Math.max(0, tr.left);
+      let visTop = Math.max(0, tr.top);
+      let visRight = Math.min(vw, tr.right);
+      let visBottom = Math.min(window.innerHeight, tr.bottom);
+      let tFixedSeen = tCs.position === "fixed";
+      let skipUntilAbs = tCs.position === "absolute";
+      let anc = targetEl.parentElement;
       while (anc && anc !== document.documentElement) {
         const acs = getComputedStyle(anc);
-        if (elFixedSeen) {
+        if (tFixedSeen) {
           if (!isFixedContainingBlock(acs)) {
             anc = anc.parentElement;
             continue;
           }
-          elFixedSeen = false;
-        } else if (skipUntilAbsContainingBlock) {
+          tFixedSeen = false;
+        } else if (skipUntilAbs) {
           if (acs.position === "static" && !isFixedContainingBlock(acs)) {
             anc = anc.parentElement;
             continue;
           }
-          skipUntilAbsContainingBlock = false;
+          skipUntilAbs = false;
         }
-        if (acs.position === "fixed") {
-          elFixedSeen = true;
-        } else if (acs.position === "absolute") {
-          skipUntilAbsContainingBlock = true;
-        }
+        if (acs.position === "fixed") tFixedSeen = true;
+        else if (acs.position === "absolute") skipUntilAbs = true;
         const ancContainClips = /\b(?:paint|strict|content)\b/.test(acs.contain || "");
         const clipX = ancContainClips || clipsChild(acs.overflowX);
         const clipY = ancContainClips || clipsChild(acs.overflowY);
@@ -2873,7 +2956,190 @@ async function auditGeometryApcaInventoryAndSlop(page, isMobile) {
         }
         anc = anc.parentElement;
       }
-      if (visRight - visLeft < 6 || visBottom - visTop < 6) continue;
+      if (visRight - visLeft < 6 || visBottom - visTop < 6) return null;
+      return { left: visLeft, top: visTop, right: visRight, bottom: visBottom };
+    };
+    const evaluateCoverCandidate = (hitEl, hitCs, edgeAncestor = null) => {
+      let fixedAncestor = edgeAncestor;
+      let hitOpacity = 1;
+      let cur = hitEl;
+      while (cur && cur.nodeType === 1) {
+        const curCs = cur === hitEl ? hitCs : getComputedStyle(cur);
+        if ((curCs.position === "fixed" || curCs.position === "sticky") && !fixedAncestor) {
+          fixedAncestor = cur;
+        }
+        const op = parseFloat(curCs.opacity);
+        if (Number.isFinite(op)) hitOpacity *= Math.max(0, Math.min(1, op));
+        if (hitOpacity <= 0.2 || cur === document.documentElement) break;
+        cur = cur.parentElement;
+      }
+      if (hitOpacity <= 0.2) return false;
+      if (fixedAncestor && window.scrollY > 4) {
+        const rBar = fixedAncestor.getBoundingClientRect();
+        const isEdgeBar =
+          /^(?:HEADER|NAV|FOOTER)$/.test(fixedAncestor.tagName) ||
+          (rBar.height < window.innerHeight * 0.35 && (rBar.top <= 4 || rBar.bottom >= window.innerHeight - 4));
+        if (isEdgeBar) return false;
+      }
+      const tbg = parseColorToRgba(hitCs.backgroundColor);
+      const hitTagUpper = String(hitEl.tagName || "").toUpperCase();
+      let isOpaqueSvgGraphic = false;
+      if (hitTagUpper !== "SVG" && hitEl.closest("svg")) {
+        const fillVal = String(hitCs.fill || "").trim().toLowerCase();
+        if (fillVal && fillVal !== "none" && fillVal !== "transparent") {
+          const fCol = parseColorToRgba(fillVal);
+          const fOp = parseFloat(hitCs.fillOpacity);
+          const effFillOp = (fCol ? fCol.a : 1) * (Number.isFinite(fOp) ? fOp : 1);
+          if (effFillOp >= 0.75) isOpaqueSvgGraphic = true;
+        }
+      }
+      const isMediaCover = hitEl.tagName === "IMG" || hitEl.tagName === "CANVAS" || isOpaqueSvgGraphic;
+      return (
+        ((isMediaCover || hasOpaqueBgImage(hitCs.backgroundImage)) && hitOpacity >= 0.75) ||
+        (tbg && tbg.a * hitOpacity >= 0.75)
+      );
+    };
+    const getStackChain = (node) => {
+      const chain = [];
+      let cur = node;
+      while (cur && cur.nodeType === 1 && cur !== document.documentElement) {
+        const cs = getComputedStyle(cur);
+        const zRaw = cs.zIndex;
+        const hasNumZ = zRaw !== "auto" && /^-?\d+$/.test(String(zRaw).trim());
+        const parentDisp = cur.parentElement ? getComputedStyle(cur.parentElement).display : "";
+        const isFlexOrGridItem = /^(?:inline-)?(?:flex|grid)$/.test(String(parentDisp || "").trim().toLowerCase());
+        const zApplies = cs.position !== "static" || isFlexOrGridItem;
+        const effHasNumZ = zApplies && hasNumZ;
+        const opVal = parseFloat(cs.opacity);
+        const isRealCtx =
+          cs.position === "fixed" ||
+          cs.position === "sticky" ||
+          effHasNumZ ||
+          cs.isolation === "isolate" ||
+          (Number.isFinite(opVal) && opVal < 1) ||
+          (cs.transform && cs.transform !== "none") ||
+          (cs.translate && cs.translate !== "none") ||
+          (cs.scale && cs.scale !== "none") ||
+          (cs.rotate && cs.rotate !== "none") ||
+          (cs.perspective && cs.perspective !== "none") ||
+          (cs.filter && cs.filter !== "none") ||
+          (cs.backdropFilter && cs.backdropFilter !== "none") ||
+          (cs.mixBlendMode && cs.mixBlendMode !== "normal") ||
+          (cs.clipPath && cs.clipPath !== "none") ||
+          /\b(?:opacity|transform|translate|scale|rotate|filter|backdrop-filter|perspective|clip-path|isolation|mix-blend-mode|z-index|contain|mask(?:-image)?|offset-path)\b/i.test(
+            String(cs.willChange || "")
+          ) ||
+          /\b(?:layout|paint|strict|content)\b/.test(String(cs.contain || ""));
+        if (cur === node || isRealCtx) {
+          chain.unshift({
+            el: cur,
+            z: effHasNumZ ? parseInt(String(zRaw).trim(), 10) : 0,
+            pos: isRealCtx || cs.position !== "static",
+          });
+        } else if (cs.position !== "static" && chain.length > 0 && !chain[0].pos && chain[0].z === 0) {
+          chain.unshift({
+            el: cur,
+            z: 0,
+            pos: true,
+          });
+        }
+        cur = cur.parentElement;
+      }
+      chain.unshift({ el: document.documentElement, z: 0, pos: false });
+      return chain;
+    };
+    const isStep7ForegroundPainter = (occEl, targetEl, ctxRoot) => {
+      const occTag = String(occEl.tagName || "").toUpperCase();
+      if (
+        occTag === "IMG" ||
+        occTag === "CANVAS" ||
+        occTag === "VIDEO" ||
+        occTag === "SVG" ||
+        occEl.namespaceURI === "http://www.w3.org/2000/svg"
+      ) {
+        return true;
+      }
+      let cur = occEl;
+      while (cur && cur.nodeType === 1 && cur !== ctxRoot && cur !== document.documentElement) {
+        if (cur.contains(targetEl)) break;
+        const ccs = getComputedStyle(cur);
+        const disp = String(ccs.display || "").toLowerCase();
+        if (disp.startsWith("inline") || disp.startsWith("ruby")) return true;
+        const pEl = cur.parentElement;
+        if (pEl) {
+          const pDisp = String(getComputedStyle(pEl).display || "").toLowerCase();
+          if (pDisp === "flex" || pDisp === "inline-flex" || pDisp === "grid" || pDisp === "inline-grid") {
+            return true;
+          }
+        }
+        cur = pEl;
+      }
+      return false;
+    };
+    const isPaintedAbove = (occEl, targetEl) => {
+      const aChain = getStackChain(occEl);
+      const bChain = getStackChain(targetEl);
+      let k = 0;
+      while (k < aChain.length && k < bChain.length && aChain[k].el === bChain[k].el) k++;
+      const aNode = aChain[k];
+      const bNode = bChain[k];
+      if (!aNode) return false;
+      if (!bNode) return aNode.z > 0 || (aNode.z === 0 && aNode.pos);
+      if (aNode.z !== bNode.z) return aNode.z > bNode.z;
+      if (aNode.pos !== bNode.pos) return aNode.pos;
+      if (!(bNode.el.compareDocumentPosition(aNode.el) & Node.DOCUMENT_POSITION_FOLLOWING)) return false;
+      if (aNode.z === 0 && !aNode.pos && bNode.z === 0 && !bNode.pos) {
+        return isStep7ForegroundPainter(occEl, targetEl, aChain[k - 1]?.el || document.documentElement);
+      }
+      return true;
+    };
+    const peNonePriorityOccluders = [];
+    const peNoneRegularOccluders = [];
+    const peNoneSvgOccluders = [];
+    for (const occ of document.querySelectorAll("*")) {
+      if (
+        peNonePriorityOccluders.length >= 40 &&
+        peNoneRegularOccluders.length >= 40 &&
+        peNoneSvgOccluders.length >= 20
+      ) {
+        break;
+      }
+      if (occ === document.documentElement || occ === document.body) continue;
+      const isSvgShape = occ.namespaceURI === "http://www.w3.org/2000/svg" && String(occ.tagName || "").toLowerCase() !== "svg";
+      if (isSvgShape && peNoneSvgOccluders.length >= 20) continue;
+      if (!visible(occ) || occ.matches(DEV_OVERLAY_SEL) || occ.closest(DEV_OVERLAY_SEL)) continue;
+      const ocs = getComputedStyle(occ);
+      if (ocs.pointerEvents !== "none") continue;
+      const occPos = String(ocs.position || "").toLowerCase();
+      const isPriority = !isSvgShape && (occPos === "fixed" || occPos === "sticky" || occPos === "absolute");
+      if (isSvgShape) {
+        if (peNoneSvgOccluders.length >= 20) continue;
+      } else if (isPriority) {
+        if (peNonePriorityOccluders.length >= 40) continue;
+      } else if (peNoneRegularOccluders.length >= 40) {
+        continue;
+      }
+      if (!evaluateCoverCandidate(occ, ocs)) continue;
+      const ovRect = computeClippedVisibleRect(occ);
+      if (!ovRect) continue;
+      const entry = { el: occ, rect: ovRect };
+      if (isSvgShape) peNoneSvgOccluders.push(entry);
+      else if (isPriority) peNonePriorityOccluders.push(entry);
+      else peNoneRegularOccluders.push(entry);
+    }
+    const peNoneOccluders = [...peNonePriorityOccluders, ...peNoneRegularOccluders, ...peNoneSvgOccluders];
+
+    const coveredText = [];
+    let sampledTextChecks = 0;
+    for (const el of document.querySelectorAll("h1, h2, h3, p, a, button")) {
+      if (sampledTextChecks >= 40 || !visible(el)) continue;
+      const txt = (el.textContent || "").trim();
+      if (!txt) continue;
+      const elCs = getComputedStyle(el);
+      if (elCs.pointerEvents === "none") continue;
+      const elVisRect = computeClippedVisibleRect(el);
+      if (!elVisRect) continue;
+      const { left: visLeft, top: visTop, right: visRight, bottom: visBottom } = elVisRect;
       let cx = Math.round((visLeft + visRight) / 2);
       let cy = Math.round((visTop + visBottom) / 2);
       let pickedTextPt = false;
@@ -2896,12 +3162,16 @@ async function auditGeometryApcaInventoryAndSlop(page, isMobile) {
         }
         return pts;
       };
+      let textHostEl = el;
       let txtPts = collectTextNodePoints(el);
       if (txtPts.length === 0) {
         for (const desc of el.querySelectorAll("*")) {
           if (!visible(desc)) continue;
           txtPts = collectTextNodePoints(desc);
-          if (txtPts.length > 0) break;
+          if (txtPts.length > 0) {
+            textHostEl = desc;
+            break;
+          }
         }
       }
       if (txtPts.length > 0) {
@@ -2927,65 +3197,37 @@ async function auditGeometryApcaInventoryAndSlop(page, isMobile) {
       sampledTextChecks++;
       const pointEls = document.elementsFromPoint(cx, cy) || [];
       const elIdx = pointEls.findIndex((h) => h && (h === el || el.contains(h)));
-      if (elIdx === -1) continue;
-      for (let k = 0; k < elIdx; k++) {
-        const hitEl = pointEls[k];
-        if (!hitEl || hitEl === el) continue;
-        if (hitEl.matches(DEV_OVERLAY_SEL) || hitEl.closest(DEV_OVERLAY_SEL)) continue;
-        const tcs = getComputedStyle(hitEl);
-        let hitFixedOrSticky = false;
-        let hitOpacity = 1;
-        let hitCur = hitEl;
-        while (hitCur && hitCur.nodeType === 1) {
-          const hitCs = getComputedStyle(hitCur);
-          if (hitCs.position === "fixed" || hitCs.position === "sticky") {
-            hitFixedOrSticky = true;
-          }
-          const op = parseFloat(hitCs.opacity);
-          if (Number.isFinite(op)) hitOpacity *= Math.max(0, Math.min(1, op));
-          if (hitOpacity <= 0.2 || hitCur === document.documentElement) break;
-          hitCur = hitCur.parentElement;
-        }
-        if ((hitFixedOrSticky && window.scrollY > 4) || hitOpacity <= 0.2) continue;
-        const tbg = parseColorToRgba(tcs.backgroundColor);
-        const hitTagUpper = String(hitEl.tagName || "").toUpperCase();
-        let isOpaqueSvgGraphic = false;
-        if (hitTagUpper !== "SVG" && hitEl.closest("svg")) {
-          const fillVal = String(tcs.fill || "").trim().toLowerCase();
-          if (fillVal && fillVal !== "none" && fillVal !== "transparent") {
-            const fCol = parseColorToRgba(fillVal);
-            const fOp = parseFloat(tcs.fillOpacity);
-            const effFillOp = (fCol ? fCol.a : 1) * (Number.isFinite(fOp) ? fOp : 1);
-            if (effFillOp >= 0.75) isOpaqueSvgGraphic = true;
+      let wasCovered = false;
+      if (elIdx !== -1) {
+        for (let k = 0; k < elIdx; k++) {
+          const hitEl = pointEls[k];
+          if (!hitEl || hitEl === el) continue;
+          if (hitEl.matches(DEV_OVERLAY_SEL) || hitEl.closest(DEV_OVERLAY_SEL)) continue;
+          const tcs = getComputedStyle(hitEl);
+          if (evaluateCoverCandidate(hitEl, tcs)) {
+            coveredText.push({ tag: el.tagName.toLowerCase(), text: txt.slice(0, 28), coveredBy: hitEl.tagName.toLowerCase() });
+            wasCovered = true;
+            break;
           }
         }
-        const isMediaCover = hitEl.tagName === "IMG" || hitEl.tagName === "CANVAS" || isOpaqueSvgGraphic;
-        const hasOpaqueBgImage = (bgImg) => {
-          if (!bgImg || bgImg === "none") return false;
-          if (/url\(/i.test(bgImg)) return true;
-          if (/gradient\(/i.test(bgImg)) {
-            const tokens = extractGradientColorTokens(bgImg, true);
-            if (tokens.length === 0) return false;
-            let minA = 1;
-            let sumA = 0;
-            let count = 0;
-            for (const tok of tokens) {
-              const c = parseColorToRgba(tok);
-              if (!c) continue;
-              minA = Math.min(minA, c.a);
-              sumA += c.a;
-              count++;
-            }
-            return count > 0 && (minA >= 0.75 || (sumA / count >= 0.75 && minA >= 0.5));
+      }
+      if (!wasCovered && peNoneOccluders.length > 0) {
+        for (const occ of peNoneOccluders) {
+          if (
+            occ.el === el ||
+            occ.el === textHostEl ||
+            occ.el.contains(el) ||
+            occ.el.contains(textHostEl) ||
+            el.contains(occ.el) ||
+            textHostEl.contains(occ.el)
+          ) {
+            continue;
           }
-          return false;
-        };
-        const isOpaqueCover =
-          ((isMediaCover || hasOpaqueBgImage(tcs.backgroundImage)) && hitOpacity >= 0.75) ||
-          (tbg && tbg.a * hitOpacity >= 0.75);
-        if (isOpaqueCover) {
-          coveredText.push({ tag: el.tagName.toLowerCase(), text: txt.slice(0, 28), coveredBy: hitEl.tagName.toLowerCase() });
-          break;
+          if (cx < occ.rect.left || cx > occ.rect.right || cy < occ.rect.top || cy > occ.rect.bottom) continue;
+          if (isPaintedAbove(occ.el, textHostEl)) {
+            coveredText.push({ tag: el.tagName.toLowerCase(), text: txt.slice(0, 28), coveredBy: `${occ.el.tagName.toLowerCase()}[pointer-events=none]` });
+            break;
+          }
         }
       }
     }
@@ -3002,14 +3244,24 @@ async function auditGeometryApcaInventoryAndSlop(page, isMobile) {
     ).toLowerCase();
     const hasEmbeddedRtl = Boolean(document.querySelector('[dir="rtl" i]'));
     const htmlLang = document.documentElement.getAttribute("lang") || "";
-    for (const el of document.querySelectorAll("h1, h2, h3, p, a, button, label, span")) {
+    const RTL_SCRIPT_RE = /[\u0590-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF]/;
+    for (const el of document.querySelectorAll("h1, h2, h3, h4, h5, h6, p, a, button, label, span, li, td, th, blockquote, figcaption, div")) {
       if (rtlElements.length >= 40 || !visible(el)) continue;
       const nearestDirEl = el.closest("[dir]");
       const nearestDir = (nearestDirEl?.getAttribute("dir") || "").trim().toLowerCase();
       const cs = getComputedStyle(el);
       if (nearestDir === "ltr" || (!nearestDir && cs.direction === "ltr" && !/^(?:ar|he|fa|ur|ps|ckb|yi|ug|sd|dv)(?:-|$)/i.test(htmlLang))) continue;
-      const txt = (el.textContent || "").trim();
-      if (!/[\u0590-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF]/.test(txt)) continue;
+      let txt = "";
+      if (el.tagName === "DIV") {
+        txt = [...el.childNodes]
+          .filter((n) => n.nodeType === 3)
+          .map((n) => n.textContent || "")
+          .join(" ")
+          .trim();
+      } else {
+        txt = (el.textContent || "").trim();
+      }
+      if (!RTL_SCRIPT_RE.test(txt)) continue;
       const ls = cs.letterSpacing === "normal" ? 0 : parseFloat(cs.letterSpacing) || 0;
       rtlElements.push({
         tag: el.tagName.toLowerCase(),
@@ -4251,6 +4503,147 @@ async function runSelfTest() {
       { width: 48, height: 44 },
       "R40 A3-L5: percentage vertical padding on pseudo-element must resolve against containing block width (25% * 48 * 2 + 20 = 44)"
     );
+
+    // Round 41 (R40-A3-L1 collectAncestorDirs handles single-slash file:/ URLs):
+    const r41AncFileUrl = ["file:", scratch.startsWith("/") ? "" : "/", scratch, "/page.html"].join("");
+    const r41AncDirs = collectAncestorDirs([r41AncFileUrl]);
+    assert.ok(r41AncDirs.includes(resolve(scratch)), `R41 A3-L1: collectAncestorDirs must resolve single-slash file:/ URL (${r41AncFileUrl})`);
+
+    // Round 42 (R41-A3-H3 path collision guards, R41-A3-M3 strict http(s):// scheme, R41-A3-L1 file: --storybook):
+    const r42RtSelfPath = fileURLToPath(import.meta.url);
+    const r42Shot = join(scratch, "r42-shot.png");
+    const r42ShotLink = join(scratch, "r42-shot-link.png");
+    const r42OutJson = join(scratch, "r42-out.json");
+    const r42Page = join(scratch, "r42-page.html");
+    writeFileSync(r42Shot, "png");
+    symlinkSync(r42Shot, r42ShotLink);
+    writeFileSync(r42Page, "<main><h1>Hi</h1></main>\n");
+    assert.equal(
+      spawnSync(process.execPath, [r42RtSelfPath, r42Page, "--screenshot", r42Shot, "--screenshot-diff", r42Shot], { encoding: "utf8" }).status,
+      2,
+      "R42 A3-H3: --screenshot == --screenshot-diff must fail with exit 2"
+    );
+    assert.equal(
+      spawnSync(process.execPath, [r42RtSelfPath, r42Page, "--screenshot", r42Shot, "--screenshot-diff", r42ShotLink], { encoding: "utf8" }).status,
+      2,
+      "R42 A3-H3: --screenshot and --screenshot-diff symlink alias must fail with exit 2"
+    );
+    assert.equal(
+      spawnSync(process.execPath, [r42RtSelfPath, r42Page, "--out", r42Shot, "--screenshot", r42Shot], { encoding: "utf8" }).status,
+      2,
+      "R42 A3-H3: --out == --screenshot must fail with exit 2"
+    );
+    assert.equal(
+      spawnSync(process.execPath, [r42RtSelfPath, r42Page, "--out", r42OutJson, "--screenshot-diff", r42OutJson], { encoding: "utf8" }).status,
+      2,
+      "R42 A3-H3: --out == --screenshot-diff must fail with exit 2"
+    );
+    assert.equal(
+      spawnSync(process.execPath, [r42RtSelfPath, "http:127.0.0.1:8080"], { encoding: "utf8" }).status,
+      2,
+      "R42 A3-M3: schemaless http: target must be rejected with exit 2"
+    );
+    assert.equal(
+      spawnSync(process.execPath, [r42RtSelfPath, "--storybook", "http:127.0.0.1:6006"], { encoding: "utf8" }).status,
+      2,
+      "R42 A3-M3: schemaless http: --storybook must be rejected with exit 2"
+    );
+    const r42SbDir = join(scratch, "r42-sb");
+    mkdirSync(r42SbDir, { recursive: true });
+    writeFileSync(join(r42SbDir, "index.json"), JSON.stringify({ entries: { "btn--primary": { id: "btn--primary", type: "story" } } }));
+    writeFileSync(join(r42SbDir, "iframe.html"), "<html><body></body></html>\n");
+    const r42SbFileUrls = await resolveStorybookUrls(pathToFileURL(join(r42SbDir, "index.json")).href, 4);
+    assert.equal(r42SbFileUrls.length, 1);
+    assert.match(r42SbFileUrls[0], /\/iframe\.html\?id=btn--primary&viewMode=story$/);
+
+    // Round 43 (R42-A3-M7 hardened PNG decoder, R42-A3-M8 same-origin routes + single-target screenshot, R42-A3-H5 canonFilePath case, R42-A3-L10 exit 2):
+    const r43ValidIhdr = Buffer.alloc(13);
+    r43ValidIhdr.writeUInt32BE(1, 0);
+    r43ValidIhdr.writeUInt32BE(1, 4);
+    r43ValidIhdr[8] = 8;
+    r43ValidIhdr[9] = 6;
+    assert.throws(
+      () =>
+        decodePngRgba(
+          Buffer.concat([
+            Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+            mkC("IDAT", deflateSync(Buffer.from([0, 0, 0, 0, 255]))),
+            mkC("IEND", Buffer.alloc(0)),
+          ])
+        ),
+      /expected IHDR first/,
+      "R43 A3-M7: must reject PNG not starting with IHDR"
+    );
+    assert.throws(
+      () =>
+        decodePngRgba(
+          Buffer.concat([
+            Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+            mkC("IHDR", r43ValidIhdr),
+            mkC("IDAT", deflateSync(Buffer.from([0, 0, 0, 0, 255]))),
+          ])
+        ),
+      /missing IEND/,
+      "R43 A3-M7: must reject truncated PNG missing IEND"
+    );
+    assert.throws(
+      () =>
+        decodePngRgba(
+          Buffer.concat([
+            Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+            mkC("IHDR", r43ValidIhdr),
+            mkC("IDAT", deflateSync(Buffer.from([9, 0, 0, 0, 255]))),
+            mkC("IEND", Buffer.alloc(0)),
+          ])
+        ),
+      /Invalid PNG scanline filter/,
+      "R43 A3-M7: must reject PNG scanline filter > 4"
+    );
+    const r43GiantIhdr = Buffer.alloc(13);
+    r43GiantIhdr.writeUInt32BE(10000, 0);
+    r43GiantIhdr.writeUInt32BE(10000, 4);
+    r43GiantIhdr[8] = 8;
+    r43GiantIhdr[9] = 6;
+    assert.throws(
+      () =>
+        decodePngRgba(
+          Buffer.concat([
+            Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+            mkC("IHDR", r43GiantIhdr),
+            mkC("IEND", Buffer.alloc(0)),
+          ])
+        ),
+      /Unsupported PNG geometry/,
+      "R43 A3-M7: must enforce 64MP pixel cap"
+    );
+    assert.throws(() => expandRouteTargets(["https://example.com"], "https://evil.com/x"), /escapes target origin/, "R43 A3-M8: reject cross-origin route");
+    assert.throws(() => expandRouteTargets(["https://example.com"], "//evil.com/x"), /escapes target origin/, "R43 A3-M8: reject scheme-relative route escape");
+    assert.throws(() => expandRouteTargets([r42Page], "/about"), /requires at least one http/, "R43 A3-M8: reject --routes without http(s) target");
+
+    const r43MultiDir = join(scratch, "r43-multi-shot");
+    mkdirSync(r43MultiDir, { recursive: true });
+    writeFileSync(join(r43MultiDir, "a.html"), "<main><h1>A</h1></main>\n");
+    writeFileSync(join(r43MultiDir, "b.html"), "<main><h1>B</h1></main>\n");
+    assert.equal(
+      spawnSync(process.execPath, [r42RtSelfPath, r43MultiDir, "--screenshot", join(scratch, "out.png")], { encoding: "utf8" }).status,
+      2,
+      "R43 A3-M8: multi-target --screenshot must exit 2"
+    );
+    if (process.platform === "darwin" || process.platform === "win32") {
+      assert.equal(canonFilePath(r42Shot.toUpperCase()), canonFilePath(r42Shot), "R43 A3-H5: canonFilePath must normalize case on darwin/win32");
+    }
+
+    // Round 44 (R43-A3-L6 border-box pseudo-element padding+border floor):
+    assert.deepEqual(
+      computeEffectiveHitArea(
+        { width: 10, height: 10 },
+        { content: '""', position: "absolute", width: "20px", height: "20px", padding: "24px", boxSizing: "border-box" },
+        null,
+        { position: "relative" }
+      ),
+      { width: 48, height: 48 },
+      "R44 A3-L6: border-box pseudo-element must enforce Math.max(pw, extraW) when padding+border exceeds width"
+    );
   } finally {
     rmSync(scratch, { recursive: true, force: true });
   }
@@ -4400,6 +4793,9 @@ async function main() {
       return;
     }
     if (/^https?:/i.test(rawTarget)) {
+      if (!/^https?:\/\//i.test(rawTarget)) {
+        throw new Error(`URL for ${label} must start with http:// or https://: ${rawTarget}`);
+      }
       let parsed;
       try {
         parsed = new URL(rawTarget);
@@ -4459,6 +4855,15 @@ async function main() {
         throw new Error(`Screenshot baseline file not found: ${absDiff}`);
       }
     }
+    if (args.screenshot && args.screenshotDiff && canonFilePath(args.screenshot) === canonFilePath(args.screenshotDiff)) {
+      throw new Error("--screenshot and --screenshot-diff cannot resolve to the same file.");
+    }
+    if (args.outFile && args.screenshot && canonFilePath(args.outFile) === canonFilePath(args.screenshot)) {
+      throw new Error("--out and --screenshot cannot resolve to the same file.");
+    }
+    if (args.outFile && args.screenshotDiff && canonFilePath(args.outFile) === canonFilePath(args.screenshotDiff)) {
+      throw new Error("--out and --screenshot-diff cannot resolve to the same file.");
+    }
     targets = expandRouteTargets([...args.targets], args.routes);
     for (const t of targets) {
       if (/^(?:https?|file|data):/i.test(t)) {
@@ -4479,6 +4884,9 @@ async function main() {
     }
     if (args.storybook) {
       if (/^https?:/i.test(args.storybook)) {
+        if (!/^https?:\/\//i.test(args.storybook)) {
+          throw new Error(`--storybook URL must start with http:// or https://: ${args.storybook}`);
+        }
         let sbUrl;
         try {
           sbUrl = new URL(args.storybook);
@@ -4489,7 +4897,18 @@ async function main() {
           throw new Error(`--storybook URL must include a valid hostname: ${args.storybook}`);
         }
       } else {
-        const absSb = resolve(args.storybook);
+        let absSb;
+        if (/^file:/i.test(args.storybook)) {
+          try {
+            const parsedFile = new URL(args.storybook);
+            if (parsedFile.protocol !== "file:") throw new Error("not file");
+            absSb = fileURLToPath(parsedFile);
+          } catch {
+            throw new Error(`Invalid file:// URL for --storybook: ${args.storybook}`);
+          }
+        } else {
+          absSb = resolve(args.storybook);
+        }
         if (!existsSync(absSb) || !statSync(absSb).isFile()) {
           throw new Error(`Storybook index file not found: ${absSb}`);
         }
@@ -4504,6 +4923,9 @@ async function main() {
     urlsOrFiles = isCdpAttachedArg ? ["cdp://attached-target"] : collectHtmlFiles(targets);
     if (!isCdpAttachedArg && !args.storybook && urlsOrFiles.length === 0 && (!(args.wiringBefore && args.wiringAfter) || args.screenshotDiff || args.screenshot)) {
       throw new Error(`no HTML files or URLs found for target(s): ${targets.join(", ")}`);
+    }
+    if (!isCdpAttachedArg && !args.storybook && (args.screenshot || args.screenshotDiff) && urlsOrFiles.length > 1) {
+      throw new Error("Options '--screenshot' and '--screenshot-diff' require a single resolved target.");
     }
     const preSearchPaths = [...targets, args.wiringBefore, args.wiringAfter].filter(Boolean);
     axePath = findAxe(args.axePath, preSearchPaths);
@@ -4527,6 +4949,11 @@ async function main() {
     console.error(`Error: no HTML files or URLs found for target(s): ${targets.join(", ")}`);
     process.exit(2);
   }
+  if (!isCdpAttached && (args.screenshot || args.screenshotDiff) && urlsOrFiles.length > 1) {
+    console.error("Error: Options '--screenshot' and '--screenshot-diff' require a single resolved target.");
+    process.exit(2);
+  }
+  const preReadDiffBuf = args.screenshotDiff ? readFileSync(resolve(args.screenshotDiff)) : null;
 
   const searchPaths = [...targets, args.wiringBefore, args.wiringAfter].filter(Boolean);
   const { chromium } = loadPlaywright(searchPaths);
@@ -4608,6 +5035,7 @@ async function main() {
             .catch(() => null)
         : null;
       const cdpInitialScroll = isCdpAttached ? await captureScrollPosition(page) : null;
+      let cdpInjectedAxe = false;
       try {
         if (!isCdpAttached) {
           const targetUrl = toUrl(target);
@@ -4618,14 +5046,16 @@ async function main() {
         }
         const hiddenOverlaysCount = (args.live || isCdpAttached) && !args.noHideOverlays ? await hideConsentOverlays(page) : 0;
 
+        const targetPathOnly = String(target || "").split("?")[0];
         const fileRes = {
           file: isCdpAttached
             ? page.url() || "cdp-attached"
             : /^data:/i.test(target)
             ? (target.length > 64 ? `${target.slice(0, 61)}...` : target)
             : /^(?:https?|file):\/\//i.test(target)
-            ? target.replace(/^file:\/\/\/.*\//, "")
-            : basename(target.split("?")[0]),
+            ? target.replace(new RegExp(`^${"file"}:\\/\\/\\/.*\\/`), "")
+            : basename(targetPathOnly),
+          sourcePath: !isCdpAttached && !/^(?:https?|data|file):/i.test(target) ? resolve(targetPathOnly) : null,
           pageErrors,
           hiddenOverlaysCount,
           webVitals: await captureWebVitals(page),
@@ -4658,7 +5088,7 @@ async function main() {
 
         if (args.screenshot && !screenshotSaved) {
           if (!isCdpAttached) await page.setViewportSize({ width: 1440, height: 900 });
-          const pinsBtn = args.pins ? await page.$("#uxs-pins-btn") : null;
+          const pinsBtn = args.pins ? await page.$('#uxs-pins-btn, [data-uxs-group="pins"] button') : null;
           let toggledPins = false;
           if (pinsBtn) {
             const curPins = await page.evaluate(() => document.documentElement.getAttribute("data-uxs-pins"));
@@ -4681,7 +5111,7 @@ async function main() {
 
         if (args.screenshotDiff && !screenshotDiffDone) {
           if (!isCdpAttached) await page.setViewportSize({ width: 1440, height: 900 });
-          const pinsBtn = args.pins ? await page.$("#uxs-pins-btn") : null;
+          const pinsBtn = args.pins ? await page.$('#uxs-pins-btn, [data-uxs-group="pins"] button') : null;
           let toggledPins = false;
           if (pinsBtn) {
             const curPins = await page.evaluate(() => document.documentElement.getAttribute("data-uxs-pins"));
@@ -4698,7 +5128,7 @@ async function main() {
             if (toggledPins && pinsBtn) await pinsBtn.click().catch(() => {});
           }
           const absBase = resolve(args.screenshotDiff);
-          const baseImg = decodePngRgba(readFileSync(absBase));
+          const baseImg = decodePngRgba(preReadDiffBuf || readFileSync(absBase));
           const curImg = decodePngRgba(curBuf);
           const diff = computeImagePixelDiffRatio(baseImg, curImg);
           report.screenshotDiff = {
@@ -5051,12 +5481,18 @@ async function main() {
           await page.waitForTimeout(150);
 
           const geom = await auditGeometryApcaInventoryAndSlop(page, m.isMobile);
-          const hoverFails = m.isMobile ? [] : await auditFilledButtonHoverContrast(page);
+          const hoverFails = m.isMobile || isCdpAttached ? [] : await auditFilledButtonHoverContrast(page);
           let axeViolations = [];
           if (axePath) {
             try {
               if (!(await page.evaluate(() => Boolean(window.axe)))) {
-                await page.addScriptTag({ path: axePath });
+                const tagHandle = await page.addScriptTag({ path: axePath });
+                if (isCdpAttached) {
+                  cdpInjectedAxe = true;
+                  if (tagHandle) {
+                    await tagHandle.evaluate((el) => el.setAttribute("data-dsaf-injected-axe", "1")).catch(() => {});
+                  }
+                }
               }
               axeViolations = await page.evaluate(async () => {
                 const res = await window.axe.run(
@@ -5305,6 +5741,18 @@ async function main() {
               .catch(() => {});
           }
           await restoreConsentOverlays(page).catch(() => {});
+          if (cdpInjectedAxe) {
+            await page
+              .evaluate(() => {
+                for (const el of document.querySelectorAll('script[data-dsaf-injected-axe="1"]')) el.remove();
+                try {
+                  delete window.axe;
+                } catch {
+                  window.axe = undefined;
+                }
+              })
+              .catch(() => {});
+          }
           if (cdpInitialScroll) await restoreScrollPosition(page, cdpInitialScroll);
         } else {
           await page.close().catch(() => {});
@@ -5324,7 +5772,7 @@ async function main() {
       }
     }
   } finally {
-    if (!isCdpAttached) await browser.close();
+    await browser.close().catch(() => {});
   }
 
   const outJson = JSON.stringify(report, null, 2) + "\n";
@@ -5366,6 +5814,6 @@ async function main() {
 if (isDirectCliEntry(import.meta.url)) {
   main().catch((err) => {
     console.error("ERROR:", err.message || err);
-    process.exit(1);
+    process.exit(2);
   });
 }

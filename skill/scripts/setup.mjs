@@ -647,6 +647,19 @@ function runSelfTest() {
     }
     assert.equal(existsSync(join(r30SymGuardProj, "src/check-design-discipline.mjs")), false);
 
+    // Round 43 (R42-A1-L3): setup --dry-run text output must say 'would be created'
+    const r43DryProj = join(scratch, "r43-dry-proj");
+    mkdirSync(r43DryProj, { recursive: true });
+    writeFileSync(join(r43DryProj, "package.json"), JSON.stringify({ name: "r43-dry" }));
+    const r43DryCli = spawnSync(
+      process.execPath,
+      [fileURLToPath(import.meta.url), r43DryProj, "--scope", "project", "--with-hook", "--with-ci", "--dry-run"],
+      { encoding: "utf8", env: { ...process.env, HOME: fakeHome } }
+    );
+    assert.equal(r43DryCli.status, 0, r43DryCli.stderr);
+    assert.match(r43DryCli.stdout, /would be created/);
+    assert.doesNotMatch(r43DryCli.stdout, /\bfiles created\b/);
+
     console.log("DSAF_SETUP_SELF_TEST_PASSED (skill + mcp + optional hooks & CI)");
     return 0;
   } finally {
@@ -714,7 +727,7 @@ if (isEntry) {
       console.log(`DSAF Setup v${res.version}${res.dryRun ? " (DRY RUN)" : ""}`);
       for (const s of res.skills) console.log(`  Skill (${s.agent}/${s.scope}): ${s.path}`);
       for (const m of res.mcp) console.log(`  MCP (${m.agent}/${m.scope}): ${m.path}`);
-      if (res.ci) console.log(`  CI & hooks: Mode ${res.ci.mode} (${res.ci.created.length} files created)`);
+      if (res.ci) console.log(`  CI & hooks: Mode ${res.ci.mode} (${res.ci.created.length} files ${res.dryRun ? "would be created" : "created"})`);
       console.log("Next: run `npx @zintaen/dsaf check` inside your project directory.");
     }
   } catch (err) {

@@ -67,7 +67,7 @@ runs:
   using: "composite"
   steps:
     - name: Setup Node.js
-      uses: actions/setup-node@v7
+      uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
       with:
         node-version: ${{ inputs.node-version }}
 
@@ -80,91 +80,308 @@ runs:
         DSAF_OUT_DIR: ${{ inputs.out-dir }}
         DSAF_SARIF_FILE: ${{ inputs.sarif-file }}
         DSAF_VERSION: ${{ inputs.dsaf-version }}
+        DSAF_RUN_DOCTOR: ${{ inputs.run-doctor }}
         DSAF_ACTION_PATH: ${{ github.action_path }}
       run: |
         set +e
-        mkdir -p "$DSAF_OUT_DIR"
-        SUMMARY_JSON="${DSAF_OUT_DIR}/audit-summary.json"
-        SUMMARY_MD="${DSAF_OUT_DIR}/audit-summary.md"
-        rm -f "$SUMMARY_JSON" "$SUMMARY_MD"
-        SCOPE_JSON=$(node -e '
+        PREP_JSON=$(node -e '
           const fs = require("node:fs");
           const path = require("node:path");
           const repoRoot = fs.realpathSync(process.cwd());
+          const cwdAbs = path.resolve(process.cwd());
           const rawTarget = (process.env.DSAF_TARGET || ".").trim() || ".";
           const rawScope = (process.env.DSAF_SCOPE || "").trim();
-          const norm = (p) => (process.platform === "darwin" || process.platform === "win32" ? p.toLowerCase() : p);
+          const rawOutDir = (process.env.DSAF_OUT_DIR || "").trim();
+          const rawSarif = (process.env.DSAF_SARIF_FILE || "").trim();
+          const rawVer = (process.env.DSAF_VERSION || "").trim();
+          const ci = process.platform === "darwin" || process.platform === "win32";
+          const norm = (p) => (ci ? p.toLowerCase() : p);
           const isWithin = (root, child) => {
             const r = path.relative(norm(root), norm(child));
             return r === "" || (r !== ".." && !r.startsWith(".." + path.sep) && !path.isAbsolute(r));
           };
-          const absTarget = path.resolve(repoRoot, rawTarget);
-          let cliTarget = rawTarget;
-          let cliScope = rawScope;
-          if (fs.existsSync(absTarget) && fs.statSync(absTarget).isDirectory()) {
-            const realTarget = fs.realpathSync(absTarget);
-            const relTarget = path.relative(repoRoot, realTarget).replace(/\\/g, "/");
-            if (isWithin(repoRoot, realTarget) && relTarget !== "" && !relTarget.startsWith("..")) {
-              cliTarget = ".";
-              if (rawScope) {
-                const absScope = path.resolve(realTarget, rawScope);
-                if (!isWithin(realTarget, absScope)) {
-                  console.error(`ERROR: Input '\''scope'\'' ('\''${rawScope}'\'') escapes target '\''${rawTarget}'\''.`);
-                  process.exit(2);
-                }
-                const effScope = fs.existsSync(absScope) ? fs.realpathSync(absScope) : absScope;
-                if (!isWithin(realTarget, effScope)) {
-                  console.error(`ERROR: Resolved input '\''scope'\'' ('\''${rawScope}'\'') escapes target '\''${rawTarget}'\'' via symlink.`);
-                  process.exit(2);
-                }
-                cliScope = path.relative(repoRoot, effScope).replace(/\\/g, "/") || relTarget;
+          const assertRawPathNoSymlinks = (rawSpec, label) => {
+            let relRaw = rawSpec;
+            if (path.isAbsolute(rawSpec)) {
+              const lexAbs = path.resolve(rawSpec);
+              if (isWithin(repoRoot, lexAbs)) {
+                relRaw = path.relative(repoRoot, lexAbs);
+              } else if (isWithin(cwdAbs, lexAbs)) {
+                relRaw = path.relative(cwdAbs, lexAbs);
               } else {
-                cliScope = relTarget;
+                console.error(`ERROR: Input '\''${label}'\'' (${rawSpec}) escapes repository root.`);
+                process.exit(2);
+              }
+            } else {
+              const lexAbs = path.resolve(repoRoot, rawSpec);
+              if (!isWithin(repoRoot, lexAbs)) {
+                console.error(`ERROR: Input '\''${label}'\'' (${rawSpec}) escapes repository root.`);
+                process.exit(2);
               }
             }
+            const segs = String(relRaw).split(/[\\/]+/).filter(Boolean);
+            let cur = repoRoot;
+            for (let idx = 0; idx < segs.length; idx++) {
+              const s = segs[idx];
+              if (s === ".") continue;
+              if (s === "..") {
+                if (norm(cur) === norm(repoRoot)) {
+                  console.error(`ERROR: Input '\''${label}'\'' (${rawSpec}) escapes repository root.`);
+                  process.exit(2);
+                }
+                cur = path.dirname(cur);
+                continue;
+              }
+              cur = path.join(cur, s);
+              let st = null;
+              try { st = fs.lstatSync(cur); } catch {}
+              if (st && st.isSymbolicLink()) {
+                console.error(`ERROR: Input '\''${label}'\'' traverses symlink: ${cur}`);
+                process.exit(2);
+              }
+              if (idx < segs.length - 1 && st && !st.isDirectory()) {
+                console.error(`ERROR: Parent path of '\''${label}'\'' exists and is not a directory: ${cur}`);
+                process.exit(2);
+              }
+            }
+          };
+          const resolveNoCollapse = (baseDir, rawSpec, label) => {
+            let root, curSegs, queue;
+            if (path.isAbsolute(rawSpec)) {
+              root = path.parse(rawSpec).root;
+              curSegs = [];
+              queue = rawSpec.slice(root.length).split(/[\\/]+/).filter(Boolean);
+            } else {
+              const absBase = path.isAbsolute(baseDir) ? baseDir : path.resolve(baseDir);
+              root = path.parse(absBase).root;
+              curSegs = [];
+              queue = [
+                ...absBase.slice(root.length).split(/[\\/]+/).filter(Boolean),
+                ...rawSpec.split(/[\\/]+/).filter(Boolean),
+              ];
+            }
+            let hops = 0;
+            while (queue.length > 0) {
+              const seg = queue.shift();
+              if (!seg || seg === ".") continue;
+              if (seg === "..") {
+                if (curSegs.length > 0) curSegs.pop();
+                continue;
+              }
+              const probe = curSegs.length > 0 ? path.join(root, ...curSegs, seg) : path.join(root, seg);
+              let lst = null;
+              try { lst = fs.lstatSync(probe); } catch {}
+              if (lst && lst.isSymbolicLink()) {
+                hops++;
+                if (hops > 40) {
+                  console.error(`ERROR: Too many symbolic link hops resolving ${label}: ${rawSpec}`);
+                  process.exit(2);
+                }
+                const targetLink = fs.readlinkSync(probe);
+                if (path.isAbsolute(targetLink)) {
+                  root = path.parse(targetLink).root;
+                  curSegs = [];
+                  queue = [...targetLink.slice(root.length).split(/[\\/]+/).filter(Boolean), ...queue];
+                } else {
+                  queue = [...targetLink.split(/[\\/]+/).filter(Boolean), ...queue];
+                }
+                continue;
+              }
+              if (lst) {
+                const cp = fs.realpathSync(probe);
+                root = path.parse(cp).root;
+                curSegs = cp.slice(root.length).split(/[\\/]+/).filter(Boolean);
+              } else {
+                curSegs.push(seg);
+              }
+            }
+            return curSegs.length > 0 ? path.join(root, ...curSegs) : root;
+          };
+          const assertNotSymlink = (p, label) => {
+            try {
+              const st = fs.lstatSync(p);
+              if (st.isSymbolicLink()) {
+                console.error(`ERROR: Refusing to overwrite symlinked ${label}: ${p}`);
+                process.exit(2);
+              }
+            } catch {}
+          };
+          const assertAncestorsValid = (resolvedAbs, label) => {
+            const relDir = path.relative(repoRoot, path.dirname(resolvedAbs));
+            if (!relDir || relDir === ".") return;
+            const segs = relDir.split(path.sep).filter(Boolean);
+            let cur = repoRoot;
+            for (const s of segs) {
+              cur = path.join(cur, s);
+              try {
+                const st = fs.lstatSync(cur);
+                if (st.isSymbolicLink()) {
+                  console.error(`ERROR: Parent directory of '\''${label}'\'' is a symlink: ${cur}`);
+                  process.exit(2);
+                }
+                if (!fs.statSync(cur).isDirectory()) {
+                  console.error(`ERROR: Parent path of '\''${label}'\'' exists and is not a directory: ${cur}`);
+                  process.exit(2);
+                }
+              } catch {}
+            }
+          };
+
+          if (rawVer && rawVer !== "bundled" && !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(rawVer)) {
+            console.error(`ERROR: Input '\''dsaf-version'\'' (${rawVer}) must be '\''bundled'\'' or a valid npm version/dist-tag.`);
+            process.exit(2);
           }
-          process.stdout.write(JSON.stringify([cliTarget, cliScope]));
+          if (!rawOutDir) {
+            console.error("ERROR: Input '\''out-dir'\'' must be a non-empty path.");
+            process.exit(2);
+          }
+          assertRawPathNoSymlinks(rawOutDir, "out-dir");
+          const resolvedOutDir = resolveNoCollapse(repoRoot, rawOutDir, "out-dir");
+          if (!isWithin(repoRoot, resolvedOutDir)) {
+            console.error(`ERROR: Input '\''out-dir'\'' (${rawOutDir}) escapes repository root.`);
+            process.exit(2);
+          }
+          assertAncestorsValid(resolvedOutDir, "out-dir");
+          assertNotSymlink(resolvedOutDir, "out-dir");
+          assertNotSymlink(path.resolve(repoRoot, rawOutDir), "out-dir");
+          if (fs.existsSync(resolvedOutDir) && !fs.statSync(resolvedOutDir).isDirectory()) {
+            console.error(`ERROR: Input '\''out-dir'\'' exists and is not a directory: ${rawOutDir}`);
+            process.exit(2);
+          }
+          const canonOutRel = path.relative(repoRoot, resolvedOutDir).replace(/\\/g, "/") || ".";
+
+          const realTarget = resolveNoCollapse(repoRoot, rawTarget, "target");
+          if (!isWithin(repoRoot, realTarget)) {
+            console.error(`ERROR: Input '\''target'\'' (${rawTarget}) escapes repository root.`);
+            process.exit(2);
+          }
+          if (!fs.existsSync(realTarget)) {
+            console.error(`ERROR: Input '\''target'\'' not found: ${rawTarget}`);
+            process.exit(2);
+          }
+          if (!fs.statSync(realTarget).isDirectory()) {
+            console.error(`ERROR: Input '\''target'\'' must be a directory; got file '\''${rawTarget}'\''.`);
+            process.exit(2);
+          }
+          const relTarget = path.relative(repoRoot, realTarget).replace(/\\/g, "/");
+          let cliScope = rawScope;
+          if (rawScope) {
+            const effScope = resolveNoCollapse(realTarget, rawScope, "scope");
+            if (!isWithin(realTarget, effScope)) {
+              console.error(`ERROR: Input '\''scope'\'' (${rawScope}) escapes target '\''${rawTarget}'\''.`);
+              process.exit(2);
+            }
+            if (!fs.existsSync(effScope) || !fs.statSync(effScope).isDirectory()) {
+              console.error(`ERROR: Input '\''scope'\'' directory not found: ${rawScope}`);
+              process.exit(2);
+            }
+            cliScope = path.relative(repoRoot, effScope).replace(/\\/g, "/") || relTarget;
+          } else if (relTarget !== "" && !relTarget.startsWith("..")) {
+            cliScope = relTarget;
+          }
+
+          const OUT_RESERVED = [
+            "audit-summary.json",
+            "audit-summary.md",
+            "recon.json",
+            "tokens.json",
+            "runtime.json",
+            "figma-diff.json",
+            "figma-diff.md",
+            "audit-diff.md",
+            ...(process.env.DSAF_RUN_DOCTOR === "true" ? ["doctor.json"] : []),
+          ];
+
+          let canonSarifRel = "";
+          let directSarif = null;
+          if (rawSarif) {
+            assertRawPathNoSymlinks(rawSarif, "sarif-file");
+            directSarif = resolveNoCollapse(repoRoot, rawSarif, "sarif-file");
+            if (!isWithin(repoRoot, directSarif)) {
+              console.error(`ERROR: Input '\''sarif-file'\'' (${rawSarif}) escapes repository root.`);
+              process.exit(2);
+            }
+            assertAncestorsValid(directSarif, "sarif-file");
+            assertNotSymlink(directSarif, "sarif-file");
+            assertNotSymlink(path.resolve(repoRoot, rawSarif), "sarif-file");
+            if (fs.existsSync(directSarif) && !fs.statSync(directSarif).isFile()) {
+              console.error(`ERROR: Input '\''sarif-file'\'' exists and is not a file: ${rawSarif}`);
+              process.exit(2);
+            }
+            if (norm(directSarif) === norm(resolvedOutDir) || isWithin(directSarif, resolvedOutDir)) {
+              console.error(`ERROR: Input '\''sarif-file'\'' (${rawSarif}) collides with audit output directory.`);
+              process.exit(2);
+            }
+            for (const fname of OUT_RESERVED) {
+              const p = path.join(resolvedOutDir, fname);
+              if (norm(directSarif) === norm(p) || isWithin(p, directSarif) || isWithin(directSarif, p)) {
+                console.error(`ERROR: Input '\''sarif-file'\'' (${rawSarif}) collides with reserved output path '\''${fname}'\''.`);
+                process.exit(2);
+              }
+            }
+            canonSarifRel = path.relative(repoRoot, directSarif).replace(/\\/g, "/");
+          }
+
+          for (const fname of OUT_RESERVED) {
+            const p = path.join(resolvedOutDir, fname);
+            assertNotSymlink(p, fname);
+            if (fs.existsSync(p) && !fs.statSync(p).isFile()) {
+              console.error(`ERROR: Output target is not a file: ${p}`);
+              process.exit(2);
+            }
+          }
+
+          if (fs.existsSync(resolvedOutDir)) {
+            for (const fname of OUT_RESERVED) {
+              const p = path.join(resolvedOutDir, fname);
+              if (fs.existsSync(p)) fs.unlinkSync(p);
+            }
+          }
+          if (directSarif && fs.existsSync(directSarif)) {
+            fs.unlinkSync(directSarif);
+          }
+          process.stdout.write(JSON.stringify([".", cliScope, canonOutRel, canonSarifRel]));
         ')
-        SCOPE_PARSE_EXIT=$?
-        if [ "$SCOPE_PARSE_EXIT" -eq 0 ]; then
-          EFFECTIVE_TARGET=$(node -e 'process.stdout.write(JSON.parse(process.argv[1])[0])' "$SCOPE_JSON")
-          EFFECTIVE_SCOPE=$(node -e 'process.stdout.write(JSON.parse(process.argv[1])[1])' "$SCOPE_JSON")
-          ARGS=(audit "$EFFECTIVE_TARGET" --out "$DSAF_OUT_DIR" --github --report-unused-ignores)
-          if [ -n "$DSAF_SARIF_FILE" ]; then
-            rm -f "$DSAF_SARIF_FILE"
-            if [[ "$DSAF_SARIF_FILE" != /* ]]; then
-              rm -f "${DSAF_OUT_DIR}/${DSAF_SARIF_FILE}"
-            fi
-            ARGS+=(--sarif "$DSAF_SARIF_FILE")
+        PREP_EXIT=$?
+        if [ "$PREP_EXIT" -eq 0 ]; then
+          EFFECTIVE_TARGET=$(node -e 'process.stdout.write(JSON.parse(process.argv[1])[0])' "$PREP_JSON")
+          EFFECTIVE_SCOPE=$(node -e 'process.stdout.write(JSON.parse(process.argv[1])[1])' "$PREP_JSON")
+          EFFECTIVE_OUT_DIR=$(node -e 'process.stdout.write(JSON.parse(process.argv[1])[2])' "$PREP_JSON")
+          EFFECTIVE_SARIF=$(node -e 'process.stdout.write(JSON.parse(process.argv[1])[3])' "$PREP_JSON")
+          SUMMARY_JSON="${EFFECTIVE_OUT_DIR}/audit-summary.json"
+          SUMMARY_MD="${EFFECTIVE_OUT_DIR}/audit-summary.md"
+          ARGS=(audit "$EFFECTIVE_TARGET" --out "$EFFECTIVE_OUT_DIR" --github --report-unused-ignores)
+          if [ -n "$EFFECTIVE_SARIF" ]; then
+            ARGS+=(--sarif "$EFFECTIVE_SARIF")
           fi
           if [ -n "$EFFECTIVE_SCOPE" ]; then
             ARGS+=(--scope "$EFFECTIVE_SCOPE")
           fi
+          DSAF_VER_TRIMMED=$(printf '%s' "$DSAF_VERSION" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
           CLI_CMD=()
           if [ -n "${DSAF_CLI_BIN:-}" ] && [ -f "${DSAF_CLI_BIN}" ]; then
             CLI_CMD=(node "$DSAF_CLI_BIN")
-          elif [ "$DSAF_VERSION" = "bundled" ] || [ -z "$DSAF_VERSION" ]; then
+          elif [ "$DSAF_VER_TRIMMED" = "bundled" ] || [ -z "$DSAF_VER_TRIMMED" ]; then
             CLI_CMD=(node "${DSAF_ACTION_PATH}/bin/dsaf.mjs")
           else
-            CLI_CMD=(npx --yes "@zintaen/dsaf@${DSAF_VERSION}")
+            CLI_CMD=(npx --yes "@zintaen/dsaf@${DSAF_VER_TRIMMED}")
           fi
           "${CLI_CMD[@]}" "${ARGS[@]}"
           AUDIT_EXIT=$?
         else
-          AUDIT_EXIT=$SCOPE_PARSE_EXIT
+          AUDIT_EXIT=$PREP_EXIT
+          EFFECTIVE_OUT_DIR=""
+          EFFECTIVE_SARIF=""
+          SUMMARY_JSON=""
+          SUMMARY_MD=""
         fi
         set -e
 
         SARIF_PATH=""
         SARIF_EXISTS="false"
-        if [ -n "$DSAF_SARIF_FILE" ]; then
-          if [ -f "$DSAF_SARIF_FILE" ]; then
-            SARIF_PATH="$DSAF_SARIF_FILE"
-            SARIF_EXISTS="true"
-          elif [[ "$DSAF_SARIF_FILE" != /* ]] && [ -f "${DSAF_OUT_DIR}/${DSAF_SARIF_FILE}" ]; then
-            SARIF_PATH="${DSAF_OUT_DIR}/${DSAF_SARIF_FILE}"
-            SARIF_EXISTS="true"
-          fi
+        if [ -n "$EFFECTIVE_SARIF" ] && [ -f "$EFFECTIVE_SARIF" ]; then
+          SARIF_PATH="$EFFECTIVE_SARIF"
+          SARIF_EXISTS="true"
         fi
 
         UPDATE_NOTICE=""
@@ -191,25 +408,32 @@ runs:
           fi
         fi
 
-        echo "audit-exit=${AUDIT_EXIT}" >> "$GITHUB_OUTPUT"
-        echo "summary-json=${SUMMARY_JSON}" >> "$GITHUB_OUTPUT"
-        echo "summary-md=${SUMMARY_MD}" >> "$GITHUB_OUTPUT"
-        echo "sarif-path=${SARIF_PATH}" >> "$GITHUB_OUTPUT"
-        echo "sarif-exists=${SARIF_EXISTS}" >> "$GITHUB_OUTPUT"
-        echo "update-notice=${UPDATE_NOTICE}" >> "$GITHUB_OUTPUT"
-
-        node - "$SUMMARY_JSON" "$GITHUB_OUTPUT" <<'EOF'
+        OUT_AUDIT_EXIT="$AUDIT_EXIT" OUT_SUMMARY_JSON="$SUMMARY_JSON" OUT_SUMMARY_MD="$SUMMARY_MD" OUT_SARIF_PATH="$SARIF_PATH" OUT_SARIF_EXISTS="$SARIF_EXISTS" OUT_UPDATE_NOTICE="$UPDATE_NOTICE" node - "$GITHUB_OUTPUT" <<'EOF'
         const fs = require("node:fs");
-        const [summaryPath, outPath] = process.argv.slice(2);
+        const crypto = require("node:crypto");
+        const [outPath] = process.argv.slice(2);
+        const summaryPath = process.env.OUT_SUMMARY_JSON || "";
         let floor = 0;
         let reflex = 0;
-        if (fs.existsSync(summaryPath)) {
+        if (summaryPath && fs.existsSync(summaryPath)) {
           const data = JSON.parse(fs.readFileSync(summaryPath, "utf8"));
           const counts = data.ciGate || data.ci?.counts || data.tokens?.ciFindings?.counts || {};
           floor = Number(counts.floor || 0);
           reflex = Number(counts.reflex || 0);
         }
-        fs.appendFileSync(outPath, `floor-count=${floor}\nreflex-count=${reflex}\n`);
+        const pairs = [
+          ["audit-exit", process.env.OUT_AUDIT_EXIT ?? ""],
+          ["summary-json", summaryPath],
+          ["summary-md", process.env.OUT_SUMMARY_MD ?? ""],
+          ["sarif-path", process.env.OUT_SARIF_PATH ?? ""],
+          ["sarif-exists", process.env.OUT_SARIF_EXISTS ?? "false"],
+          ["update-notice", process.env.OUT_UPDATE_NOTICE ?? ""],
+          ["floor-count", String(floor)],
+          ["reflex-count", String(reflex)],
+        ];
+        const delim = `DSAF_EOF_${crypto.randomBytes(12).toString("hex")}`;
+        const chunk = pairs.map(([k, v]) => `${k}<<${delim}\n${String(v).replaceAll(delim, "")}\n${delim}\n`).join("");
+        fs.appendFileSync(outPath, chunk);
         EOF
         if [ "$AUDIT_EXIT" -ge 2 ] || { [ "$AUDIT_EXIT" -ne 0 ] && [ ! -f "$SUMMARY_JSON" ]; }; then
           echo "::error::DSAF audit failed with fatal error (audit-exit=${AUDIT_EXIT}, summary missing or config error)."
@@ -224,72 +448,261 @@ runs:
         DSAF_TARGET: ${{ inputs.target }}
         DSAF_SCOPE: ${{ inputs.scope }}
         DSAF_OUT_DIR: ${{ inputs.out-dir }}
+        DSAF_SARIF_FILE: ${{ inputs.sarif-file }}
         DSAF_VERSION: ${{ inputs.dsaf-version }}
         DSAF_ACTION_PATH: ${{ github.action_path }}
       run: |
         set +e
-        mkdir -p "$DSAF_OUT_DIR"
-        DOCTOR_JSON="${DSAF_OUT_DIR}/doctor.json"
-        rm -f "$DOCTOR_JSON"
-        DOC_SCOPE_JSON=$(node -e '
+        DOC_PREP_JSON=$(node -e '
           const fs = require("node:fs");
           const path = require("node:path");
           const repoRoot = fs.realpathSync(process.cwd());
+          const cwdAbs = path.resolve(process.cwd());
           const rawTarget = (process.env.DSAF_TARGET || ".").trim() || ".";
           const rawScope = (process.env.DSAF_SCOPE || "").trim();
-          const norm = (p) => (process.platform === "darwin" || process.platform === "win32" ? p.toLowerCase() : p);
+          const rawOutDir = (process.env.DSAF_OUT_DIR || "").trim();
+          const rawSarif = (process.env.DSAF_SARIF_FILE || "").trim();
+          const rawVer = (process.env.DSAF_VERSION || "").trim();
+          const ci = process.platform === "darwin" || process.platform === "win32";
+          const norm = (p) => (ci ? p.toLowerCase() : p);
           const isWithin = (root, child) => {
             const r = path.relative(norm(root), norm(child));
             return r === "" || (r !== ".." && !r.startsWith(".." + path.sep) && !path.isAbsolute(r));
           };
-          const absTarget = path.resolve(repoRoot, rawTarget);
-          let cliTarget = rawTarget;
-          let cliScope = rawScope;
-          if (fs.existsSync(absTarget) && fs.statSync(absTarget).isDirectory()) {
-            const realTarget = fs.realpathSync(absTarget);
-            const relTarget = path.relative(repoRoot, realTarget).replace(/\\/g, "/");
-            if (isWithin(repoRoot, realTarget) && relTarget !== "" && !relTarget.startsWith("..")) {
-              cliTarget = ".";
-              if (rawScope) {
-                const absScope = path.resolve(realTarget, rawScope);
-                if (!isWithin(realTarget, absScope)) {
-                  console.error(`ERROR: Input '\''scope'\'' ('\''${rawScope}'\'') escapes target '\''${rawTarget}'\''.`);
-                  process.exit(2);
-                }
-                const effScope = fs.existsSync(absScope) ? fs.realpathSync(absScope) : absScope;
-                if (!isWithin(realTarget, effScope)) {
-                  console.error(`ERROR: Resolved input '\''scope'\'' ('\''${rawScope}'\'') escapes target '\''${rawTarget}'\'' via symlink.`);
-                  process.exit(2);
-                }
-                cliScope = path.relative(repoRoot, effScope).replace(/\\/g, "/") || relTarget;
+          const assertRawPathNoSymlinks = (rawSpec, label) => {
+            let relRaw = rawSpec;
+            if (path.isAbsolute(rawSpec)) {
+              const lexAbs = path.resolve(rawSpec);
+              if (isWithin(repoRoot, lexAbs)) {
+                relRaw = path.relative(repoRoot, lexAbs);
+              } else if (isWithin(cwdAbs, lexAbs)) {
+                relRaw = path.relative(cwdAbs, lexAbs);
               } else {
-                cliScope = relTarget;
+                console.error(`ERROR: Input '\''${label}'\'' (${rawSpec}) escapes repository root.`);
+                process.exit(2);
+              }
+            } else {
+              const lexAbs = path.resolve(repoRoot, rawSpec);
+              if (!isWithin(repoRoot, lexAbs)) {
+                console.error(`ERROR: Input '\''${label}'\'' (${rawSpec}) escapes repository root.`);
+                process.exit(2);
               }
             }
+            const segs = String(relRaw).split(/[\\/]+/).filter(Boolean);
+            let cur = repoRoot;
+            for (let idx = 0; idx < segs.length; idx++) {
+              const s = segs[idx];
+              if (s === ".") continue;
+              if (s === "..") {
+                if (norm(cur) === norm(repoRoot)) {
+                  console.error(`ERROR: Input '\''${label}'\'' (${rawSpec}) escapes repository root.`);
+                  process.exit(2);
+                }
+                cur = path.dirname(cur);
+                continue;
+              }
+              cur = path.join(cur, s);
+              let st = null;
+              try { st = fs.lstatSync(cur); } catch {}
+              if (st && st.isSymbolicLink()) {
+                console.error(`ERROR: Input '\''${label}'\'' traverses symlink: ${cur}`);
+                process.exit(2);
+              }
+              if (idx < segs.length - 1 && st && !st.isDirectory()) {
+                console.error(`ERROR: Parent path of '\''${label}'\'' exists and is not a directory: ${cur}`);
+                process.exit(2);
+              }
+            }
+          };
+          const resolveNoCollapse = (baseDir, rawSpec, label) => {
+            let root, curSegs, queue;
+            if (path.isAbsolute(rawSpec)) {
+              root = path.parse(rawSpec).root;
+              curSegs = [];
+              queue = rawSpec.slice(root.length).split(/[\\/]+/).filter(Boolean);
+            } else {
+              const absBase = path.isAbsolute(baseDir) ? baseDir : path.resolve(baseDir);
+              root = path.parse(absBase).root;
+              curSegs = [];
+              queue = [
+                ...absBase.slice(root.length).split(/[\\/]+/).filter(Boolean),
+                ...rawSpec.split(/[\\/]+/).filter(Boolean),
+              ];
+            }
+            let hops = 0;
+            while (queue.length > 0) {
+              const seg = queue.shift();
+              if (!seg || seg === ".") continue;
+              if (seg === "..") {
+                if (curSegs.length > 0) curSegs.pop();
+                continue;
+              }
+              const probe = curSegs.length > 0 ? path.join(root, ...curSegs, seg) : path.join(root, seg);
+              let lst = null;
+              try { lst = fs.lstatSync(probe); } catch {}
+              if (lst && lst.isSymbolicLink()) {
+                hops++;
+                if (hops > 40) {
+                  console.error(`ERROR: Too many symbolic link hops resolving ${label}: ${rawSpec}`);
+                  process.exit(2);
+                }
+                const targetLink = fs.readlinkSync(probe);
+                if (path.isAbsolute(targetLink)) {
+                  root = path.parse(targetLink).root;
+                  curSegs = [];
+                  queue = [...targetLink.slice(root.length).split(/[\\/]+/).filter(Boolean), ...queue];
+                } else {
+                  queue = [...targetLink.split(/[\\/]+/).filter(Boolean), ...queue];
+                }
+                continue;
+              }
+              if (lst) {
+                const cp = fs.realpathSync(probe);
+                root = path.parse(cp).root;
+                curSegs = cp.slice(root.length).split(/[\\/]+/).filter(Boolean);
+              } else {
+                curSegs.push(seg);
+              }
+            }
+            return curSegs.length > 0 ? path.join(root, ...curSegs) : root;
+          };
+          const assertNotSymlink = (p, label) => {
+            try {
+              const st = fs.lstatSync(p);
+              if (st.isSymbolicLink()) {
+                console.error(`ERROR: Refusing to overwrite symlinked ${label}: ${p}`);
+                process.exit(2);
+              }
+            } catch {}
+          };
+          const assertAncestorsValid = (resolvedAbs, label) => {
+            const relDir = path.relative(repoRoot, path.dirname(resolvedAbs));
+            if (!relDir || relDir === ".") return;
+            const segs = relDir.split(path.sep).filter(Boolean);
+            let cur = repoRoot;
+            for (const s of segs) {
+              cur = path.join(cur, s);
+              try {
+                const st = fs.lstatSync(cur);
+                if (st.isSymbolicLink()) {
+                  console.error(`ERROR: Parent directory of '\''${label}'\'' is a symlink: ${cur}`);
+                  process.exit(2);
+                }
+                if (!fs.statSync(cur).isDirectory()) {
+                  console.error(`ERROR: Parent path of '\''${label}'\'' exists and is not a directory: ${cur}`);
+                  process.exit(2);
+                }
+              } catch {}
+            }
+          };
+
+          if (rawVer && rawVer !== "bundled" && !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(rawVer)) {
+            console.error(`ERROR: Input '\''dsaf-version'\'' (${rawVer}) must be '\''bundled'\'' or a valid npm version/dist-tag.`);
+            process.exit(2);
           }
-          process.stdout.write(JSON.stringify([cliTarget, cliScope]));
+          if (!rawOutDir) {
+            console.error("ERROR: Input '\''out-dir'\'' must be a non-empty path.");
+            process.exit(2);
+          }
+          assertRawPathNoSymlinks(rawOutDir, "out-dir");
+          const resolvedOutDir = resolveNoCollapse(repoRoot, rawOutDir, "out-dir");
+          if (!isWithin(repoRoot, resolvedOutDir)) {
+            console.error(`ERROR: Input '\''out-dir'\'' (${rawOutDir}) escapes repository root.`);
+            process.exit(2);
+          }
+          assertAncestorsValid(resolvedOutDir, "out-dir");
+          assertNotSymlink(resolvedOutDir, "out-dir");
+          assertNotSymlink(path.resolve(repoRoot, rawOutDir), "out-dir");
+          if (fs.existsSync(resolvedOutDir) && !fs.statSync(resolvedOutDir).isDirectory()) {
+            console.error(`ERROR: Input '\''out-dir'\'' exists and is not a directory: ${rawOutDir}`);
+            process.exit(2);
+          }
+          const canonOutRel = path.relative(repoRoot, resolvedOutDir).replace(/\\/g, "/") || ".";
+
+          const realTarget = resolveNoCollapse(repoRoot, rawTarget, "target");
+          if (!isWithin(repoRoot, realTarget)) {
+            console.error(`ERROR: Input '\''target'\'' (${rawTarget}) escapes repository root.`);
+            process.exit(2);
+          }
+          if (!fs.existsSync(realTarget)) {
+            console.error(`ERROR: Input '\''target'\'' not found: ${rawTarget}`);
+            process.exit(2);
+          }
+          if (!fs.statSync(realTarget).isDirectory()) {
+            console.error(`ERROR: Input '\''target'\'' must be a directory; got file '\''${rawTarget}'\''.`);
+            process.exit(2);
+          }
+          const relTarget = path.relative(repoRoot, realTarget).replace(/\\/g, "/");
+          let cliScope = rawScope;
+          if (rawScope) {
+            const effScope = resolveNoCollapse(realTarget, rawScope, "scope");
+            if (!isWithin(realTarget, effScope)) {
+              console.error(`ERROR: Input '\''scope'\'' (${rawScope}) escapes target '\''${rawTarget}'\''.`);
+              process.exit(2);
+            }
+            if (!fs.existsSync(effScope) || !fs.statSync(effScope).isDirectory()) {
+              console.error(`ERROR: Input '\''scope'\'' directory not found: ${rawScope}`);
+              process.exit(2);
+            }
+            cliScope = path.relative(repoRoot, effScope).replace(/\\/g, "/") || relTarget;
+          } else if (relTarget !== "" && !relTarget.startsWith("..")) {
+            cliScope = relTarget;
+          }
+
+          const docFile = path.join(resolvedOutDir, "doctor.json");
+          assertNotSymlink(docFile, "doctor.json");
+          if (fs.existsSync(docFile) && !fs.statSync(docFile).isFile()) {
+            console.error(`ERROR: Output target is not a file: ${docFile}`);
+            process.exit(2);
+          }
+          if (rawSarif) {
+            assertRawPathNoSymlinks(rawSarif, "sarif-file");
+            const directSarif = resolveNoCollapse(repoRoot, rawSarif, "sarif-file");
+            if (!isWithin(repoRoot, directSarif)) {
+              console.error(`ERROR: Input '\''sarif-file'\'' (${rawSarif}) escapes repository root.`);
+              process.exit(2);
+            }
+            if (norm(docFile) === norm(directSarif) || isWithin(docFile, directSarif) || isWithin(directSarif, docFile)) {
+              console.error(`ERROR: Input '\''sarif-file'\'' (${rawSarif}) collides with doctor output path '\''doctor.json'\''.`);
+              process.exit(2);
+            }
+          }
+
+          if (fs.existsSync(resolvedOutDir) && fs.existsSync(docFile)) fs.unlinkSync(docFile);
+          const docOutRel = canonOutRel === "." ? "doctor.json" : `${canonOutRel}/doctor.json`;
+          process.stdout.write(JSON.stringify([".", cliScope, docOutRel]));
         ')
-        DOC_SCOPE_EXIT=$?
-        if [ "$DOC_SCOPE_EXIT" -eq 0 ]; then
-          DOC_EFFECTIVE_TARGET=$(node -e 'process.stdout.write(JSON.parse(process.argv[1])[0])' "$DOC_SCOPE_JSON")
-          DOC_EFFECTIVE_SCOPE=$(node -e 'process.stdout.write(JSON.parse(process.argv[1])[1])' "$DOC_SCOPE_JSON")
+        DOC_PREP_EXIT=$?
+        if [ "$DOC_PREP_EXIT" -eq 0 ]; then
+          DOC_EFFECTIVE_TARGET=$(node -e 'process.stdout.write(JSON.parse(process.argv[1])[0])' "$DOC_PREP_JSON")
+          DOC_EFFECTIVE_SCOPE=$(node -e 'process.stdout.write(JSON.parse(process.argv[1])[1])' "$DOC_PREP_JSON")
+          DOCTOR_JSON=$(node -e 'process.stdout.write(JSON.parse(process.argv[1])[2])' "$DOC_PREP_JSON")
           DOCTOR_ARGS=(doctor "$DOC_EFFECTIVE_TARGET" --out "$DOCTOR_JSON")
           if [ -n "$DOC_EFFECTIVE_SCOPE" ]; then
             DOCTOR_ARGS+=(--scope "$DOC_EFFECTIVE_SCOPE")
           fi
+          DSAF_VER_TRIMMED=$(printf '%s' "$DSAF_VERSION" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
           if [ -n "${DSAF_CLI_BIN:-}" ] && [ -f "${DSAF_CLI_BIN}" ]; then
             node "$DSAF_CLI_BIN" "${DOCTOR_ARGS[@]}"
-          elif [ "$DSAF_VERSION" = "bundled" ] || [ -z "$DSAF_VERSION" ]; then
+          elif [ "$DSAF_VER_TRIMMED" = "bundled" ] || [ -z "$DSAF_VER_TRIMMED" ]; then
             node "${DSAF_ACTION_PATH}/bin/dsaf.mjs" "${DOCTOR_ARGS[@]}"
           else
-            npx --yes "@zintaen/dsaf@${DSAF_VERSION}" "${DOCTOR_ARGS[@]}"
+            npx --yes "@zintaen/dsaf@${DSAF_VER_TRIMMED}" "${DOCTOR_ARGS[@]}"
           fi
           DOCTOR_EXIT=$?
         else
-          DOCTOR_EXIT=$DOC_SCOPE_EXIT
+          DOCTOR_EXIT=$DOC_PREP_EXIT
+          DOCTOR_JSON=""
         fi
         set -e
-        echo "doctor-exit=${DOCTOR_EXIT}" >> "$GITHUB_OUTPUT"
+        OUT_DOC_EXIT="$DOCTOR_EXIT" node - "$GITHUB_OUTPUT" <<'EOF'
+        const fs = require("node:fs");
+        const crypto = require("node:crypto");
+        const [outPath] = process.argv.slice(2);
+        const delim = `DSAF_EOF_${crypto.randomBytes(12).toString("hex")}`;
+        const v = String(process.env.OUT_DOC_EXIT ?? "").replaceAll(delim, "");
+        fs.appendFileSync(outPath, `doctor-exit<<${delim}\n${v}\n${delim}\n`);
+        EOF
         if [ "$DOCTOR_EXIT" -ge 2 ] || { [ "$DOCTOR_EXIT" -ne 0 ] && [ ! -f "$DOCTOR_JSON" ]; }; then
           echo "::error::DSAF doctor failed with fatal error (doctor-exit=${DOCTOR_EXIT}, doctor.json missing or config error)."
           exit "$DOCTOR_EXIT"
@@ -301,7 +714,7 @@ runs:
     - name: Upload SARIF 2.1.0 to GitHub Code Scanning
       if: inputs.upload-sarif == 'true' && steps.audit.outputs.sarif-exists == 'true'
       continue-on-error: true
-      uses: github/codeql-action/upload-sarif@v4
+      uses: github/codeql-action/upload-sarif@915412ff23e8b7659517e607487dbeae018f2934 # v4
       with:
         sarif_file: ${{ steps.audit.outputs.sarif-path }}
         category: dsaf-audit
@@ -309,7 +722,7 @@ runs:
     - name: Post Sticky Pull Request Summary
       if: github.event_name == 'pull_request' && inputs.comment-pr == 'true'
       continue-on-error: true
-      uses: actions/github-script@v9
+      uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
       env:
         SUMMARY_MD: ${{ steps.audit.outputs.summary-md }}
         FLOOR_COUNT: ${{ steps.audit.outputs.floor-count }}
@@ -328,7 +741,9 @@ runs:
           const { owner, repo } = context.repo;
           const issue_number = context.issue.number;
           const comments = await github.paginate(github.rest.issues.listComments, { owner, repo, issue_number });
-          const existing = comments.find((c) => (c.body || "").includes(marker));
+          const existing = comments.find(
+            (c) => c.user?.type === "Bot" && c.user?.login === "github-actions[bot]" && (c.body || "").includes(marker)
+          );
           if (existing) {
             await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
           } else {

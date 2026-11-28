@@ -91,8 +91,23 @@ function isDsafReportJson(absPath) {
   }
 }
 
+function safeRealpath(p) {
+  try {
+    return (realpathSync.native || realpathSync)(p);
+  } catch {
+    return resolve(p);
+  }
+}
+
 function findTokenFiles(root, maxDirs = 10_000, maxMatches = 500) {
   const matches = [];
+  const rootReal = safeRealpath(root);
+  const ciFs = process.platform === "darwin" || process.platform === "win32";
+  const isWithinRoot = (candidateReal) => {
+    const r = relative(ciFs ? rootReal.toLowerCase() : rootReal, ciFs ? candidateReal.toLowerCase() : candidateReal);
+    return r === "" || (!r.startsWith("..") && !isAbsolute(r));
+  };
+  const seenDirs = new Set([ciFs ? rootReal.toLowerCase() : rootReal]);
   const queue = [root];
   let visitedDirs = 0;
   while (queue.length > 0 && visitedDirs < maxDirs && matches.length < maxMatches) {
@@ -107,14 +122,33 @@ function findTokenFiles(root, maxDirs = 10_000, maxMatches = 500) {
     for (const e of entries) {
       if (matches.length >= maxMatches) break;
       if (SKIP_DIRS.has(e.name)) continue;
-      if (e.isDirectory() && e.name.startsWith(".") && ![".claude", ".cursor", ".codex", ".github", ".dsaf-guardrails"].includes(e.name)) {
+      const full = join(dir, e.name);
+      let isDir = e.isDirectory();
+      let isFile = e.isFile();
+      let dirReal = null;
+      if (e.isSymbolicLink()) {
+        try {
+          const targetReal = (realpathSync.native || realpathSync)(full);
+          if (!isWithinRoot(targetReal)) continue;
+          const st = statSync(full);
+          isDir = st.isDirectory();
+          isFile = st.isFile();
+          if (isDir) dirReal = targetReal;
+        } catch {
+          continue;
+        }
+      }
+      if (isDir && e.name.startsWith(".") && ![".claude", ".cursor", ".codex", ".github", ".dsaf-guardrails"].includes(e.name)) {
         continue;
       }
-      const full = join(dir, e.name);
       const rel = relative(root, full).replace(/\\/g, "/");
       if (/(^|\/)(?:ios\/App\/App\/public|android\/app\/src\/main\/assets\/public)\//i.test(rel)) continue;
-      if (e.isDirectory()) queue.push(full);
-      else if (e.isFile() && isTokenFileRel(rel)) {
+      if (isDir) {
+        const realKey = ciFs ? (dirReal || safeRealpath(full)).toLowerCase() : (dirReal || safeRealpath(full));
+        if (!isWithinRoot(dirReal || safeRealpath(full)) || seenDirs.has(realKey)) continue;
+        seenDirs.add(realKey);
+        queue.push(full);
+      } else if (isFile && isTokenFileRel(rel)) {
         if (/\.json$/i.test(rel)) {
           if (isDsafReportJson(full)) continue;
           try {
@@ -190,9 +224,16 @@ export function runDoctor(targetDir = ".", options = {}) {
   const currentVersion = options.version || DOCTOR_VERSION;
   const checks = [];
 
+  const rootReal = safeRealpath(root);
+  const ciFs = process.platform === "darwin" || process.platform === "win32";
+  const isWithinRoot = (candidateReal) => {
+    const r = relative(ciFs ? rootReal.toLowerCase() : rootReal, ciFs ? candidateReal.toLowerCase() : candidateReal);
+    return r === "" || (!r.startsWith("..") && !isAbsolute(r));
+  };
+
   const isRegularFile = (p) => {
     try {
-      return existsSync(p) && statSync(p).isFile();
+      return existsSync(p) && statSync(p).isFile() && isWithinRoot(safeRealpath(p));
     } catch {
       return false;
     }
@@ -308,11 +349,12 @@ export function runDoctor(targetDir = ".", options = {}) {
   const wfDir = join(root, ".github", "workflows");
   let wfFiles = [];
   try {
-    if (existsSync(wfDir) && statSync(wfDir).isDirectory()) {
+    if (existsSync(wfDir) && statSync(wfDir).isDirectory() && isWithinRoot(safeRealpath(wfDir))) {
       wfFiles = readdirSync(wfDir)
         .filter((name) => /\.(ya?ml)$/i.test(name))
         .sort()
-        .map((name) => `.github/workflows/${name}`);
+        .map((name) => `.github/workflows/${name}`)
+        .filter((wf) => isRegularFile(join(root, wf)));
     }
   } catch {}
   const dsafWorkflow = wfFiles.find((wf) => {
@@ -937,6 +979,60 @@ function runSelfTest() {
       "WARN",
       "R36 A1-M2: non-design JSON config files must not be misclassified as design-token files"
     );
+
+    // Round 42 (R41-A1-L2): symlinked in-repo token dirs & files must be discovered with cycle & escape guards
+    const r42SymRoot = join(scratch, "r42-sym-tokens");
+    const r42ExtSecret = join(scratch, "r42-ext-tokens");
+    mkdirSync(join(r42SymRoot, "shared"), { recursive: true });
+    mkdirSync(join(r42SymRoot, "styles"), { recursive: true });
+    mkdirSync(r42ExtSecret, { recursive: true });
+    writeFileSync(join(r42SymRoot, "shared/design-tokens.json"), JSON.stringify({ color: { brand: { $type: "color", $value: "#1d4ed8" } } }));
+    writeFileSync(join(r42SymRoot, "shared/vars.css"), ":root { --ink: #111111; }\n");
+    writeFileSync(join(r42ExtSecret, "tokens.json"), JSON.stringify({ color: { bad: { $type: "color", $value: "#ff0000" } } }));
+    symlinkSync(join(r42SymRoot, "shared"), join(r42SymRoot, "linked-dir"));
+    symlinkSync(join(r42SymRoot, "shared/vars.css"), join(r42SymRoot, "styles/tokens.css"));
+    symlinkSync(r42SymRoot, join(r42SymRoot, "styles/loop-parent"));
+    symlinkSync(join(r42ExtSecret, "tokens.json"), join(r42SymRoot, "styles/design-tokens.json"));
+    const r42SymToks = findTokenFiles(r42SymRoot);
+    assert.ok(r42SymToks.includes("linked-dir/design-tokens.json"), "R42 A1-L2: symlinked token dir must be traversed");
+    assert.ok(r42SymToks.includes("styles/tokens.css"), "R42 A1-L2: symlinked CSS token file must be detected");
+    assert.equal(r42SymToks.includes("styles/design-tokens.json"), false, "R42 A1-L2: external symlinked token file must be ignored");
+    const r42SymDoc = runDoctor(r42SymRoot, { cachePath: cacheUp, offline: true });
+    assert.equal(r42SymDoc.checks.find((c) => c.id === "tokens_and_docs_freshness").status, "OK");
+
+    // Round 43 (R42-A1-L2): external symlinks in checks 1-4 (.dsaf-guardrails, DESIGN.md, hooks, .github/workflows) must be ignored
+    const r43ExtConf = join(scratch, "r43-ext-conf");
+    const r43DocRoot = join(scratch, "r43-doc-ext");
+    mkdirSync(join(r43ExtConf, "workflows"), { recursive: true });
+    mkdirSync(join(r43DocRoot, ".dsaf-guardrails"), { recursive: true });
+    mkdirSync(join(r43DocRoot, ".claude"), { recursive: true });
+    mkdirSync(join(r43DocRoot, ".github"), { recursive: true });
+    writeFileSync(join(r43ExtConf, "check-design-discipline.mjs"), `// DSAF v${DOCTOR_VERSION}\n`);
+    writeFileSync(join(r43ExtConf, "AGENTS.md"), "# Ext\n");
+    writeFileSync(join(r43ExtConf, "claude.json"), JSON.stringify({ hooks: { PostToolUse: [{ command: "npx @zintaen/dsaf hook" }] } }));
+    writeFileSync(join(r43ExtConf, "workflows/ci.yml"), "steps:\n  - uses: zintaen/dsaf@v0\n");
+    symlinkSync(join(r43ExtConf, "check-design-discipline.mjs"), join(r43DocRoot, ".dsaf-guardrails/check-design-discipline.mjs"));
+    symlinkSync(join(r43ExtConf, "AGENTS.md"), join(r43DocRoot, "AGENTS.md"));
+    symlinkSync(join(r43ExtConf, "claude.json"), join(r43DocRoot, ".claude/settings.json"));
+    symlinkSync(join(r43ExtConf, "workflows"), join(r43DocRoot, ".github/workflows"));
+    const r43DocRes = runDoctor(r43DocRoot, { cachePath: cacheUp, offline: true });
+    assert.equal(r43DocRes.checks.find((c) => c.id === "cli_and_guardrail_parity").status, "WARN");
+    assert.equal(r43DocRes.checks.find((c) => c.id === "edit_time_hook").status, "WARN");
+    assert.equal(r43DocRes.checks.find((c) => c.id === "ci_regression_gate").status, "WARN");
+
+    // Round 48 (A1-M1: Check 6 must skip symlinks escaping target root)
+    const r48Out = join(scratch, "r48-outside");
+    const r48Repo = join(scratch, "r48-repo");
+    mkdirSync(join(r48Out, "sub"), { recursive: true });
+    mkdirSync(join(r48Repo, "src"), { recursive: true });
+    writeFileSync(join(r48Out, "leak.css"), ".bad:focus { outline: none; color: #ff00aa; }\n");
+    writeFileSync(join(r48Out, "sub/dir-leak.css"), ".dir-bad:focus { outline: none; }\n");
+    writeFileSync(join(r48Repo, "src/ok.css"), ".ok:focus-visible { outline: 2px solid var(--focus); }\n");
+    symlinkSync(join(r48Out, "leak.css"), join(r48Repo, "src/leak-link.css"));
+    symlinkSync(join(r48Out, "sub"), join(r48Repo, "src/ext-dir"));
+    const r48DocRes = runDoctor(r48Repo, { cachePath: cacheUp, offline: true });
+    const r48Hygiene = r48DocRes.checks.find((c) => c.id === "waiver_and_floor_hygiene");
+    assert.equal(r48Hygiene?.status, "OK", "R48 A1-M1: doctor Check 6 must ignore symlinks escaping target root");
 
     console.log("DOCTOR_SELF_TEST_PASSED (guardrail parity + token mtime + hook/CI checks + Floor/waiver hygiene + update freshness)");
     return 0;

@@ -10,12 +10,12 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, dirname, join, relative, resolve } from "node:path";
+import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { assertWritableOutputFile, isDirectCliEntry, splitTopLevelCommas, stripCommentsPreservingLines } from "./ci-report.mjs";
 import { hasDesignTokenEvidence } from "./recon.mjs";
-import { hwbToSrgb, labToSrgb, parseCssColorToRgba, resolveDtcgExtends } from "./audit-tokens.mjs";
+import { colorSpaceInSrgbGamutToRgba, evalCssNumericExpr, hwbToSrgb, labToSrgb, parseCssColorToRgba, resolveDtcgExtends, splitCssTopLevel, splitCssTopLevelSpaces, wideColorInSrgbGamutToRgba } from "./audit-tokens.mjs";
 
 function normalizeKey(rawKey) {
   return String(rawKey || "")
@@ -64,49 +64,131 @@ function formatRgbaHexOrStr(rgba) {
   return `#${toHex(r)}${toHex(g)}${toHex(b)}`;
 }
 
+const CSS_COLOR_FN_SPACES = new Set(["display-p3", "display-p3-linear", "srgb-linear", "a98-rgb", "prophoto-rgb", "rec2020", "xyz", "xyz-d50", "xyz-d65"]);
+
 function cssColorFnToNormalized(s) {
-  const cm = /^color\(\s*([a-z0-9-]+)\s+([^()]+)\)$/i.exec(String(s || "").trim());
-  if (cm) {
-    const cs = cm[1].toLowerCase();
-    if (cs === "srgb") {
-      return formatRgbaHexOrStr(parseCssColorToRgba(s));
-    }
-    const fmtNumTok = (tok) => {
-      if (/^none$/i.test(tok)) return "none";
-      const tm = /^([+-]?(?:\d+(?:\.\d+)?|\.\d+)(?:[eE][+-]?\d+)?)(%?)$/.exec(tok);
-      if (!tm) return tok;
-      const n = Number.parseFloat(tm[1]);
-      if (!Number.isFinite(n)) return tok;
-      const unitVal = tm[2] ? n / 100 : n;
-      const rounded = Number(unitVal.toFixed(4));
-      return String(Object.is(rounded, -0) ? 0 : rounded);
-    };
-    const normChannels = (rawMain) =>
-      String(rawMain || "")
-        .trim()
-        .split(/\s+/)
-        .map(fmtNumTok)
-        .join(" ");
-    const body = cm[2].trim();
-    const slashIdx = body.indexOf("/");
-    if (slashIdx !== -1) {
-      const mainPart = normChannels(body.slice(0, slashIdx));
-      const rawA = body.slice(slashIdx + 1).trim();
-      const isNone = /^none$/i.test(rawA);
-      const aNum = isNone ? 0 : rawA.endsWith("%") ? Number.parseFloat(rawA) / 100 : Number.parseFloat(rawA);
-      if (Number.isFinite(aNum)) {
-        const clampedA = Math.max(0, Math.min(1, aNum));
-        const roundedA = Number(clampedA.toFixed(4));
-        const suffix = Math.abs(roundedA - 1) <= 1e-6 ? "" : ` / ${roundedA}`;
-        return normalizeCssNumberString(`color(${cs} ${mainPart}${suffix})`);
+  const raw = String(s || "").trim();
+  const outer = /^color\s*\(/i.test(raw) ? parseOuterCssFunction(raw) : null;
+  if (outer?.fn === "color") {
+    const slashParts = splitCssTopLevel(outer.body, "/");
+    if (slashParts.length <= 2) {
+      const mainToks = splitCssTopLevelSpaces(slashParts[0]);
+      if (mainToks.length >= 2) {
+        const rawCs = mainToks[0].toLowerCase();
+        const cs = rawCs === "xyz" ? "xyz-d65" : rawCs;
+        if (cs === "srgb") {
+          return formatRgbaHexOrStr(parseCssColorToRgba(raw));
+        }
+        let alphaNum = 1;
+        let alphaValid = true;
+        if (slashParts.length === 2) {
+          const rawA = slashParts[1].trim();
+          const aVal = /^none$/i.test(rawA) ? 0 : evalCssNumericExpr(rawA, 1, "scalar");
+          if (aVal !== null && Number.isFinite(aVal)) {
+            alphaNum = Math.max(0, Math.min(1, aVal));
+          } else {
+            alphaValid = false;
+          }
+        }
+        if (CSS_COLOR_FN_SPACES.has(cs) && mainToks.length === 4 && alphaValid) {
+          const compNums = mainToks.slice(1).map((tok) => {
+            if (/^none$/i.test(tok)) return 0;
+            const v = evalCssNumericExpr(tok, 1, "scalar");
+            return v !== null && Number.isFinite(v) ? v : NaN;
+          });
+          if (compNums.every(Number.isFinite)) {
+            const inGamut = colorSpaceInSrgbGamutToRgba(cs, compNums[0], compNums[1], compNums[2], alphaNum);
+            if (inGamut) return formatRgbaHexOrStr(inGamut);
+          }
+        }
+        const fmtNumTok = (tok) => {
+          if (/^none$/i.test(tok)) return "0";
+          const v = evalCssNumericExpr(tok, 1, "scalar");
+          if (v === null || !Number.isFinite(v)) return tok;
+          const rounded = Number(v.toFixed(4));
+          return String(Object.is(rounded, -0) ? 0 : rounded);
+        };
+        const mainPart = mainToks.slice(1).map(fmtNumTok).join(" ");
+        if (slashParts.length === 2 && alphaValid) {
+          const roundedA = Number(alphaNum.toFixed(4));
+          const suffix = Math.abs(roundedA - 1) <= 1e-6 ? "" : ` / ${roundedA}`;
+          return normalizeCssNumberString(`color(${cs} ${mainPart}${suffix})`);
+        }
+        return normalizeCssNumberString(`color(${cs} ${mainPart})`);
       }
     }
-    return normalizeCssNumberString(`color(${cs} ${normChannels(body)})`);
   }
-  if (/^(?:hwb|lab|lch)\(/i.test(s)) {
-    return formatRgbaHexOrStr(parseCssColorToRgba(s));
+  if (/^(?:hwb|lab|lch)\(/i.test(raw)) {
+    return labLchHwbFuncToNormalized(raw);
   }
   return null;
+}
+
+function labLchHwbFuncToNormalized(s) {
+  const outer = /^(?:hwb|lab|lch)\s*\(/i.test(String(s || "").trim()) ? parseOuterCssFunction(s) : null;
+  if (!outer || !/^(?:hwb|lab|lch)$/.test(outer.fn)) return null;
+  const kind = outer.fn;
+  const slashParts = splitCssTopLevel(outer.body, "/");
+  if (slashParts.length > 2) return null;
+  const mainToks = splitCssTopLevelSpaces(slashParts[0]);
+  if (mainToks.length !== 3) return null;
+  const evalScalar = (tok, pctScale) => {
+    const t = String(tok || "").trim();
+    if (!t) return null;
+    if (/^none$/i.test(t)) return 0;
+    const v = evalCssNumericExpr(t, pctScale, "scalar");
+    return v !== null && Number.isFinite(v) ? v : null;
+  };
+  let clampedA = null;
+  if (slashParts.length === 2) {
+    const aParsed = evalScalar(slashParts[1], 1);
+    if (aParsed === null) return null;
+    clampedA = Math.max(0, Math.min(1, aParsed));
+  }
+  const effAlpha = clampedA === null ? 1 : clampedA;
+  const fmtNum = (n) => {
+    const v = Number(n.toFixed(4));
+    return String(Object.is(v, -0) ? 0 : v);
+  };
+  const roundedA = clampedA !== null ? Number(clampedA.toFixed(4)) : null;
+  const alphaSuffix = roundedA !== null && Math.abs(roundedA - 1) > 1e-6 ? ` / ${roundedA}` : "";
+  const parseAngle = (tok) => {
+    const hRaw = String(tok || "").trim().toLowerCase();
+    if (hRaw === "none") return 0;
+    if (/%/.test(hRaw)) return null;
+    const hParsed = evalCssNumericExpr(hRaw, null, "angle");
+    if (hParsed === null || !Number.isFinite(hParsed)) return null;
+    const hMod = ((hParsed % 360) + 360) % 360;
+    return Math.abs(hMod - 360) < 1e-6 ? 0 : hMod;
+  };
+  if (kind === "lab") {
+    const rawL = evalScalar(mainToks[0], 100);
+    const a = evalScalar(mainToks[1], 125);
+    const b = evalScalar(mainToks[2], 125);
+    if (rawL === null || a === null || b === null) return null;
+    const L = Math.max(0, Math.min(100, rawL));
+    const inGamut = wideColorInSrgbGamutToRgba("lab", L, a, b, effAlpha);
+    if (inGamut) return formatRgbaHexOrStr(inGamut);
+    return `lab(${fmtNum(L)} ${fmtNum(a)} ${fmtNum(b)}${alphaSuffix})`;
+  }
+  if (kind === "lch") {
+    const rawL = evalScalar(mainToks[0], 100);
+    const rawC = evalScalar(mainToks[1], 150);
+    const normH = parseAngle(mainToks[2]);
+    if (rawL === null || rawC === null || normH === null) return null;
+    const L = Math.max(0, Math.min(100, rawL));
+    const cPos = Math.max(0, rawC);
+    const inGamut = wideColorInSrgbGamutToRgba("lch", L, cPos, normH, effAlpha);
+    if (inGamut) return formatRgbaHexOrStr(inGamut);
+    return `lch(${fmtNum(L)} ${fmtNum(cPos)} ${fmtNum(normH)}${alphaSuffix})`;
+  }
+  const normH = parseAngle(mainToks[0]);
+  const w = evalScalar(mainToks[1], 100);
+  const b = evalScalar(mainToks[2], 100);
+  if (normH === null || w === null || b === null) return null;
+  const inGamut = wideColorInSrgbGamutToRgba("hwb", normH, w, b, effAlpha);
+  if (inGamut) return formatRgbaHexOrStr(inGamut);
+  return `hwb(${fmtNum(normH)} ${fmtNum(w)} ${fmtNum(b)}${alphaSuffix})`;
 }
 
 function rgbFuncToHex(s) {
@@ -120,25 +202,33 @@ function hslFuncToHex(s) {
 }
 
 function okColorFuncToHex(s) {
-  const m = String(s || "").match(
-    /^(oklab|oklch)\(\s*(none|[+-]?(?:\d+(?:\.\d+)?|\.\d+)(?:[eE][+-]?\d+)?%?)\s*[,\s]\s*(none|[+-]?(?:\d+(?:\.\d+)?|\.\d+)(?:[eE][+-]?\d+)?%?)\s*[,\s]\s*(none|[+-]?(?:\d+(?:\.\d+)?|\.\d+)(?:[eE][+-]?\d+)?(?:deg|rad|grad|turn|%)?)(?:\s*[,/]\s*(none|[+-]?(?:\d+(?:\.\d+)?|\.\d+)(?:[eE][+-]?\d+)?%?))?\s*\)$/i
-  );
-  if (!m) return null;
-  const kind = m[1].toLowerCase();
-  const parsePctOrNum = (tok, pctScale) => {
-    const t = tok.toLowerCase();
-    if (t === "none") return 0;
-    const n = Number.parseFloat(t);
-    if (!Number.isFinite(n)) return null;
-    return t.endsWith("%") ? (n / 100) * pctScale : n;
+  const outer = /^(?:oklab|oklch)\s*\(/i.test(String(s || "").trim()) ? parseOuterCssFunction(s) : null;
+  if (!outer || (outer.fn !== "oklab" && outer.fn !== "oklch")) return null;
+  const kind = outer.fn;
+  const slashParts = splitCssTopLevel(outer.body, "/");
+  if (slashParts.length > 2) return null;
+  const commaParts = splitCssTopLevel(slashParts[0], ",");
+  let mainToks = commaParts.length > 1 ? commaParts : splitCssTopLevelSpaces(slashParts[0]);
+  let alphaTok = slashParts.length === 2 ? slashParts[1].trim() : null;
+  if (alphaTok === null && commaParts.length === 4) {
+    alphaTok = commaParts[3];
+    mainToks = commaParts.slice(0, 3);
+  }
+  if (mainToks.length !== 3) return null;
+  const evalScalar = (tok, pctScale) => {
+    const t = String(tok || "").trim();
+    if (!t) return null;
+    if (/^none$/i.test(t)) return 0;
+    const v = evalCssNumericExpr(t, pctScale, "scalar");
+    return v !== null && Number.isFinite(v) ? v : null;
   };
   let clampedA = null;
-  if (m[5] !== undefined) {
-    const aParsed = parsePctOrNum(m[5], 1);
+  if (alphaTok !== null) {
+    const aParsed = evalScalar(alphaTok, 1);
     if (aParsed === null) return null;
     clampedA = Math.max(0, Math.min(1, aParsed));
   }
-  const rawL = parsePctOrNum(m[2], 1);
+  const rawL = evalScalar(mainToks[0], 1);
   if (rawL === null) return null;
   const L = Math.max(0, Math.min(1, rawL));
   let a = 0;
@@ -146,23 +236,21 @@ function okColorFuncToHex(s) {
   let cPos = 0;
   let hDeg = 0;
   if (kind === "oklab") {
-    const pa = parsePctOrNum(m[3], 0.4);
-    const pb = parsePctOrNum(m[4], 0.4);
+    const pa = evalScalar(mainToks[1], 0.4);
+    const pb = evalScalar(mainToks[2], 0.4);
     if (pa === null || pb === null) return null;
     a = pa;
     b = pb;
   } else {
-    if (/%$/i.test(m[4])) return null;
-    const C = parsePctOrNum(m[3], 0.4);
+    const C = evalScalar(mainToks[1], 0.4);
     if (C === null) return null;
     cPos = Math.max(0, C);
-    const hRaw = m[4].toLowerCase();
+    const hRaw = String(mainToks[2] || "").trim().toLowerCase();
     if (hRaw !== "none") {
-      hDeg = Number.parseFloat(hRaw);
-      if (!Number.isFinite(hDeg)) return null;
-      if (hRaw.endsWith("rad")) hDeg = (hDeg * 180) / Math.PI;
-      else if (hRaw.endsWith("turn")) hDeg *= 360;
-      else if (hRaw.endsWith("grad")) hDeg *= 0.9;
+      if (/%/.test(hRaw)) return null;
+      const hParsed = evalCssNumericExpr(hRaw, null, "angle");
+      if (hParsed === null || !Number.isFinite(hParsed)) return null;
+      hDeg = hParsed;
     }
     const hRad = (hDeg * Math.PI) / 180;
     a = cPos * Math.cos(hRad);
@@ -252,9 +340,15 @@ function splitShadowTokens(layer) {
 }
 
 function isRecognizedShadowColorToken(tok) {
-  return /^(?:#(?:[0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})|(?:rgb|rgba|hsl|hsla|hwb|lab|lch|oklab|oklch|color|color-mix)\(|var\(--|transparent$|currentcolor$|black$|white$|red$|blue$|green$|gray$|grey$|silver$|navy$|teal$|aqua$|purple$|maroon$|olive$|lime$|fuchsia$|yellow$|orange$|rebeccapurple$)/i.test(
-    String(tok || "").trim()
-  );
+  const s = String(tok || "").trim();
+  if (
+    /^(?:#(?:[0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})|(?:rgb|rgba|hsl|hsla|hwb|lab|lch|oklab|oklch|color|color-mix|light-dark)\(|var\(--|currentcolor$)/i.test(
+      s
+    )
+  ) {
+    return true;
+  }
+  return Boolean(parseCssColorToRgba(s));
 }
 
 function looksLikeShadow(str) {
@@ -284,7 +378,7 @@ function looksLikeShadow(str) {
   return true;
 }
 
-function normalizeShadowLayer(layer) {
+function normalizeShadowLayer(layer, mode = null) {
   const parts = splitShadowTokens(layer);
 
   let isInset = false;
@@ -299,7 +393,7 @@ function normalizeShadowLayer(layer) {
       const zero = /^0(?:\.0+)?(?:px|rem|em)?$/i.test(tok);
       lengths.push(zero ? "0" : normalizeCssNumberString(tok));
     } else {
-      const conv = normalizeValue(tok);
+      const conv = normalizeValue(tok, mode);
       colors.push(typeof conv === "string" ? conv : normalizeCssNumberString(tok));
     }
   }
@@ -311,38 +405,70 @@ function normalizeShadowLayer(layer) {
   return ordered.join(" ");
 }
 
-function normalizeShadowString(s) {
+function normalizeShadowString(s, mode = null) {
   return splitTopLevelCommas(String(s || ""))
-    .map((layer) => normalizeShadowLayer(layer))
+    .map((layer) => normalizeShadowLayer(layer, mode))
     .filter(Boolean)
     .join(", ");
 }
 
-function normalizeValue(val) {
+function parseOuterCssFunction(str) {
+  const s = String(str || "").trim();
+  const m = /^([a-z-]+)\s*\(/i.exec(s);
+  if (!m) return null;
+  const openIdx = s.indexOf("(");
+  let depth = 0;
+  for (let i = openIdx; i < s.length; i++) {
+    if (s[i] === "(") depth++;
+    else if (s[i] === ")") {
+      depth--;
+      if (depth === 0) {
+        if (i !== s.length - 1) return null;
+        return { fn: m[1].toLowerCase(), body: s.slice(openIdx + 1, i).trim() };
+      }
+    }
+  }
+  return null;
+}
+
+function normalizeValue(val, mode = null) {
   if (val == null) return null;
   if (Array.isArray(val)) {
     if (val.length === 4 && val.every((n) => typeof n === "number" && Number.isFinite(n))) {
       return `cubic-bezier(${val.map((n) => String(Number(n.toFixed(4)))).join(", ")})`;
     }
     if (val.length > 0 && val.every(isShadowTokenObj)) {
-      return val.map((item) => normalizeValue(item)).join(", ");
+      return val.map((item) => normalizeValue(item, mode)).join(", ");
     }
     if (val.length > 0 && val.every((x) => typeof x === "string" && x.trim().length > 0)) {
       return normalizeCssNumberString(val.map((s) => (/\s/.test(s.trim()) ? `"${s.trim()}"` : s.trim())).join(", "));
     }
-    return JSON.stringify(val.map((item) => normalizeValue(item)));
+    return JSON.stringify(val.map((item) => normalizeValue(item, mode)));
   }
   if (typeof val === "object") {
     if (Array.isArray(val.components) && val.components.length >= 3) {
-      const cs = String(val.colorSpace || "srgb").toLowerCase();
+      const rawCs = String(val.colorSpace || "srgb").toLowerCase();
+      const cs = rawCs === "xyz" ? "xyz-d65" : rawCs;
       if (cs !== "srgb") {
-        const rawAlpha = typeof val.alpha === "number" && Number.isFinite(val.alpha) ? Math.max(0, Math.min(1, val.alpha)) : 1;
+        const rawAlpha =
+          typeof val.alpha === "string" && /^none$/i.test(val.alpha.trim())
+            ? 0
+            : typeof val.alpha === "number" && Number.isFinite(val.alpha)
+            ? Math.max(0, Math.min(1, val.alpha))
+            : 1;
         const roundedObjA = Number(rawAlpha.toFixed(4));
         const hasVisibleAlpha = Math.abs(roundedObjA - 1) > 1e-6;
         const a = hasVisibleAlpha ? ` / ${roundedObjA}` : "";
-        const cssColorFnSpaces = new Set(["display-p3", "srgb-linear", "a98-rgb", "prophoto-rgb", "rec2020", "xyz", "xyz-d50", "xyz-d65"]);
-        const body = `${val.components.join(" ")}${a}`;
-        const formatted = normalizeCssNumberString(cssColorFnSpaces.has(cs) ? `color(${cs} ${body})` : `${cs}(${body})`);
+        const fmtComp = (c) => {
+          if (typeof c === "string" && /^none$/i.test(c.trim())) return 0;
+          if (typeof c === "number" && Number.isFinite(c)) {
+            const r = Number(c.toFixed(4));
+            return Object.is(r, -0) ? 0 : r;
+          }
+          return c;
+        };
+        const body = `${val.components.map(fmtComp).join(" ")}${a}`;
+        const formatted = normalizeCssNumberString(CSS_COLOR_FN_SPACES.has(cs) ? `color(${cs} ${body})` : `${cs}(${body})`);
         if (cs === "oklch" || cs === "oklab") {
           const okHex = okColorFuncToHex(formatted);
           if (okHex) return okHex;
@@ -359,11 +485,13 @@ function normalizeValue(val) {
         const objA = hasVisibleAlpha ? roundedObjA : 1;
         const nNums = val.components.slice(0, 3).map((c) => (c === "none" ? 0 : c));
         if (nNums.every((n) => typeof n === "number" && Number.isFinite(n))) {
-          if (cs === "hwb") return formatRgbaHexOrStr([...hwbToSrgb(nNums[0], nNums[1] / 100, nNums[2] / 100), objA]);
-          if (cs === "lab") return formatRgbaHexOrStr([...labToSrgb(nNums[0], nNums[1], nNums[2]), objA]);
-          if (cs === "lch") {
-            const hr = (nNums[2] * Math.PI) / 180;
-            return formatRgbaHexOrStr([...labToSrgb(nNums[0], nNums[1] * Math.cos(hr), nNums[1] * Math.sin(hr)), objA]);
+          if (CSS_COLOR_FN_SPACES.has(cs)) {
+            const inGamut = colorSpaceInSrgbGamutToRgba(cs, nNums[0], nNums[1], nNums[2], objA);
+            if (inGamut) return formatRgbaHexOrStr(inGamut);
+          }
+          if (cs === "hwb" || cs === "lab" || cs === "lch") {
+            const normLabLchHwb = labLchHwbFuncToNormalized(formatted);
+            if (normLabLchHwb) return normLabLchHwb;
           }
         }
         return formatted;
@@ -390,27 +518,53 @@ function normalizeValue(val) {
     if (isShadowTokenObj(val)) {
       const parts = [];
       if (val.inset) parts.push("inset");
-      parts.push(normalizeValue(val.offsetX) ?? "0");
-      parts.push(normalizeValue(val.offsetY) ?? "0");
-      parts.push(val.blur != null ? normalizeValue(val.blur) ?? "0" : "0");
+      parts.push(normalizeValue(val.offsetX, mode) ?? "0");
+      parts.push(normalizeValue(val.offsetY, mode) ?? "0");
+      parts.push(val.blur != null ? normalizeValue(val.blur, mode) ?? "0" : "0");
       if (val.spread != null) {
-        const spreadNorm = normalizeShadowString(normalizeValue(val.spread));
+        const spreadNorm = normalizeShadowString(normalizeValue(val.spread, mode), mode);
         if (spreadNorm && spreadNorm !== "0") parts.push(spreadNorm);
       }
-      parts.push(normalizeValue(val.color) ?? "#000000");
-      return normalizeShadowString(normalizeCssNumberString(parts.filter(Boolean).join(" ")));
+      parts.push(normalizeValue(val.color, mode) ?? "#000000");
+      return normalizeShadowString(normalizeCssNumberString(parts.filter(Boolean).join(" ")), mode);
     }
     const sorted = {};
     for (const k of Object.keys(val).sort()) {
-      sorted[k] = normalizeValue(val[k]);
+      sorted[k] = normalizeValue(val[k], mode);
     }
     return JSON.stringify(sorted);
   }
   let s = normalizeCssNumberString(String(val));
   const lowerKw = s.toLowerCase();
-  if (lowerKw === "white") return "#ffffff";
-  if (lowerKw === "black") return "#000000";
   if (lowerKw === "transparent") return "rgba(0, 0, 0, 0)";
+  if (/^[a-z]+$/i.test(lowerKw)) {
+    const namedRgba = parseCssColorToRgba(lowerKw, mode);
+    if (namedRgba) return formatRgbaHexOrStr(namedRgba);
+  }
+  const outerFn = /^light-dark\s*\(/i.test(s) ? parseOuterCssFunction(s) : null;
+  if (outerFn?.fn === "light-dark") {
+    const args = splitTopLevelCommas(outerFn.body);
+    if (args.length === 2) {
+      if (mode === "light" || mode === "dark") {
+        return normalizeValue(mode === "dark" ? args[1] : args[0], mode);
+      }
+      const normL = normalizeValue(args[0], "light") ?? args[0].trim();
+      const normD = normalizeValue(args[1], "dark") ?? args[1].trim();
+      return normalizeCssNumberString(`light-dark(${normL}, ${normD})`);
+    }
+  }
+  if (/^color-mix\s*\(/i.test(s)) {
+    if (mode !== "light" && mode !== "dark" && /\blight-dark\s*\(/i.test(s)) {
+      const normL = normalizeValue(s, "light");
+      const normD = normalizeValue(s, "dark");
+      if (normL && normD && normL !== normD) {
+        return normalizeCssNumberString(`light-dark(${normL}, ${normD})`);
+      }
+      if (normL) return normL;
+    }
+    const mixRgba = parseCssColorToRgba(s, mode);
+    if (mixRgba) return formatRgbaHexOrStr(mixRgba);
+  }
   const rgbHex = rgbFuncToHex(s) || hslFuncToHex(s) || okColorFuncToHex(s) || cssColorFnToNormalized(s);
   if (rgbHex) return rgbHex;
   if (/^#[0-9a-f]{3}$/i.test(s)) {
@@ -456,12 +610,12 @@ const FONT_WEIGHT_NAMES = {
 
 function parseLengthPx(v) {
   if (typeof v !== "string") return null;
-  const m = normalizeCssNumberString(v).match(/^(-?\d+(?:\.\d+)?)(px|rem)?$/i);
+  const m = normalizeCssNumberString(v).match(/^(-?\d+(?:\.\d+)?)(px|rem|em)?$/i);
   if (!m) return null;
   const num = Number.parseFloat(m[1]);
   if (!Number.isFinite(num)) return null;
   const unit = (m[2] || "").toLowerCase();
-  return unit === "rem" ? num * 16 : num;
+  return unit === "rem" || unit === "em" ? num * 16 : num;
 }
 
 function parseDurationMs(v) {
@@ -538,22 +692,96 @@ function shadowsClose(shadowA, shadowB) {
     if (tA.length !== tB.length) return false;
     for (let j = 0; j < tA.length; j++) {
       if (tA[j] === tB[j]) continue;
-      if (!rgbaColorsClose(tA[j], tB[j])) return false;
+      if (rgbaColorsClose(tA[j], tB[j])) continue;
+      const pxA = parseLengthPx(tA[j]);
+      const pxB = parseLengthPx(tB[j]);
+      if (pxA !== null && pxB !== null && Math.abs(pxA - pxB) <= 1e-4) continue;
+      return false;
     }
   }
   return true;
 }
 
-export function valuesMatch(fVal, dVal) {
+function isW3cDimensionObj(obj) {
+  if (!obj || typeof obj !== "object" || Array.isArray(obj)) return false;
+  if (typeof obj.unit !== "string" || !obj.unit.trim()) return false;
+  const numOk =
+    (typeof obj.value === "number" && Number.isFinite(obj.value)) ||
+    (typeof obj.value === "string" && /^-?(?:\d+(?:\.\d+)?|\.\d+)$/.test(obj.value.trim()));
+  if (!numOk) return false;
+  const allowedKeys = new Set(["value", "unit", "type", "description", "extensions"]);
+  return Object.keys(obj).every((k) => k.startsWith("$") || allowedKeys.has(k));
+}
+
+function isW3cColorObj(obj) {
+  return Boolean(
+    obj &&
+      typeof obj === "object" &&
+      !Array.isArray(obj) &&
+      typeof obj.colorSpace === "string" &&
+      Array.isArray(obj.components) &&
+      obj.components.length >= 3
+  );
+}
+
+function isW3cStructuredValueObj(obj) {
+  return isW3cDimensionObj(obj) || isW3cColorObj(obj) || isShadowTokenObj(obj);
+}
+
+function extractComparableCompositeObj(raw, norm) {
+  if (raw && typeof raw === "object" && !Array.isArray(raw) && !isW3cStructuredValueObj(raw)) {
+    return raw;
+  }
+  if (typeof norm === "string" && norm.startsWith("{") && norm.endsWith("}")) {
+    try {
+      const parsed = JSON.parse(norm);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed) && !isW3cStructuredValueObj(parsed)) {
+        return parsed;
+      }
+    } catch {}
+  }
+  return null;
+}
+
+export function valuesMatch(fVal, dVal, mode = null) {
   if (fVal === dVal) return true;
   if (fVal == null || dVal == null) return false;
-  const normA = normalizeValue(fVal);
-  const normB = normalizeValue(dVal);
+  const normA = normalizeValue(fVal, mode);
+  const normB = normalizeValue(dVal, mode);
   if (normA === normB) return true;
+  if (mode === null && typeof normA === "string" && typeof normB === "string") {
+    const isLdA = /^light-dark\(/i.test(normA);
+    const isLdB = /^light-dark\(/i.test(normB);
+    if (isLdA !== isLdB) {
+      return valuesMatch(
+        isLdA ? normalizeValue(normA, "light") : normA,
+        isLdB ? normalizeValue(normB, "light") : normB,
+        "light"
+      );
+    }
+  }
+  const compA = extractComparableCompositeObj(fVal, normA);
+  const compB = extractComparableCompositeObj(dVal, normB);
+  if (compA && compB) {
+    const keysA = Object.keys(compA).sort();
+    const keysB = Object.keys(compB).sort();
+    if (keysA.length === keysB.length && keysA.every((k, idx) => k === keysB[idx] && valuesMatch(compA[k], compB[k], mode))) {
+      return true;
+    }
+  }
+  if (typeof normA === "string" && normA.startsWith("[") && normA.endsWith("]") && typeof normB === "string" && normB.startsWith("[") && normB.endsWith("]")) {
+    try {
+      const arrA = JSON.parse(normA);
+      const arrB = JSON.parse(normB);
+      if (Array.isArray(arrA) && Array.isArray(arrB) && arrA.length === arrB.length && arrA.every((x, i) => valuesMatch(x, arrB[i], mode))) {
+        return true;
+      }
+    } catch {}
+  }
   if (typeof normA === "string" && typeof normB === "string" && rgbaColorsClose(normA, normB)) return true;
   if (typeof normA === "string" && typeof normB === "string" && looksLikeShadow(normA) && looksLikeShadow(normB)) {
-    const snA = normalizeShadowString(normA);
-    const snB = normalizeShadowString(normB);
+    const snA = normalizeShadowString(normA, mode);
+    const snB = normalizeShadowString(normB, mode);
     if (snA === snB || shadowsClose(snA, snB)) return true;
   }
   const msA = parseDurationMs(normA);
@@ -619,7 +847,7 @@ function hasNestedTokenDescendant(obj) {
     if (v && typeof v === "object" && !Array.isArray(v)) {
       if (
         Object.prototype.hasOwnProperty.call(v, "$value") ||
-        Object.prototype.hasOwnProperty.call(v, "value") ||
+        (Object.prototype.hasOwnProperty.call(v, "value") && !isW3cDimensionObj(v)) ||
         (Boolean(getExtModes(v)) && !hasNonMetaObjectChild(v)) ||
         hasNestedTokenDescendant(v)
       ) {
@@ -654,19 +882,23 @@ function flattenGenericTokens(node, prefix = [], out = new Map(), rawAliases = n
       typeof v === "object" &&
       !Array.isArray(v) &&
       (Object.prototype.hasOwnProperty.call(v, "$value") ||
-        Object.prototype.hasOwnProperty.call(v, "value") ||
+        (Object.prototype.hasOwnProperty.call(v, "value") && !isW3cDimensionObj(v)) ||
         hasNestedTokenDescendant(v))
   );
+  const isUnwrappedStructuredLeaf =
+    prefix.length > 0 && !hasDollarVal && !siblingHasToken && isW3cStructuredValueObj(node);
   const hasLegacyLeafVal =
+    !isUnwrappedStructuredLeaf &&
     !siblingHasToken &&
     Object.prototype.hasOwnProperty.call(node, "value") &&
     (rawLegacyVal === null ||
       typeof rawLegacyVal !== "object" ||
       Array.isArray(rawLegacyVal) ||
+      isW3cStructuredValueObj(rawLegacyVal) ||
       (!Object.prototype.hasOwnProperty.call(rawLegacyVal, "$value") &&
         !Object.prototype.hasOwnProperty.call(rawLegacyVal, "value") &&
         !hasNestedTokenDescendant(rawLegacyVal)));
-  const hasVal = hasDollarVal || hasLegacyLeafVal;
+  const hasVal = hasDollarVal || hasLegacyLeafVal || isUnwrappedStructuredLeaf;
   const hasRef = typeof node.$ref === "string";
   const extModes = getExtModes(node);
   const hasExtModeLeaf = prefix.length > 0 && Boolean(extModes) && !hasNonMetaObjectChild(node);
@@ -685,7 +917,7 @@ function flattenGenericTokens(node, prefix = [], out = new Map(), rawAliases = n
         if (norm !== null) out.set(targetKey, norm);
       }
     };
-    const v = hasDollarVal ? node.$value : hasLegacyLeafVal ? node.value : null;
+    const v = hasDollarVal ? node.$value : isUnwrappedStructuredLeaf ? node : hasLegacyLeafVal ? node.value : null;
     const key = normalizeKey(prefix.join("."));
     if (key) {
       if (hasRef) {
@@ -699,12 +931,14 @@ function flattenGenericTokens(node, prefix = [], out = new Map(), rawAliases = n
           const cleanMode = normalizeKey(mKey);
           if (!cleanMode) continue;
           modeSet.add(cleanMode);
-          const modeLeafKey = key.startsWith(`${cleanMode}.`) ? key : `${cleanMode}.${key}`;
+          const keyBaseForMode = /^(?:light|dark)\./i.test(key) ? key.replace(/^(?:light|dark)\./i, "") : key;
+          const modeLeafKey = key.startsWith(`${cleanMode}.`) ? key : `${cleanMode}.${keyBaseForMode}`;
           const unwrapped =
             mRaw &&
             typeof mRaw === "object" &&
             !Array.isArray(mRaw) &&
-            (Object.prototype.hasOwnProperty.call(mRaw, "$value") || Object.prototype.hasOwnProperty.call(mRaw, "value"))
+            (Object.prototype.hasOwnProperty.call(mRaw, "$value") ||
+              (Object.prototype.hasOwnProperty.call(mRaw, "value") && !isW3cStructuredValueObj(mRaw)))
               ? Object.prototype.hasOwnProperty.call(mRaw, "$value")
                 ? mRaw.$value
                 : mRaw.value
@@ -899,9 +1133,11 @@ function resolveAliases(valuesMap, aliasesMap, fallbacksMap = new Map(), composi
     const nextStack = [...stack, ck];
     if (compositeRaws && (compositeRaws.has(key) || canonComposites.has(ck))) {
       const rawComp = compositeRaws.has(key) ? compositeRaws.get(key) : canonComposites.get(ck);
+      const modeSeg = findModeSeg(key, true).toLowerCase();
+      const evalMode = modeSeg === "light" || modeSeg === "dark" ? modeSeg : null;
       if (rawComp && typeof rawComp === "object" && typeof rawComp.__cssVarComposite === "string") {
         const substituted = resolveCssVarsInComposite(rawComp.__cssVarComposite, nextStack);
-        const norm = normalizeValue(substituted);
+        const norm = normalizeValue(substituted, evalMode);
         if (norm !== null) {
           valuesMap.set(key, norm);
           canonValues.set(ck, norm);
@@ -909,7 +1145,7 @@ function resolveAliases(valuesMap, aliasesMap, fallbacksMap = new Map(), composi
         return norm;
       }
       const substituted = substituteRefs(rawComp, nextStack, key);
-      const norm = normalizeValue(substituted);
+      const norm = normalizeValue(substituted, evalMode);
       if (norm !== null) {
         valuesMap.set(key, norm);
         canonValues.set(ck, norm);
@@ -1567,7 +1803,8 @@ export function loadDefinedTokens(tokensArg, excludeFiles = new Set()) {
   const composites = new Map();
   const st = statSync(abs);
 
-  const jsonEntries = [];
+  const rawJsonEntries = [];
+  const seenJsonFiles = new Set();
   const cssTexts = [];
 
   const hasExtensionThemeModes = (node) => {
@@ -1580,22 +1817,66 @@ export function loadDefinedTokens(tokensArg, excludeFiles = new Set()) {
     return Object.entries(node).some(([k, v]) => !k.startsWith("$") && v && typeof v === "object" && hasExtensionThemeModes(v));
   };
 
-  const queueTokenJson = (parsed, relForMode) => {
+  const isRawTokenLeaf = (obj) => {
+    if (!obj || typeof obj !== "object" || Array.isArray(obj)) return false;
+    if (
+      Object.prototype.hasOwnProperty.call(obj, "$value") ||
+      typeof obj.$ref === "string" ||
+      isW3cStructuredValueObj(obj) ||
+      (Boolean(getExtModes(obj)) && !hasNonMetaObjectChild(obj))
+    ) {
+      return true;
+    }
+    return Object.prototype.hasOwnProperty.call(obj, "value") && !hasNestedTokenDescendant(obj);
+  };
+
+  const mergeRawTokenTrees = (target, incoming) => {
+    if (!incoming || typeof incoming !== "object" || Array.isArray(incoming)) return target;
+    for (const [k, v] of Object.entries(incoming)) {
+      const existing = target[k];
+      if (
+        existing &&
+        typeof existing === "object" &&
+        !Array.isArray(existing) &&
+        v &&
+        typeof v === "object" &&
+        !Array.isArray(v) &&
+        !k.startsWith("$") &&
+        k !== "extensions" &&
+        !isRawTokenLeaf(existing) &&
+        !isRawTokenLeaf(v)
+      ) {
+        mergeRawTokenTrees(existing, v);
+      } else if (!Object.prototype.hasOwnProperty.call(target, k)) {
+        target[k] = v && typeof v === "object" && !Array.isArray(v) ? structuredClone(v) : v;
+      }
+    }
+    return target;
+  };
+
+  const queueTokenJson = (parsed, relForMode, sourcePath = null) => {
+    if (sourcePath) {
+      const cs = canonFsPath(sourcePath);
+      if (seenJsonFiles.has(cs)) return;
+      seenJsonFiles.add(cs);
+    }
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return;
     const modeTarget = String(relForMode || "").replace(/\\/g, "/");
     const hasLightSeg = /(?:^|[/_.-])light(?:[/_.-]|\.tokens?\.json$|\.json$)/i.test(modeTarget);
     const hasDarkSeg = /(?:^|[/_.-])dark(?:[/_.-]|\.tokens?\.json$|\.json$)/i.test(modeTarget);
-    const tmpOut = new Map();
-    const tmpAliases = new Map();
-    const tmpComposites = new Map();
-    flattenGenericTokens(parsed, [], tmpOut, tmpAliases, tmpComposites, out.__modes);
-    const hasInternalModes =
-      [...tmpOut.keys(), ...tmpAliases.keys(), ...tmpComposites.keys()].some((k) => /^(light|dark)(?:\.|$)/i.test(k)) ||
-      hasExtensionThemeModes(parsed);
+    const hasLeadingRootMode = Object.keys(parsed).some((k) => /^(light|dark)$/i.test(k));
+    const hasInternalModes = hasLeadingRootMode || hasExtensionThemeModes(parsed);
     const fileMode = hasLightSeg && hasDarkSeg ? null : hasInternalModes ? null : hasLightSeg ? "light" : hasDarkSeg ? "dark" : null;
-    jsonEntries.push({ fileMode, tmpOut, tmpAliases, tmpComposites });
+    rawJsonEntries.push({ parsed, fileMode });
   };
 
   const scanDir = (dir) => {
+    let rootReal;
+    try {
+      rootReal = realpathSync(dir);
+    } catch {
+      return;
+    }
     const skip = new Set([
       ".git",
       "node_modules",
@@ -1624,6 +1905,7 @@ export function loadDefinedTokens(tokensArg, excludeFiles = new Set()) {
       } catch {
         return;
       }
+      if (!isWithinRoot(realCur, rootReal)) return;
       if (visitedDirs.has(realCur)) return;
       visitedDirs.add(realCur);
       const entries = readdirSync(cur, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name));
@@ -1634,6 +1916,8 @@ export function loadDefinedTokens(tokensArg, excludeFiles = new Set()) {
         let isFile = e.isFile();
         if (e.isSymbolicLink()) {
           try {
+            const realEntry = realpathSync(full);
+            if (!isWithinRoot(realEntry, rootReal)) continue;
             const fst = statSync(full);
             isDir = fst.isDirectory();
             isFile = fst.isFile();
@@ -1671,7 +1955,7 @@ export function loadDefinedTokens(tokensArg, excludeFiles = new Set()) {
               if (!hasDesignTokenEvidence(rawTokJson).valid) continue;
               const parsed = JSON.parse(rawTokJson);
               if (typeof parsed?.schema === "string" && parsed.schema.startsWith("dsaf-")) continue;
-              queueTokenJson(parsed, rel);
+              queueTokenJson(parsed, rel, full);
             } catch {}
           } else if (low.endsWith(".css") || low.endsWith(".scss")) {
             cssTexts.push(readFileSync(full, "utf8"));
@@ -1694,100 +1978,71 @@ export function loadDefinedTokens(tokensArg, excludeFiles = new Set()) {
         scanDir(json.target);
       }
       if (Array.isArray(json.dtcgFiles)) {
+        const manifestBase =
+          json.target && existsSync(json.target) && statSync(json.target).isDirectory()
+            ? json.target
+            : dirname(abs);
+        let manifestBaseReal = null;
+        try {
+          manifestBaseReal = realpathSync(manifestBase);
+        } catch {
+          manifestBaseReal = null;
+        }
         for (const df of json.dtcgFiles) {
-          const p = json.target && existsSync(join(json.target, df.file)) ? join(json.target, df.file) : df.file;
-          if (existsSync(p) && statSync(p).isFile() && !canonExcludes.has(canonFsPath(p))) {
+          if (!manifestBaseReal) continue;
+          const p = resolve(manifestBase, String(df.file || ""));
+          if (!existsSync(p)) continue;
+          let realP;
+          try {
+            realP = realpathSync(p);
+          } catch {
+            continue;
+          }
+          if (!isWithinRoot(realP, manifestBaseReal)) continue;
+          if (statSync(p).isFile() && !canonExcludes.has(canonFsPath(p))) {
             try {
-              queueTokenJson(JSON.parse(readFileSync(p, "utf8")), df.file);
+              queueTokenJson(JSON.parse(readFileSync(p, "utf8")), df.file, p);
             } catch {}
           }
         }
       }
     } else if (!canonExcludes.has(canonFsPath(abs))) {
-      queueTokenJson(json, basename(abs));
+      queueTokenJson(json, basename(abs), abs);
     }
   } else if (!canonExcludes.has(canonFsPath(abs))) {
     cssTexts.push(readFileSync(abs, "utf8"));
   }
 
-  // Pass 1: build combined modeLocalCanonKeys across all JSON files of each mode, then write tokens & aliases
-  const modeLocalCanonKeys = { light: new Set(), dark: new Set() };
-  for (const { fileMode, tmpOut, tmpAliases, tmpComposites } of jsonEntries) {
-    if (!fileMode) continue;
-    for (const k of tmpOut.keys()) {
-      const segs = k.split(".");
-      if (!/^(light|dark)$/i.test(segs[0] || "")) modeLocalCanonKeys[fileMode].add(canonKey(k));
+  // Pass 1: merge all token JSON trees before resolving cross-file $extends, then flatten & track mode-local aliases
+  if (rawJsonEntries.length > 0) {
+    const combinedRawTree = {};
+    for (const { parsed, fileMode } of rawJsonEntries) {
+      const rootForMerge = fileMode ? { [fileMode]: parsed } : parsed;
+      mergeRawTokenTrees(combinedRawTree, rootForMerge);
     }
-    for (const k of tmpAliases.keys()) {
-      const segs = k.split(".");
-      if (!/^(light|dark)$/i.test(segs[0] || "")) modeLocalCanonKeys[fileMode].add(canonKey(k));
-    }
-    for (const k of (tmpComposites || new Map()).keys()) {
-      const segs = k.split(".");
-      if (!/^(light|dark)$/i.test(segs[0] || "")) modeLocalCanonKeys[fileMode].add(canonKey(k));
-    }
-  }
-  const pass1Occupied = new Set();
-  for (const { fileMode, tmpOut, tmpAliases, tmpComposites } of jsonEntries) {
-    if (!fileMode) {
-      for (const [k, v] of tmpOut.entries()) {
-        const ck = canonKey(k);
-        if (!pass1Occupied.has(ck)) {
-          out.set(k, v);
-          pass1Occupied.add(ck);
-        }
+    const expandedTree = resolveDtcgExtends(combinedRawTree);
+    flattenGenericTokens(expandedTree, [], out, aliases, composites, out.__modes, true);
+
+    const modeLocalCanonKeys = { light: new Set(), dark: new Set() };
+    for (const mapRef of [out, aliases, composites]) {
+      for (const k of mapRef.keys()) {
+        const m = /^(light|dark)\.(.+)$/i.exec(k);
+        if (m) modeLocalCanonKeys[m[1].toLowerCase()].add(canonKey(m[2]));
       }
-      for (const [k, t] of tmpAliases.entries()) {
-        const ck = canonKey(k);
-        if (!pass1Occupied.has(ck)) {
-          aliases.set(k, t);
-          pass1Occupied.add(ck);
-        }
-      }
-      for (const [k, rawV] of (tmpComposites || new Map()).entries()) {
-        const ck = canonKey(k);
-        if (!pass1Occupied.has(ck)) {
-          composites.set(k, rawV);
-          pass1Occupied.add(ck);
-        }
-      }
-      continue;
     }
-    const hasExplicitModePrefix = (k) =>
+    const hasExplicitModeKey = (k) =>
       /^(light|dark)(?:\.|$)/i.test(k) ||
       [...(out.__modes || [])].some((m) => {
         const cm = canonKey(m);
         const ck2 = canonKey(k);
         return ck2 === cm || ck2.startsWith(`${cm}.`);
       });
-    const prefixIfUnscoped = (k) => (hasExplicitModePrefix(k) ? k : `${fileMode}.${k}`);
-    const modeKeys = modeLocalCanonKeys[fileMode];
-    for (const [k, v] of tmpOut.entries()) {
-      const pk = prefixIfUnscoped(k);
-      const ck = canonKey(pk);
-      if (!pass1Occupied.has(ck)) {
-        out.set(pk, v);
-        pass1Occupied.add(ck);
-      }
-    }
-    for (const [k, target] of tmpAliases.entries()) {
-      const pk = prefixIfUnscoped(k);
-      const ck = canonKey(pk);
-      const nextTarget =
-        !hasExplicitModePrefix(k) && modeKeys.has(canonKey(target)) && !hasExplicitModePrefix(target)
-          ? `${fileMode}.${target}`
-          : target;
-      if (!pass1Occupied.has(ck)) {
-        aliases.set(pk, nextTarget);
-        pass1Occupied.add(ck);
-      }
-    }
-    for (const [k, rawV] of (tmpComposites || new Map()).entries()) {
-      const pk = prefixIfUnscoped(k);
-      const ck = canonKey(pk);
-      if (!pass1Occupied.has(ck)) {
-        composites.set(pk, rawV);
-        pass1Occupied.add(ck);
+    for (const [k, target] of [...aliases.entries()]) {
+      const m = /^(light|dark)\.(.+)$/i.exec(k);
+      if (!m) continue;
+      const fm = m[1].toLowerCase();
+      if (!hasExplicitModeKey(target) && modeLocalCanonKeys[fm].has(canonKey(target))) {
+        aliases.set(k, `${fm}.${target}`);
       }
     }
   }
@@ -1907,6 +2162,14 @@ export function loadDefinedTokens(tokensArg, excludeFiles = new Set()) {
   return out;
 }
 
+function isWithinRoot(candReal, baseReal) {
+  if (!candReal || !baseReal) return false;
+  const normC = process.platform === "darwin" || process.platform === "win32" ? candReal.toLowerCase() : candReal;
+  const normB = process.platform === "darwin" || process.platform === "win32" ? baseReal.toLowerCase() : baseReal;
+  const baseWithSep = normB.endsWith(sep) ? normB : normB + sep;
+  return normC === normB || normC.startsWith(baseWithSep);
+}
+
 export function scanCodeConnect(codeConnectDir) {
   if (!codeConnectDir) return null;
   const abs = resolve(codeConnectDir);
@@ -1915,6 +2178,24 @@ export function scanCodeConnect(codeConnectDir) {
   const files = [];
   const mappedComponents = new Set();
   let batchEntriesCount = 0;
+
+  let rootSt;
+  let rootReal;
+  try {
+    rootSt = statSync(abs);
+    rootReal = realpathSync(abs);
+  } catch {
+    return {
+      directory: abs,
+      codeConnectFiles: 0,
+      batchEntriesCount: 0,
+      mappedComponentsCount: 0,
+      mappedComponents: [],
+      files: [],
+    };
+  }
+  const rootBoundary = rootSt.isDirectory() ? rootReal : dirname(rootReal);
+  const visitedFiles = new Set();
 
   const scanFile = (full, relDisplay) => {
     const txt = readFileSync(full, "utf8");
@@ -2039,17 +2320,25 @@ export function scanCodeConnect(codeConnectDir) {
     if (/\.figma\.batch\.(ts|tsx|js|jsx)$/i.test(full)) {
       const jsonPath = full.replace(/\.(ts|tsx|js|jsx)$/i, ".json");
       if (existsSync(jsonPath)) {
+        let realBatchJson = null;
         try {
-          const batchData = JSON.parse(readFileSync(jsonPath, "utf8"));
-          const items = Array.isArray(batchData) ? batchData : Array.isArray(batchData?.components) ? batchData.components : [];
-          for (const item of items) {
-            const name = typeof item === "string" ? item : item?.component || item?.name || item?.id;
-            if (typeof name === "string" && name.trim()) {
-              found.add(name.trim());
-              batchEntriesCount++;
+          realBatchJson = realpathSync(jsonPath);
+        } catch {
+          realBatchJson = null;
+        }
+        if (realBatchJson && isWithinRoot(realBatchJson, rootBoundary)) {
+          try {
+            const batchData = JSON.parse(readFileSync(realBatchJson, "utf8"));
+            const items = Array.isArray(batchData) ? batchData : Array.isArray(batchData?.components) ? batchData.components : [];
+            for (const item of items) {
+              const name = typeof item === "string" ? item : item?.component || item?.name || item?.id;
+              if (typeof name === "string" && name.trim()) {
+                found.add(name.trim());
+                batchEntriesCount++;
+              }
             }
-          }
-        } catch {}
+          } catch {}
+        }
       }
     }
 
@@ -2058,22 +2347,9 @@ export function scanCodeConnect(codeConnectDir) {
     files.push({ file: relDisplay.replace(/\\/g, "/"), connections: list });
   };
 
-  let rootSt;
-  try {
-    rootSt = statSync(abs);
-  } catch {
-    return {
-      directory: abs,
-      codeConnectFiles: 0,
-      batchEntriesCount: 0,
-      mappedComponentsCount: 0,
-      mappedComponents: [],
-      files: [],
-    };
-  }
-
   if (rootSt.isFile()) {
     if (/\.figma(?:\.batch)?\.(ts|tsx|js|jsx)$/i.test(abs)) {
+      visitedFiles.add(rootReal);
       scanFile(abs, abs.split(/[/\\]/).pop() || abs);
     }
   } else if (rootSt.isDirectory()) {
@@ -2085,6 +2361,7 @@ export function scanCodeConnect(codeConnectDir) {
       } catch {
         return;
       }
+      if (!isWithinRoot(realDir, rootReal)) return;
       if (visitedDirs.has(realDir)) return;
       visitedDirs.add(realDir);
       for (const e of readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
@@ -2094,6 +2371,8 @@ export function scanCodeConnect(codeConnectDir) {
         let isFile = e.isFile();
         if (e.isSymbolicLink()) {
           try {
+            const realEntry = realpathSync(full);
+            if (!isWithinRoot(realEntry, rootReal)) continue;
             const st = statSync(full);
             isDir = st.isDirectory();
             isFile = st.isFile();
@@ -2107,6 +2386,14 @@ export function scanCodeConnect(codeConnectDir) {
         }
         if (!isFile) continue;
         if (/\.figma(?:\.batch)?\.(ts|tsx|js|jsx)$/i.test(e.name)) {
+          let realFile;
+          try {
+            realFile = realpathSync(full);
+          } catch {
+            continue;
+          }
+          if (!isWithinRoot(realFile, rootReal) || visitedFiles.has(realFile)) continue;
+          visitedFiles.add(realFile);
           scanFile(full, relative(abs, full));
         }
       }
@@ -2199,23 +2486,57 @@ export function compareVertices({ figmaPath, tokensArg, codeConnectDir = null, r
   }
 
   const explicitPrefix = prefix ? canonKey(normalizeKey(prefix)).replace(/^\.+|\.+$/g, "") : null;
-  const definedPrefix = explicitPrefix || detectDominantPrefix(defined, figma.variables);
+  const splitLeadingMode = (k) => {
+    const m = /^(light|dark)\.(.+)$/i.exec(String(k || ""));
+    return m ? { mode: m[1].toLowerCase(), rest: m[2] } : { mode: null, rest: String(k || "") };
+  };
+  const stripLeadingModeMap = (srcMap) => {
+    const resMap = new Map();
+    for (const [k, v] of srcMap.entries()) {
+      const { rest } = splitLeadingMode(canonKey(k));
+      if (rest && !resMap.has(rest)) resMap.set(rest, v);
+    }
+    return resMap;
+  };
+  const noModeDefined = stripLeadingModeMap(defined);
+  const noModeFigma = stripLeadingModeMap(figma.variables);
+  const definedPrefix =
+    explicitPrefix ||
+    detectDominantPrefix(defined, figma.variables) ||
+    detectDominantPrefix(noModeDefined, noModeFigma) ||
+    detectDominantPrefix(noModeDefined, figma.variables);
   const strippedDefinedForPrefix = new Map();
   for (const [dKey, dVal] of defined.entries()) {
     const ck = canonKey(dKey);
-    const bare = definedPrefix && ck.startsWith(`${definedPrefix}.`) ? ck.slice(definedPrefix.length + 1) : ck;
+    const { mode, rest } = splitLeadingMode(ck);
+    let bare = ck;
+    if (definedPrefix && ck.startsWith(`${definedPrefix}.`)) {
+      bare = ck.slice(definedPrefix.length + 1);
+    } else if (definedPrefix && mode && rest.startsWith(`${definedPrefix}.`)) {
+      bare = `${mode}.${rest.slice(definedPrefix.length + 1)}`;
+    }
     if (!strippedDefinedForPrefix.has(bare)) strippedDefinedForPrefix.set(bare, dVal);
   }
-  const figmaPrefix = explicitPrefix || detectDominantPrefix(figma.variables, strippedDefinedForPrefix);
+  const noModeStrippedDefined = stripLeadingModeMap(strippedDefinedForPrefix);
+  const figmaPrefix =
+    explicitPrefix ||
+    detectDominantPrefix(figma.variables, strippedDefinedForPrefix) ||
+    detectDominantPrefix(noModeFigma, noModeStrippedDefined);
   const directLookup = new Map();
   const strippedLookup = new Map();
   for (const [dKey, dVal] of defined.entries()) {
     const ck = canonKey(dKey);
     if (!directLookup.has(dKey)) directLookup.set(dKey, { key: dKey, value: dVal });
     if (!directLookup.has(ck)) directLookup.set(ck, { key: dKey, value: dVal });
+    const { mode, rest } = splitLeadingMode(ck);
     if (definedPrefix && ck.startsWith(`${definedPrefix}.`)) {
       const bareCanon = ck.slice(definedPrefix.length + 1);
       if (!strippedLookup.has(bareCanon)) strippedLookup.set(bareCanon, { key: dKey, value: dVal });
+    } else if (definedPrefix && mode && rest.startsWith(`${definedPrefix}.`)) {
+      const bareRest = rest.slice(definedPrefix.length + 1);
+      const bareModeCanon = `${mode}.${bareRest}`;
+      if (!strippedLookup.has(bareModeCanon)) strippedLookup.set(bareModeCanon, { key: dKey, value: dVal });
+      if (!strippedLookup.has(bareRest)) strippedLookup.set(bareRest, { key: dKey, value: dVal });
     }
   }
 
@@ -2252,6 +2573,14 @@ export function compareVertices({ figmaPath, tokensArg, codeConnectDir = null, r
     const bareFigma = figmaPrefix && ck.startsWith(`${figmaPrefix}.`) ? ck.slice(figmaPrefix.length + 1) : null;
     const bareStrippedFigma =
       figmaPrefix && strippedCk.startsWith(`${figmaPrefix}.`) ? strippedCk.slice(figmaPrefix.length + 1) : null;
+    const { mode: ckMode, rest: ckRest } = splitLeadingMode(ck);
+    const bareModeFigma =
+      ckMode && figmaPrefix && ckRest.startsWith(`${figmaPrefix}.`) ? `${ckMode}.${ckRest.slice(figmaPrefix.length + 1)}` : null;
+    const { mode: sckMode, rest: sckRest } = splitLeadingMode(strippedCk);
+    const bareStrippedModeFigma =
+      sckMode && figmaPrefix && sckRest.startsWith(`${figmaPrefix}.`)
+        ? `${sckMode}.${sckRest.slice(figmaPrefix.length + 1)}`
+        : null;
     const candidates = [
       keyStr,
       ck,
@@ -2260,6 +2589,8 @@ export function compareVertices({ figmaPath, tokensArg, codeConnectDir = null, r
       stripPrimitivesSegment(ck),
       ...(bareFigma ? [bareFigma, stripPrimitivesSegment(bareFigma)] : []),
       ...(bareStrippedFigma && bareStrippedFigma !== bareFigma ? [bareStrippedFigma] : []),
+      ...(bareModeFigma ? [bareModeFigma, stripPrimitivesSegment(bareModeFigma)] : []),
+      ...(bareStrippedModeFigma && bareStrippedModeFigma !== bareModeFigma ? [bareStrippedModeFigma] : []),
     ];
     for (const cand of candidates) {
       if (dMap.has(cand)) return dMap.get(cand);
@@ -2279,6 +2610,12 @@ export function compareVertices({ figmaPath, tokensArg, codeConnectDir = null, r
     if (fKey.startsWith("dark.") && darkCssMap) {
       const darkHit = lookupInMaps(fKey.slice(5), darkDirectLookup, darkStrippedLookup);
       if (darkHit) return { ...darkHit, fromDarkCss: true };
+    }
+    if (fKey.startsWith("dark.")) {
+      const darkBareHit = lookupInMaps(fKey.slice(5), directLookup, strippedLookup);
+      if (darkBareHit && typeof darkBareHit.value === "string" && /\blight-dark\s*\(/i.test(darkBareHit.value)) {
+        return { ...darkBareHit, fromDarkCss: false };
+      }
     }
     if (fKey.startsWith("light.")) {
       const lightHit = lookupInMaps(fKey.slice(6), directLookup, strippedLookup);
@@ -2302,7 +2639,8 @@ export function compareVertices({ figmaPath, tokensArg, codeConnectDir = null, r
     } else {
       matchedDefinedCanons.add(canonKey(found.key));
       allResolvedPairs.push({ figmaKey: fKey, definedKey: found.key, value: found.value, fromDarkCss: Boolean(found.fromDarkCss) });
-      if (valuesMatch(fVal, found.value)) {
+      const cmpMode = /^dark\./i.test(fKey) || found.fromDarkCss ? "dark" : /^light\./i.test(fKey) ? "light" : null;
+      if (valuesMatch(fVal, found.value, cmpMode)) {
         matchedTokens.push({ key: fKey, value: found.value });
         matchedPairs.push({ figmaKey: fKey, definedKey: found.key, value: found.value });
       } else {
@@ -2322,7 +2660,8 @@ export function compareVertices({ figmaPath, tokensArg, codeConnectDir = null, r
       if (ck && !shippedNorm.has(ck)) shippedNorm.set(ck, { cssVar, value: normVal });
       if (ck && !shippedCanonMap.has(ck)) shippedCanonMap.set(ck, { cssVar, value: normVal });
     }
-    const shippedPrefix = definedPrefix || detectDominantPrefix(shippedCanonMap, defined);
+    const shippedPrefix = detectDominantPrefix(shippedCanonMap, defined) || definedPrefix;
+    const definedVsShippedPrefix = definedPrefix || detectDominantPrefix(defined, shippedCanonMap);
     if (shippedPrefix) {
       for (const [sCk, info] of shippedCanonMap.entries()) {
         if (sCk.startsWith(`${shippedPrefix}.`)) {
@@ -2334,7 +2673,7 @@ export function compareVertices({ figmaPath, tokensArg, codeConnectDir = null, r
     const isDarkModeKey = (k) => /^dark\./i.test(String(k || ""));
     const stripLightModePrefix = (k) => String(k || "").replace(/^light\./i, "");
     const noLightDefinedPrefix =
-      definedPrefix ||
+      definedVsShippedPrefix ||
       detectDominantPrefix(
         new Map([...defined.entries()].map(([dk, dv]) => [stripLightModePrefix(dk), dv])),
         shippedCanonMap
@@ -2347,7 +2686,7 @@ export function compareVertices({ figmaPath, tokensArg, codeConnectDir = null, r
       seenDefined.add(ck);
       const noLightKey = stripLightModePrefix(pair.definedKey);
       const noLightCk = stripLightModePrefix(ck);
-      const bareCk = definedPrefix && ck.startsWith(`${definedPrefix}.`) ? ck.slice(definedPrefix.length + 1) : null;
+      const bareCk = definedVsShippedPrefix && ck.startsWith(`${definedVsShippedPrefix}.`) ? ck.slice(definedVsShippedPrefix.length + 1) : null;
       const bareNoLightCk =
         noLightDefinedPrefix && noLightCk.startsWith(`${noLightDefinedPrefix}.`)
           ? noLightCk.slice(noLightDefinedPrefix.length + 1)
@@ -2467,12 +2806,15 @@ export function compareDefinedToShipped({ tokensArg, runtimePath, codeConnectDir
   const isDarkModeKey = (k) => /^dark\./i.test(String(k || ""));
   const stripLightModePrefix = (k) => String(k || "").replace(/^light\./i, "");
   const noLightDefined = new Map([...defined.entries()].map(([dk, dv]) => [stripLightModePrefix(dk), dv]));
+  const noModeDefined = new Map([...defined.entries()].map(([dk, dv]) => [String(dk || "").replace(/^(?:light|dark)\./i, ""), dv]));
   const activePrefix = prefix
     ? canonKey(normalizeKey(prefix)).replace(/^\.+|\.+$/g, "")
     : detectDominantPrefix(defined, shippedUnique) ||
       detectDominantPrefix(noLightDefined, shippedUnique) ||
+      detectDominantPrefix(noModeDefined, shippedUnique) ||
       detectDominantPrefix(shippedUnique, defined) ||
-      detectDominantPrefix(shippedUnique, noLightDefined);
+      detectDominantPrefix(shippedUnique, noLightDefined) ||
+      detectDominantPrefix(shippedUnique, noModeDefined);
   if (activePrefix) {
     for (const [sCk, info] of shippedUnique.entries()) {
       if (sCk.startsWith(`${activePrefix}.`)) {
@@ -2525,7 +2867,8 @@ export function compareDefinedToShipped({ tokensArg, runtimePath, codeConnectDir
       definedNotShipped.push({ key: entry.canon, definedValue: entry.value });
     } else {
       matchedShippedCanons.add(hit.canon);
-      if (valuesMatch(entry.value, hit.value)) {
+      const cmpShippedMode = isDarkModeKey(entry.canon) ? "dark" : /^light\./i.test(entry.canon) ? "light" : null;
+      if (valuesMatch(entry.value, hit.value, cmpShippedMode)) {
         matchedTokens.push({ key: entry.canon, cssVar: hit.cssVar, value: entry.value });
       } else {
         valueDrift.push({
@@ -3183,9 +3526,9 @@ function runSelfTest() {
     const r12Cc = scanCodeConnect(join(r12Dir, "figma"));
     assert.deepEqual(r12Cc.mappedComponents, ["Button", "Chip"], "TypeScript generic figma.connect<...>(Comp, ...) must be extracted");
 
-    // Round 13 regression (R13-A2-17): scanCodeConnect must skip broken symlinks, follow dir symlinks, and break cycles
+    // Round 13 regression (R13-A2-17): scanCodeConnect must skip broken symlinks, follow in-root dir symlinks, and break cycles
     const r13CcDir = join(scratch, "r13-cc");
-    const r13CcReal = join(scratch, "r13-shared");
+    const r13CcReal = join(r13CcDir, ".internal-shared");
     mkdirSync(r13CcDir, { recursive: true });
     mkdirSync(r13CcReal, { recursive: true });
     writeFileSync(join(r13CcReal, "Badge.figma.tsx"), 'figma.connect(Badge, "https://figma.com/file/abc", {});\n');
@@ -3968,6 +4311,289 @@ function runSelfTest() {
     assert.equal(r40DarkOk.summary.codeOnlyCount, 0, "R40 A2-M7: dark.shadow.card must not be double-prefixed dark.dark.shadow.card");
     const r40DarkStale = compareVertices({ figmaPath: r40DarkCompFigStale, tokensArg: r40DarkCompDir });
     assert.equal(r40DarkStale.summary.valueDriftCount, 1, "R40 A2-M7: stale :root #000000 in Figma dark.shadow.card must report drift against .dark #38bdf8");
+
+    // Round 41 (R40-A2-H3 unwrapped W3C dim/oklch/shadow & legacy dim value + R40-A2-M5 em vs px & recursive composite match):
+    assert.equal(valuesMatch("1em", "16px"), true, "R41 A2-M5: 1em must equal 16px");
+    assert.equal(
+      valuesMatch(
+        { fontFamily: ["Inter", "sans-serif"], fontSize: "1rem", fontWeight: "Bold" },
+        { fontFamily: "Inter, sans-serif", fontSize: "16px", fontWeight: 700 }
+      ),
+      true,
+      "R41 A2-M5: composite typography objects must compare fields via valuesMatch"
+    );
+    const r41UnwrappedFig = join(scratch, "r41-unwrapped-fig.json");
+    const r41WrappedCode = join(scratch, "r41-wrapped-code.json");
+    writeFileSync(
+      r41UnwrappedFig,
+      JSON.stringify({
+        space: {
+          md: { value: 1, unit: "rem" },
+          lg: { type: "dimension", value: { value: 2, unit: "em" } },
+        },
+        color: {
+          accent: { colorSpace: "oklch", components: [0.6231, 0.188, 259.81] },
+        },
+        shadow: {
+          card: { offsetX: "0px", offsetY: "4px", blur: "12px", spread: "0px", color: "#000000" },
+        },
+        typo: {
+          body: {
+            $type: "typography",
+            $value: { fontFamily: ["Inter", "sans-serif"], fontSize: "1rem", fontWeight: "Bold" },
+          },
+        },
+      })
+    );
+    writeFileSync(
+      r41WrappedCode,
+      JSON.stringify({
+        space: {
+          md: { $type: "dimension", $value: "16px" },
+          lg: { $type: "dimension", $value: "32px" },
+        },
+        color: {
+          accent: { $type: "color", $value: "#3b82f6" },
+        },
+        shadow: {
+          card: { $type: "shadow", $value: "0 4px 12px #000000" },
+        },
+        typo: {
+          body: {
+            $type: "typography",
+            $value: { fontFamily: "Inter, sans-serif", fontSize: "16px", fontWeight: 700 },
+          },
+        },
+      })
+    );
+    const r41Comp = compareVertices({ figmaPath: r41UnwrappedFig, tokensArg: r41WrappedCode });
+    assert.equal(r41Comp.summary.matchedCount, 5, "R41 A2-H3/M5: unwrapped W3C objects, legacy dimension, em/px, and composite typography must match cleanly");
+    assert.equal(r41Comp.summary.valueDriftCount, 0);
+
+    // Round 42 (R41-A2-M7 shadow length unit normalization rem/em vs px/0):
+    const r42ShadowFig = join(scratch, "r42-shadow-figma.json");
+    const r42ShadowCode = join(scratch, "r42-shadow-code.json");
+    writeFileSync(
+      r42ShadowFig,
+      JSON.stringify({
+        shadow: {
+          sm: { $type: "shadow", $value: "0 0.25rem 0.5rem rgba(0, 0, 0, 0.2)" },
+          md: { $type: "shadow", $value: "0 0.25rem 0.75rem rgba(0, 0, 0, 0.2)" },
+        },
+      })
+    );
+    writeFileSync(
+      r42ShadowCode,
+      JSON.stringify({
+        shadow: {
+          sm: { $type: "shadow", $value: "0px 4px 8px rgba(0, 0, 0, 0.2)" },
+          md: { $type: "shadow", $value: "0px 4px 8px rgba(0, 0, 0, 0.2)" },
+        },
+      })
+    );
+    const r42ShadowDiff = compareVertices({ figmaPath: r42ShadowFig, tokensArg: r42ShadowCode });
+    assert.equal(r42ShadowDiff.summary.matchedCount, 1);
+    assert.equal(r42ShadowDiff.summary.valueDriftCount, 1, "R42 A2-M7: 0.25rem/0.5rem matches 4px/8px while 0.75rem vs 8px must still drift");
+    assert.equal(r42ShadowDiff.valueDrift[0].key, "shadow.md");
+
+    // Round 43 (R42-A2-H5 structured dimension in $extensions.mode, R42-A2-M11 component 4-decimal rounding, R42-A2-M12 cross/split prefixes):
+    const r43Dir = join(scratch, "r43-figma-diff");
+    mkdirSync(r43Dir, { recursive: true });
+    const r43TokPath = join(r43Dir, "tokens.json");
+    const r43FigPath = join(r43Dir, "figma.json");
+    writeFileSync(
+      r43TokPath,
+      JSON.stringify({
+        space: {
+          pad: {
+            $type: "dimension",
+            $value: { value: 1, unit: "rem" },
+            $extensions: { mode: { compact: { value: 0.5, unit: "rem" } } },
+          },
+        },
+        color: {
+          p3: { $type: "color", $value: { colorSpace: "display-p3", components: [0.8999999761581421, 0.2, 0.1] } },
+        },
+      })
+    );
+    writeFileSync(
+      r43FigPath,
+      JSON.stringify({
+        compact: { space: { pad: { $type: "dimension", $value: "8px" } } },
+        color: { p3: { $type: "color", $value: "color(display-p3 0.9 0.2 0.1)" } },
+      })
+    );
+    const r43Diff = compareVertices({ figmaPath: r43FigPath, tokensArg: r43TokPath });
+    assert.equal(r43Diff.summary.matchedCount, 2, "R43 A2-H5/M11: mode structured dimension & 4-dec P3 components must match");
+    assert.equal(r43Diff.summary.valueDriftCount, 0);
+
+    const r43SplitDef = join(r43Dir, "split-def.json");
+    const r43SplitRt = join(r43Dir, "split-rt.json");
+    writeFileSync(
+      r43SplitDef,
+      JSON.stringify({
+        light: { ds: { a: { $value: "#111111" }, b: { $value: "#222222" } } },
+        dark: { ds: { a: { $value: "#eeeeee" }, b: { $value: "#dddddd" } } },
+      })
+    );
+    writeFileSync(
+      r43SplitRt,
+      JSON.stringify({
+        files: [{ computedVars: { "--a": "#111111", "--b": "#222222" } }],
+      })
+    );
+    const r43SplitRes = compareDefinedToShipped({ tokensArg: r43SplitDef, runtimePath: r43SplitRt });
+    assert.equal(r43SplitRes.summary.definedNotShippedCount, 0, "R43 A2-M12: 50/50 light/dark split prefix must match unprefixed shipped vars");
+
+    const r43FigPlain = join(r43Dir, "fig-plain.json");
+    const r43DefDs = join(r43Dir, "def-ds.json");
+    const r43RtApp = join(r43Dir, "rt-app.json");
+    writeFileSync(r43FigPlain, JSON.stringify({ color: { bg: "#ffffff", fg: "#111111", acc: "#1d4ed8" } }));
+    writeFileSync(r43DefDs, JSON.stringify({ ds: { color: { bg: "#ffffff", fg: "#111111", acc: "#1d4ed8" } } }));
+    writeFileSync(r43RtApp, JSON.stringify({ files: [{ computedVars: { "--app-color-bg": "#ffffff", "--app-color-fg": "#111111", "--app-color-acc": "#1d4ed8" } }] }));
+    const r43ThreeRes = compareVertices({ figmaPath: r43FigPlain, tokensArg: r43DefDs, runtimePath: r43RtApp });
+    assert.equal(r43ThreeRes.shippedSummary.shippedMatchedCount, 3, "R43 A2-M12: 3-vertex different shipped prefix (--app-*) must match cleanly");
+
+    // Round 44 (R43-A2-H10 split mode prefix strip, R43-A2-M11 cross-file $extends, R43-A2-M12 CSS named colors/light-dark/color-mix):
+    const r44Dir = join(scratch, "r44-figma-diff");
+    mkdirSync(join(r44Dir, "split-toks"), { recursive: true });
+    writeFileSync(
+      join(r44Dir, "split-toks/light.tokens.json"),
+      JSON.stringify({ acme: { color: { bg: { $type: "color", $value: "#ffffff" }, fg: { $type: "color", $value: "#111111" } } } })
+    );
+    writeFileSync(
+      join(r44Dir, "split-toks/dark.tokens.json"),
+      JSON.stringify({ acme: { color: { bg: { $type: "color", $value: "#0f172a" }, fg: { $type: "color", $value: "#f8fafc" } } } })
+    );
+    const r44SplitFig = join(r44Dir, "split-figma.json");
+    writeFileSync(
+      r44SplitFig,
+      JSON.stringify({
+        light: { color: { bg: "#ffffff", fg: "#111111" } },
+        dark: { color: { bg: "#0f172a", fg: "#f8fafc" } },
+      })
+    );
+    const r44SplitRes = compareVertices({ figmaPath: r44SplitFig, tokensArg: join(r44Dir, "split-toks") });
+    assert.equal(r44SplitRes.summary.detectedPrefix, "acme", "R44 A2-H10: split light./dark. keys must detect 'acme' prefix");
+    assert.equal(r44SplitRes.summary.designOnlyCount, 0, "R44 A2-H10: split light./dark. keys must match without designOnlyTokens");
+    assert.equal(r44SplitRes.summary.matchedCount, 4);
+
+    mkdirSync(join(r44Dir, "ext-toks"), { recursive: true });
+    writeFileSync(join(r44Dir, "ext-toks/base.tokens.json"), JSON.stringify({ base: { card: { bg: { $type: "color", $value: "#ffffff" } } } }));
+    writeFileSync(join(r44Dir, "ext-toks/theme.tokens.json"), JSON.stringify({ card: { $extends: "{base.card}" } }));
+    const r44ExtFig = join(r44Dir, "ext-fig.json");
+    writeFileSync(r44ExtFig, JSON.stringify({ card: { bg: "#ffffff" } }));
+    const r44ExtRes = compareVertices({ figmaPath: r44ExtFig, tokensArg: join(r44Dir, "ext-toks") });
+    assert.equal(r44ExtRes.summary.matchedCount, 1, "R44 A2-M11: cross-file $extends must resolve inside loadDefinedTokens");
+
+    assert.equal(valuesMatch("cornflowerblue", "#6495ed"), true, "R44 A2-M12: CSS Color 4 named color must normalize");
+    assert.equal(valuesMatch("color-mix(in srgb, red 50%, blue)", "#800080"), true, "R44 A2-M12: color-mix must normalize");
+    assert.equal(valuesMatch("#ffffff", "light-dark(white, #0b0f19)", "light"), true, "R44 A2-M12: light-dark light branch");
+    assert.equal(valuesMatch("#0b0f19", "light-dark(white, #0b0f19)", "dark"), true, "R44 A2-M12: light-dark dark branch");
+
+    // Round 45 (negative chroma C<0 clamping in lch):
+    assert.equal(valuesMatch("lch(60 -50 30)", "lch(60 0 30)"), true, "R45 A2-L1: lch() CSS string negative chroma must clamp to 0");
+    assert.equal(valuesMatch({ colorSpace: "lch", components: [60, -50, 30] }, "lch(60 0 30)"), true, "R45 A2-L1: W3C lch negative chroma must clamp to 0");
+
+    // Round 46 (A2-M5 color-mix+light-dark loading preservation, A2-M6 :root light-dark dark fallback, A2-M7 calc/min/max inside oklch/oklab/color):
+    const r46Dir = join(scratch, "r46-ld");
+    mkdirSync(join(r46Dir, "toks"), { recursive: true });
+    writeFileSync(
+      join(r46Dir, "toks/tokens.css"),
+      ":root {\n  color-scheme: light dark;\n  --bg: color-mix(in srgb, light-dark(#ffffff, #000000) 50%, #000000);\n  --surface: light-dark(#ffffff, #000000);\n}\n"
+    );
+    const r46Fig = join(r46Dir, "figma.json");
+    writeFileSync(
+      r46Fig,
+      JSON.stringify({
+        light: { bg: "#808080", surface: "#ffffff" },
+        dark: { bg: "#000000", surface: "#000000" },
+      })
+    );
+    const r46Res = compareVertices({ figmaPath: r46Fig, tokensArg: join(r46Dir, "toks") });
+    assert.equal(r46Res.summary.designOnlyCount, 0, "R46 A2-M6: dark.* keys must resolve against :root light-dark() vars");
+    assert.equal(r46Res.summary.valueDriftCount, 0, "R46 A2-M5/M6: color-mix(light-dark(...)) and light-dark(...) must match both modes cleanly");
+    assert.equal(r46Res.summary.matchedCount, 4);
+
+    assert.equal(valuesMatch("oklch(calc(0.5 + 0.1) 0.1 250)", "oklch(0.6 0.1 250)"), true, "R46 A2-M7: oklch calc() must match");
+    assert.equal(valuesMatch("oklab(calc(0.5 + 0.1) 0.05 -0.05)", "oklab(0.6 0.05 -0.05)"), true, "R46 A2-M7: oklab calc() must match");
+    assert.equal(valuesMatch("color(srgb calc(0.5 + 0.5) 0 0)", "#ff0000"), true, "R46 A2-M7: color(srgb calc()) must match #ff0000");
+    assert.equal(valuesMatch("color(display-p3 calc(0.5 + 0.5) 0 0)", "color(display-p3 1 0 0)"), true, "R46 A2-M7: color(display-p3 calc()) must match");
+
+    // Round 47 (A2-M7 in-sRGB-gamut color(display-p3/srgb-linear/xyz-d65) normalization to #hex/rgba while keeping out-of-gamut colors):
+    assert.equal(valuesMatch("color(display-p3 0.1666 0.3017 0.8158)", "#1d4ed8"), true, "R47 A2-M7: in-gamut color(display-p3) string must match #1d4ed8");
+    assert.equal(valuesMatch({ colorSpace: "display-p3", components: [0.1666, 0.3017, 0.8158] }, "#1d4ed8"), true, "R47 A2-M7: in-gamut W3C display-p3 object must match #1d4ed8");
+    assert.equal(valuesMatch("color(display-p3 0.1666 0.3017 0.8158 / 0.5)", "rgba(29, 78, 216, 0.5)"), true, "R47 A2-M7: in-gamut color(display-p3) with alpha must match rgba()");
+    assert.equal(valuesMatch("color(srgb-linear 1 0 0)", "#ff0000"), true, "R47 A2-M7: in-gamut color(srgb-linear) must match #ff0000");
+    assert.equal(valuesMatch({ colorSpace: "xyz-d65", components: [0.4124, 0.2126, 0.0193] }, "#ff0000"), true, "R47 A2-M7: in-gamut W3C xyz-d65 object must match #ff0000");
+    assert.equal(normalizeValue("color(display-p3 1 0 0)"), "color(display-p3 1 0 0)", "R47 A2-M7: out-of-sRGB-gamut color(display-p3 1 0 0) must stay color(display-p3 1 0 0)");
+
+    // Round 48 (A2-M4 out-of-sRGB-gamut lab/lch/hwb must preserve wide-gamut values while in-gamut still matches hex):
+    assert.equal(normalizeValue("lab(85 -160 130)"), "lab(85 -160 130)", "R48 A2-M4: out-of-gamut lab() must stay wide-gamut");
+    assert.equal(valuesMatch("lab(85 -160 130)", { colorSpace: "lab", components: [85, -160, 130] }), true, "R48 A2-M4: out-of-gamut CSS lab() must match DTCG lab object");
+    assert.equal(normalizeValue("lch(87 180 136deg)"), "lch(87 180 136)", "R48 A2-M4: out-of-gamut lch() must stay canonical wide-gamut");
+    assert.equal(valuesMatch("lch(87 180 136deg / 0.5)", { colorSpace: "lch", components: [87, 180, -224], alpha: 0.5 }), true, "R48 A2-M4: out-of-gamut lch() with angle/alpha must match DTCG object");
+    assert.equal(normalizeValue("hwb(120 -20% 0%)"), "hwb(120 -20 0)", "R48 A2-M4: out-of-gamut hwb() must stay canonical wide-gamut");
+    assert.equal(valuesMatch("hwb(120 -20% 0%)", { colorSpace: "hwb", components: [120, -20, 0] }), true, "R48 A2-M4: out-of-gamut hwb() must match DTCG object");
+    assert.equal(valuesMatch("lab(54.2917 80.8125 69.8851)", "#ff0000"), true, "R48 A2-M4: in-gamut lab() must still match #ff0000");
+    assert.equal(valuesMatch("hwb(120 20% 20%)", "#33cc33"), true, "R48 A2-M4: in-gamut hwb() must still match #33cc33");
+
+    // Round 49 (A2-H1 loadDefinedTokens escaping symlink & dsaf-tokens manifest containment):
+    const r49Out = join(scratch, "r49-outside");
+    const r49Repo = join(scratch, "r49-repo");
+    mkdirSync(join(r49Out, "sub"), { recursive: true });
+    mkdirSync(join(r49Repo, "tokens"), { recursive: true });
+    mkdirSync(join(r49Repo, "styles"), { recursive: true });
+    writeFileSync(join(r49Out, "leak.tokens.json"), JSON.stringify({ $type: "color", secret: { external: { $value: "#ff00aa" } } }));
+    writeFileSync(join(r49Out, "sub/dir-leak.tokens.json"), JSON.stringify({ $type: "color", secret: { dirleak: { $value: "#112233" } } }));
+    writeFileSync(join(r49Out, "leak.css"), ":root { --ext-leak: #abcdef; }\n");
+    writeFileSync(join(r49Repo, "tokens/ok.tokens.json"), JSON.stringify({ $type: "color", brand: { primary: { $value: "#1d4ed8" } } }));
+    symlinkSync(join(r49Out, "leak.tokens.json"), join(r49Repo, "tokens/leak.tokens.json"));
+    symlinkSync(join(r49Out, "sub"), join(r49Repo, "tokens/ext-dir"));
+    symlinkSync(join(r49Out, "leak.css"), join(r49Repo, "styles/leak.css"));
+    const r49Loaded = loadDefinedTokens(r49Repo);
+    assert.equal(r49Loaded.has("brand.primary"), true, "R49 A2-H1: in-root token must load");
+    assert.equal(r49Loaded.has("secret.external"), false, "R49 A2-H1: escaping file symlink token must be ignored");
+    assert.equal(r49Loaded.has("secret.dirleak"), false, "R49 A2-H1: escaping dir symlink token must be ignored");
+    assert.equal(r49Loaded.has("ext.leak"), false, "R49 A2-H1: escaping CSS symlink token must be ignored");
+    const r49ManifestPath = join(r49Repo, "dsaf-tokens.json");
+    writeFileSync(
+      r49ManifestPath,
+      JSON.stringify({
+        schema: "dsaf-tokens/1",
+        target: r49Repo,
+        dtcgFiles: [{ file: "tokens/ok.tokens.json" }, { file: "../r49-outside/leak.tokens.json" }, { file: "tokens/leak.tokens.json" }],
+      })
+    );
+    const r49ManifestLoaded = loadDefinedTokens(r49ManifestPath);
+    assert.equal(r49ManifestLoaded.has("brand.primary"), true);
+    assert.equal(r49ManifestLoaded.has("secret.external"), false, "R49 A2-H1: dsaf-tokens manifest must block escaping relative/symlink dtcgFiles");
+
+    // Round 50 (R50-A2-M1 scanCodeConnect root containment + R50-A2-M2 color() none/xyz-d65 canonicalization):
+    const r50CcOutside = join(scratch, "r50-cc-outside");
+    const r50CcDir = join(scratch, "r50-cc");
+    mkdirSync(r50CcOutside, { recursive: true });
+    mkdirSync(r50CcDir, { recursive: true });
+    writeFileSync(join(r50CcOutside, "EscapeDir.figma.tsx"), 'figma.connect(EscapeDir, "https://figma.com/file/abc", {});\n');
+    writeFileSync(join(r50CcOutside, "EscapeFile.figma.tsx"), 'figma.connect(EscapeFile, "https://figma.com/file/abc", {});\n');
+    writeFileSync(join(r50CcOutside, "SecretBatch.json"), JSON.stringify(["SecretComp"]));
+    writeFileSync(join(r50CcDir, "Batch.figma.batch.tsx"), 'figma.connect(RealBatch, "https://figma.com/file/abc", {});\n');
+    symlinkSync(r50CcOutside, join(r50CcDir, "ext-dir"));
+    symlinkSync(join(r50CcOutside, "EscapeFile.figma.tsx"), join(r50CcDir, "ExtFile.figma.tsx"));
+    symlinkSync(join(r50CcOutside, "SecretBatch.json"), join(r50CcDir, "Batch.figma.batch.json"));
+    const r50CcDirRes = scanCodeConnect(r50CcDir);
+    assert.deepEqual(r50CcDirRes.mappedComponents, ["RealBatch"], "R50 A2-M1: scanCodeConnect must block escaping dir/file/batch symlinks");
+    assert.equal(r50CcDirRes.batchEntriesCount, 0);
+    const r50CcFileRes = scanCodeConnect(join(r50CcDir, "Batch.figma.batch.tsx"));
+    assert.deepEqual(r50CcFileRes.mappedComponents, ["RealBatch"], "R50 A2-M1: single-file scanCodeConnect must block escaping batch JSON symlinks");
+    assert.equal(r50CcFileRes.batchEntriesCount, 0);
+
+    assert.equal(valuesMatch("color(display-p3 1 none 0)", "color(display-p3 1 0 0)"), true, "R50 A2-M2: wide-gamut color() 'none' component must normalize to 0");
+    assert.equal(valuesMatch({ colorSpace: "display-p3", components: [1, "none", 0] }, "color(display-p3 1 0 0)"), true);
+    assert.equal(valuesMatch({ colorSpace: "display-p3", components: [1, "none", 0], alpha: "none" }, "color(display-p3 1 0 0 / none)"), true);
+    assert.equal(valuesMatch("color(xyz 1 0 0)", "color(xyz-d65 1 0 0)"), true, "R50 A2-M2: color(xyz ...) must canonicalize to xyz-d65");
+    assert.equal(valuesMatch({ colorSpace: "xyz", components: [1, 0, 0] }, "color(xyz-d65 1 0 0)"), true);
+    assert.equal(valuesMatch({ colorSpace: "xyz", components: [1, "none", 0] }, "color(xyz-d65 1 0 0)"), true);
 
     console.log("AUDIT_FIGMA_DIFF_SELF_TEST_PASSED (alias resolve + value drift + 2/3-vertex shipped + Code Connect v2)");
     return 0;

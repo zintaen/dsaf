@@ -11,7 +11,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, dirname, extname, join, relative, resolve } from "node:path";
+import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import {
@@ -26,12 +26,15 @@ import {
   endsWithGenericTaggedTemplate,
   extractImportantStyleSurfacePreservingLines,
   extractRealStyleBlocks,
+  findCssInJsTemplateRanges,
+  findHardcodedColorFunctions,
   findSvelteStyleDirectives,
   findSvgBlockRanges,
   formatGithubAnnotations,
   formatSarif,
   isDirectCliEntry,
   isRealOpenTagAttrPos as ciIsRealOpenTagAttrPos,
+  isTokenizedColorFn,
   isValidJsObjKeyPos,
   maskCssQuotedStringsPreservingLines,
   maskProseAndDocStringsPreservingLines,
@@ -84,7 +87,7 @@ function resolveNestedSelector(parentResolved, rawChildSelector) {
   const out = [];
   for (const p of pBranches) {
     for (const c of cBranches) {
-      out.push(c.includes("&") ? c.replace(/&/g, p) : `${p} ${c}`);
+      out.push(c.includes("&") ? c.replace(/&/g, () => p) : `${p} ${c}`);
     }
   }
   return out.join(", ");
@@ -537,9 +540,8 @@ function stripBalancedCssFns(src, fnNameRe) {
   return out.join("");
 }
 
-export function hasZeroAlphaColor(raw) {
-  const noMix = stripBalancedCssFns(String(raw || ""), /\b(?:color-mix|light-dark)\s*\(/gi);
-  const s = stripBalancedCssFns(noMix, /\b(?:var|env)\s*\(/gi);
+function hasBaseZeroAlphaColor(raw) {
+  const s = stripBalancedCssFns(String(raw || ""), /\b(?:var|env)\s*\(/gi);
   if (/(?<![a-zA-Z0-9_-])#(?:[0-9a-f]{3}0|[0-9a-f]{6}00)(?![0-9a-f_-])/i.test(s)) return true;
   const zeroTokRe = /^(?:0(?:\.0+)?%?|\.0+%?|none)$/i;
   const fnRe = /\b(rgba?|hsla?|hwb|lab|lch|oklab|oklch|color)\s*\(/gi;
@@ -589,6 +591,169 @@ export function hasZeroAlphaColor(raw) {
     }
   }
   return false;
+}
+
+function parseOuterZeroAlphaCall(raw) {
+  const s = String(raw || "").trim();
+  const m = /^(color-mix|light-dark)\s*\(/i.exec(s);
+  if (!m) return null;
+  const openIdx = s.indexOf("(", m.index);
+  let depth = 0;
+  let q = null;
+  for (let i = openIdx; i < s.length; i++) {
+    const c = s[i];
+    if (q) {
+      if (c === "\\" && i + 1 < s.length) i++;
+      else if (c === q) q = null;
+      continue;
+    }
+    if (c === '"' || c === "'") q = c;
+    else if (c === "(") depth++;
+    else if (c === ")") {
+      depth--;
+      if (depth === 0) {
+        return i === s.length - 1 ? { fn: m[1].toLowerCase(), body: s.slice(openIdx + 1, i) } : null;
+      }
+    }
+  }
+  return null;
+}
+
+function parseColorMixStopZeroAlpha(rawStop) {
+  const s = String(rawStop || "").trim();
+  if (!s) return { colorPart: "", pct: null };
+  const toks = [];
+  let cur = "";
+  let depth = 0;
+  let q = null;
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (q) {
+      cur += c;
+      if (c === "\\" && i + 1 < s.length) cur += s[++i];
+      else if (c === q) q = null;
+      continue;
+    }
+    if (c === '"' || c === "'") {
+      q = c;
+      cur += c;
+    } else if (c === "(") {
+      depth++;
+      cur += c;
+    } else if (c === ")") {
+      depth = Math.max(0, depth - 1);
+      cur += c;
+    } else if (/\s/.test(c) && depth === 0) {
+      if (cur) {
+        toks.push(cur);
+        cur = "";
+      }
+    } else {
+      cur += c;
+    }
+  }
+  if (cur) toks.push(cur);
+  let pct = null;
+  const rem = [];
+  for (const tok of toks) {
+    const pm = /^([+-]?(?:\d+(?:\.\d+)?|\.\d+))%$/.exec(tok);
+    if (pm && pct === null) {
+      pct = Math.max(0, Number.parseFloat(pm[1]));
+    } else {
+      rem.push(tok);
+    }
+  }
+  if (pct === null && rem.length >= 2 && /^(?:calc|min|max|clamp|var|env)\s*\(/i.test(rem[rem.length - 1])) {
+    pct = "dynamic";
+  }
+  return { colorPart: rem.join(" ").trim(), pct };
+}
+
+function evalZeroAlphaInMode(rawExpr, depth = 0, mode = "light") {
+  const t = String(rawExpr || "").replace(/!\s*important\b/gi, "").trim();
+  if (!t || depth > 8) return false;
+  if (/^transparent$/i.test(t)) return true;
+  const outer = parseOuterZeroAlphaCall(t);
+  if (outer?.fn === "light-dark") {
+    const args = splitTopLevelCommas(outer.body);
+    if (args.length === 2) {
+      return evalZeroAlphaInMode(mode === "dark" ? args[1] : args[0], depth + 1, mode);
+    }
+    return false;
+  }
+  if (outer?.fn === "color-mix") {
+    const args = splitTopLevelCommas(outer.body);
+    if (args.length === 3) {
+      const s1 = parseColorMixStopZeroAlpha(args[1]);
+      const s2 = parseColorMixStopZeroAlpha(args[2]);
+      let w1;
+      let w2;
+      if (s1.pct === "dynamic" || s2.pct === "dynamic") {
+        w1 = s1.pct === "dynamic" ? 100 : s1.pct ?? 50;
+        w2 = s2.pct === "dynamic" ? 100 : s2.pct ?? 50;
+      } else if (s1.pct !== null && s2.pct !== null) {
+        w1 = s1.pct;
+        w2 = s2.pct;
+      } else if (s1.pct !== null) {
+        w1 = s1.pct;
+        w2 = Math.max(0, 100 - s1.pct);
+      } else if (s2.pct !== null) {
+        w2 = s2.pct;
+        w1 = Math.max(0, 100 - s2.pct);
+      } else {
+        w1 = 50;
+        w2 = 50;
+      }
+      const vis1 = w1 > 0 && Boolean(s1.colorPart) && !evalZeroAlphaInMode(s1.colorPart, depth + 1, mode);
+      const vis2 = w2 > 0 && Boolean(s2.colorPart) && !evalZeroAlphaInMode(s2.colorPart, depth + 1, mode);
+      return !vis1 && !vis2;
+    }
+    return false;
+  }
+  return hasBaseZeroAlphaColor(t);
+}
+
+export function hasZeroAlphaColor(raw) {
+  const s = String(raw || "");
+  const mixLdRe = /\b(?:color-mix|light-dark)\s*\(/gi;
+  const out = [];
+  let i = 0;
+  while (i < s.length) {
+    mixLdRe.lastIndex = i;
+    const m = mixLdRe.exec(s);
+    if (!m) {
+      out.push(s.slice(i));
+      break;
+    }
+    out.push(s.slice(i, m.index));
+    let j = m.index + m[0].length;
+    let depth = 1;
+    let q = null;
+    while (j < s.length && depth > 0) {
+      const c = s[j];
+      if (q) {
+        if (c === "\\" && j + 1 < s.length) {
+          j += 2;
+          continue;
+        }
+        if (c === q) q = null;
+      } else if (c === '"' || c === "'") {
+        q = c;
+      } else if (c === "(") {
+        depth++;
+      } else if (c === ")") {
+        depth--;
+      }
+      j++;
+    }
+    const callText = s.slice(m.index, j);
+    if (evalZeroAlphaInMode(callText, 0, "light") || evalZeroAlphaInMode(callText, 0, "dark")) {
+      return true;
+    }
+    out.push(" var(--_) ");
+    i = j;
+  }
+  return hasBaseZeroAlphaColor(out.join(""));
 }
 
 function classifyOutlineDecl(propLower, rawVal) {
@@ -828,6 +993,87 @@ export function splitTailwindVariants(token) {
     }
     return /(?:_|[>+~]|\s)/.test(stripped);
   };
+  const unwrapOuterIsWhereLoop = (sel) => {
+    let cur = String(sel || "").trim();
+    while (true) {
+      const m = /^:(is|where)\(/i.exec(cur);
+      if (!m) break;
+      let d = 1;
+      let q = null;
+      let k = m[0].length;
+      while (k < cur.length && d > 0) {
+        const ch = cur[k];
+        if (q) {
+          if (ch === "\\" && k + 1 < cur.length) k++;
+          else if (ch === q) q = null;
+        } else if (ch === '"' || ch === "'") {
+          q = ch;
+        } else if (ch === "(") {
+          d++;
+        } else if (ch === ")") {
+          d--;
+          if (d === 0) break;
+        }
+        k++;
+      }
+      if (d !== 0 || k !== cur.length - 1) break;
+      cur = cur.slice(m[0].length, k).trim();
+    }
+    return cur;
+  };
+  const extractTopLevelHasFocusArgs = (selStr) => {
+    const str = String(selStr || "");
+    const hasFocusArgs = [];
+    const stripSpans = [];
+    let q = null;
+    for (let i = 0; i < str.length; i++) {
+      const ch = str[i];
+      if (q) {
+        if (ch === "\\" && i + 1 < str.length) { i++; continue; }
+        if (ch === q) q = null;
+        continue;
+      }
+      if (ch === '"' || ch === "'") { q = ch; continue; }
+      if (ch === ":" && !(i > 0 && str[i - 1] === "\\") && /^:has\(/i.test(str.slice(i))) {
+        const openIdx = i + 4;
+        let depth = 1;
+        let k = openIdx + 1;
+        let nq = null;
+        while (k < str.length && depth > 0) {
+          const c = str[k];
+          if (nq) {
+            if (c === "\\" && k + 1 < str.length) { k += 2; continue; }
+            if (c === nq) nq = null;
+          } else if (c === '"' || c === "'") {
+            nq = c;
+          } else if (c === "(") {
+            depth++;
+          } else if (c === ")") {
+            depth--;
+            if (depth === 0) break;
+          }
+          k++;
+        }
+        if (depth === 0) {
+          const arg = str.slice(openIdx + 1, k);
+          if (/(?<!\\):focus(?:-visible|-within)?(?![a-z-])/i.test(stripNotPseudo(arg))) {
+            hasFocusArgs.push(arg);
+            stripSpans.push([i, k + 1]);
+          }
+          i = k;
+          continue;
+        }
+      }
+    }
+    let outsideHasStr = "";
+    let last = 0;
+    for (const [s0, e0] of stripSpans) {
+      outsideHasStr += str.slice(last, s0);
+      last = e0;
+    }
+    outsideHasStr += str.slice(last);
+    return { hasFocusArgs, outsideHasStr };
+  };
   const isNotFvVariant = (v) => {
     const lv = v.toLowerCase();
     if (lv === "not-focus-visible" || lv === "not-[:focus-visible]" || lv === "not-(:focus-visible)") return true;
@@ -841,6 +1087,35 @@ export function splitTailwindVariants(token) {
     const subj = extractSubjectSelector(lv.slice(1, -1).replace(/_/g, " "));
     return /(?<!\\):not\(:focus-visible\)/i.test(subj) && !/(?<!\\):focus-visible(?![a-z-])/i.test(stripNotPseudo(subj));
   };
+  const splitTargetInnerSuffix = (rawInner) => {
+    let br = 0;
+    let par = 0;
+    let q = null;
+    let lastSplit = -1;
+    for (let j = 0; j < rawInner.length; j++) {
+      const c = rawInner[j];
+      if (q) {
+        if (c === "\\" && j + 1 < rawInner.length) j++;
+        else if (c === q) q = null;
+      } else if (c === '"' || c === "'") {
+        q = c;
+      } else if (c === "[") {
+        br++;
+      } else if (c === "]") {
+        br = Math.max(0, br - 1);
+      } else if (c === "(") {
+        par++;
+      } else if (c === ")") {
+        par = Math.max(0, par - 1);
+      } else if (br === 0 && par === 0 && /(?:_|[>+~]|\s)/.test(c)) {
+        lastSplit = j;
+      }
+    }
+    return {
+      prefix: rawInner.slice(0, lastSplit + 1),
+      suffix: rawInner.slice(lastSplit + 1),
+    };
+  };
   for (const rawV of parts) {
     const v = rawV.replace(/^!+/, "");
     const lv = v.toLowerCase();
@@ -851,15 +1126,74 @@ export function splitTailwindVariants(token) {
     } else if (/^focus-within$/i.test(v)) {
       if (!focusKind) focusKind = "focus-within";
     } else {
-      const hasM = /^has-\[(.*:focus(?:-visible|-within)?.*)\]$/i.exec(v);
-      if (hasM) {
+      const hasM = /^has-(?:\[(.*:focus(?:-visible|-within)?.*)\]|\((.*:focus(?:-visible|-within)?.*)\))$/i.exec(v);
+      const hasShorthandM = !hasM ? /^has-(focus(?:-visible|-within)?)$/i.exec(v) : null;
+      if (hasM || hasShorthandM) {
         if (!focusKind) {
           focusKind = "has-focus";
-          hasInner = hasM[1];
+          hasInner = hasM ? (hasM[1] ?? hasM[2]) : `:${hasShorthandM[1].toLowerCase()}`;
         }
       } else if (isTargetVariant(v)) {
-        targetPrefixes.add(lv);
-        isSafeNotFocusVisible = isTargetNotFvGuarded(v);
+        const targNotFv = isTargetNotFvGuarded(v);
+        isSafeNotFocusVisible = targNotFv;
+        if (!targNotFv && lv.startsWith("[") && lv.endsWith("]") && !lv.slice(1, -1).trimStart().startsWith("@")) {
+          const { prefix, suffix } = splitTargetInnerSuffix(lv.slice(1, -1));
+          const sufNoNot = stripNotPseudo(suffix);
+          const sufHasHoverOrActive = /(?<!\\):(?:hover|active)(?![a-zA-Z0-9_-])/i.test(sufNoNot);
+          const sufHasFv = /(?<!\\):focus-visible(?![a-z-])/i.test(sufNoNot);
+          const sufHasF = !sufHasFv && /(?<!\\):focus(?![a-z-])/i.test(sufNoNot);
+          if (!sufHasHoverOrActive && (sufHasFv || sufHasF)) {
+            if (sufHasFv) focusKind = "focus-visible";
+            else if (!focusKind) focusKind = "focus";
+            const cleanSuffix = suffix.replace(/(?<!\\):focus(?:-visible)?(?![a-z-])/gi, "");
+            targetPrefixes.add(`[${prefix}${cleanSuffix}]`);
+          } else {
+            targetPrefixes.add(lv);
+          }
+        } else {
+          targetPrefixes.add(lv);
+        }
+      } else if (v.startsWith("[") && v.endsWith("]") && !v.slice(1, -1).trimStart().startsWith("@")) {
+        if (isNotFvVariant(v)) isSafeNotFocusVisible = true;
+        const inner = lv.slice(1, -1).trim();
+        const innerNoNot = stripNotPseudo(inner);
+        const hasExt = extractTopLevelHasFocusArgs(innerNoNot);
+        const outsideHasFv = /(?<!\\):focus-visible(?![a-z-])/i.test(hasExt.outsideHasStr);
+        const outsideHasF = !outsideHasFv && /(?<!\\):focus(?![a-z-])/i.test(hasExt.outsideHasStr);
+        const outsideHasFw = !outsideHasFv && !outsideHasF && /(?<!\\):focus-within(?![a-z-])/i.test(hasExt.outsideHasStr);
+        if (hasExt.hasFocusArgs.length > 0 && !outsideHasFv && !outsideHasF && !outsideHasFw) {
+          if (!focusKind) {
+            focusKind = "has-focus";
+            hasInner = hasExt.hasFocusArgs.join(",");
+          }
+          const rawHasExt = extractTopLevelHasFocusArgs(inner);
+          const remRaw = rawHasExt.outsideHasStr.trim();
+          if (remRaw.replace(/[&\s,]/g, "") !== "") {
+            condPrefixes.add(`[${remRaw}]`);
+          }
+        } else {
+          const innerHasFv = /(?<!\\):focus-visible(?![a-z-])/i.test(innerNoNot);
+          const innerHasF = !innerHasFv && /(?<!\\):focus(?![a-z-])/i.test(innerNoNot);
+          const innerHasFw = !innerHasFv && !innerHasF && /(?<!\\):focus-within(?![a-z-])/i.test(innerNoNot);
+          if (innerHasFv || innerHasF || innerHasFw) {
+            if (innerHasFv) focusKind = "focus-visible";
+            else if (!focusKind) focusKind = innerHasF ? "focus" : "focus-within";
+            const hasPureFocusBranch = splitTopLevelCommas(inner).some((br) => {
+              const brNoAmp = br.trim().replace(/^&+/, "").trim();
+              const unwrapped = unwrapOuterIsWhereLoop(brNoAmp);
+              return splitTopLevelCommas(unwrapped).some((sub) => {
+                const subNoAmp = unwrapOuterIsWhereLoop(sub.trim().replace(/^&+/, "").trim());
+                return subNoAmp.replace(/(?<!\\):focus(?:-visible|-within)?(?![a-z-])/gi, "").replace(/[&\s,]/g, "") === "";
+              });
+            });
+            if (!hasPureFocusBranch) {
+              const remKey = `[${inner.replace(/(?<!\\):focus(?:-visible|-within)?(?![a-z-])/gi, "")}]`;
+              condPrefixes.add(remKey);
+            }
+          } else {
+            condPrefixes.add(lv);
+          }
+        }
       } else {
         if (isNotFvVariant(v)) isSafeNotFocusVisible = true;
         condPrefixes.add(lv);
@@ -876,16 +1210,17 @@ export const TW_TRANS_ALL_CORE = `(?:transition-all|transition-\\[[^\\]\\s\`;]*?
 export const TW_VW_CORE = `(?:(?:min-|max-)?w-screen(?![a-zA-Z0-9_-])|(?:min-|max-)?(?:w|size)-\\[[^\\]\\s\`;]*?(?<![a-zA-Z0-9]|[a-zA-Z0-9]-)100vw(?![a-zA-Z0-9]|-[a-zA-Z])[^\\]\\s\`;]*\\]|\\[(?:min-|max-)?(?:width|inline-size):[^\\]\\s\`;]*?(?<![a-zA-Z0-9]|[a-zA-Z0-9]-)100vw(?![a-zA-Z0-9]|-[a-zA-Z])[^\\]\\s\`;]*\\])`;
 const TW_SHADOW_VIS_BODY = `(?:shadow-${TW_NESTED_BRACKET}|\\[box-shadow:[^\\]\\s\`;]+\\])`;
 const TW_ZERO_LEN_OR_NONE = "(?:(?:length|color):)?(?:(?:0(?:\\.0+)?|\\.0+)(?:px|rem|em|vw|vh|%)?|none|hidden|transparent)";
-const TW_OUTLINE_REM_BODY = `(?:outline-(?:none|0|hidden|transparent|${TW_NESTED_BRACKET})|\\[outline(?:-(?:style|width|color))?:(?:${TW_ZERO_LEN_OR_NONE}|[^\\]\\s\`;]+)\\])`;
+const TW_ZERO_ALPHA_MOD = "(?:\\/(?:(?:0(?:\\.0+)?|\\.0+)%?|\\[(?:0(?:\\.0+)?|\\.0+)%?\\]))";
+const TW_OUTLINE_REM_BODY = `(?:outline-(?:none|0|hidden|transparent|opacity-(?:0+(?:\\.0+)?|\\[(?:0+(?:\\.0+)?|\\.0+)%?\\])|${TW_NESTED_BRACKET}${TW_ZERO_ALPHA_MOD}?|(?!offset-)[^\\s"'\`;/]+${TW_ZERO_ALPHA_MOD})|\\[outline(?:-(?:style|width|color))?:(?:${TW_ZERO_LEN_OR_NONE}|[^\\]\\s\`;]+)\\])`;
 const TW_VAL_CHAR = "(?:[a-zA-Z0-9_/.#%-]|\\[[^\\s\"'`;\\]]+\\]|\\([^\\s\"'`;)]+\\))+";
 const TW_BORDER_VIS_BODY =
-  `(?:border(?![a-zA-Z0-9_-])|border-(?!none\\b|0\\b|transparent\\b|hidden\\b|collapse\\b|separate\\b|spacing-|opacity-|\\[${TW_ZERO_LEN_OR_NONE}\\])${TW_VAL_CHAR})`;
+  `(?:border(?![a-zA-Z0-9_-])|border-(?!none\\b|0\\b|transparent\\b|hidden\\b|collapse\\b|separate\\b|spacing-|opacity-|\\[${TW_ZERO_LEN_OR_NONE}\\])${TW_VAL_CHAR}|\\[border(?:-[trblxyse])?(?:-(?:style|width|color))?:(?!${TW_ZERO_LEN_OR_NONE}\\])[^\\]\\s\`;]+\\])`;
 const TW_RING_VIS_BODY =
-  `(?:ring(?![a-zA-Z0-9_-])|ring-(?!0\\b|none\\b|transparent\\b|offset-|inset\\b|opacity-|\\[${TW_ZERO_LEN_OR_NONE}\\])${TW_VAL_CHAR})`;
+  `(?:(?:inset-)?ring(?![a-zA-Z0-9_-])|(?:inset-)?ring-(?!0\\b|none\\b|transparent\\b|offset-|inset\\b|opacity-|\\[${TW_ZERO_LEN_OR_NONE}\\])${TW_VAL_CHAR})`;
 const TW_OUTLINE_VIS_BODY =
   `(?:outline(?![a-zA-Z0-9_-])|outline-(?!none\\b|0\\b|hidden\\b|transparent\\b|offset-|opacity-|\\[${TW_ZERO_LEN_OR_NONE}\\])${TW_VAL_CHAR}|\\[outline(?:-(?:style|width|color))?:(?!${TW_ZERO_LEN_OR_NONE}\\])[^\\]\\s\`;]+\\])`;
 const TW_ARB_COLOR_PREFIX_RE =
-  "(?:bg|text|border(?:-(?:t|r|b|l|x|y|s|e))?|divide|fill|stroke|ring(?:-offset)?|from|to|via|accent|outline|decoration|shadow|caret|placeholder)";
+  "(?:bg|text|border(?:-(?:t|r|b|l|x|y|s|e))?|divide|fill|stroke|(?:inset-)?ring(?:-offset)?|from|to|via|accent|outline|decoration|shadow|caret|placeholder)";
 
 function parseSimpleCompoundAtoms(rawSel) {
   const s = String(rawSel || "")
@@ -966,16 +1301,182 @@ function selectorCoversSubject(repSubj, remSubj) {
   return repAtoms.every((a) => remSet.has(a));
 }
 
+function unwrapOuterIsWhere(sel) {
+  const trS = String(sel || "").trim();
+  const m = /^:(is|where)\(/i.exec(trS);
+  if (!m) return null;
+  let d = 1;
+  let q = null;
+  let k = m[0].length;
+  while (k < trS.length && d > 0) {
+    const ch = trS[k];
+    if (q) {
+      if (ch === "\\" && k + 1 < trS.length) k++;
+      else if (ch === q) q = null;
+    } else if (ch === '"' || ch === "'") {
+      q = ch;
+    } else if (ch === "(") {
+      d++;
+    } else if (ch === ")") {
+      d--;
+      if (d === 0) break;
+    }
+    k++;
+  }
+  if (d !== 0 || k !== trS.length - 1) return null;
+  return trS.slice(m[0].length, k);
+}
+
+function hasTopLevelCssCombinator(selPart) {
+  const str = String(selPart || "").trim();
+  let p = 0;
+  let b = 0;
+  let q = null;
+  for (let i = 0; i < str.length; i++) {
+    const ch = str[i];
+    if (q) {
+      if (ch === "\\" && i + 1 < str.length) { i++; continue; }
+      if (ch === q) q = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") q = ch;
+    else if (ch === "(") p++;
+    else if (ch === ")") p = Math.max(0, p - 1);
+    else if (ch === "[") b++;
+    else if (ch === "]") b = Math.max(0, b - 1);
+    else if (p === 0 && b === 0 && /[\s>+~]/.test(ch)) return true;
+  }
+  return false;
+}
+
+function expandTopLevelIsWhereBranches(sel, maxBranches = 24) {
+  const s = String(sel || "");
+  if (!/:(?:is|where)\(/i.test(s)) return [s];
+  let q = null;
+  let brack = 0;
+  let i = 0;
+  while (i < s.length) {
+    const ch = s[i];
+    if (q) {
+      if (ch === "\\" && i + 1 < s.length) { i += 2; continue; }
+      if (ch === q) q = null;
+      i++;
+      continue;
+    }
+    if (ch === '"' || ch === "'") { q = ch; i++; continue; }
+    if (ch === "\\") { i += 2; continue; }
+    if (ch === "[") { brack++; i++; continue; }
+    if (ch === "]" && brack > 0) { brack--; i++; continue; }
+    if (brack === 0 && ch === ":") {
+      const mIs = /^:(is|where)\(/i.exec(s.slice(i));
+      if (mIs) {
+        const openIdx = i + mIs[0].length - 1;
+        let d = 1;
+        let pq = null;
+        let pbr = 0;
+        let k = openIdx + 1;
+        while (k < s.length && d > 0) {
+          const pc = s[k];
+          if (pq) {
+            if (pc === "\\" && k + 1 < s.length) k++;
+            else if (pc === pq) pq = null;
+          } else if (pc === "\\" && k + 1 < s.length) {
+            k++;
+          } else if (pc === '"' || pc === "'") {
+            pq = pc;
+          } else if (pc === "[") {
+            pbr++;
+          } else if (pc === "]" && pbr > 0) {
+            pbr--;
+          } else if (pbr === 0) {
+            if (pc === "(") d++;
+            else if (pc === ")") d--;
+          }
+          k++;
+        }
+        if (d === 0) {
+          const closeIdx = k - 1;
+          const inner = s.slice(openIdx + 1, closeIdx);
+          const parts = splitTopLevelCommas(inner).map((pt) => pt.trim()).filter(Boolean);
+          if (parts.length >= 2) {
+            const prefix = s.slice(0, i);
+            const suffix = s.slice(closeIdx + 1);
+            const nonCombPrefix = prefix.length > 0 && !/[\s>+~]$/.test(prefix);
+            if (!(nonCombPrefix && parts.some((pt) => hasTopLevelCssCombinator(pt)))) {
+              if (parts.length > maxBranches) return [s];
+              const expanded = [];
+              for (const pt of parts) {
+                const candidate = `${prefix}${pt}${suffix}`;
+                const sub = expandTopLevelIsWhereBranches(candidate, maxBranches - expanded.length);
+                for (const item of sub) {
+                  expanded.push(item);
+                  if (expanded.length > maxBranches) return [s];
+                }
+              }
+              return expanded.length > 0 ? expanded : [s];
+            }
+          }
+          i = closeIdx + 1;
+          continue;
+        }
+      } else {
+        const mFn = /^:[a-z-]+\(/i.exec(s.slice(i));
+        if (mFn) {
+          const openIdx = i + mFn[0].length - 1;
+          let d = 1;
+          let pq = null;
+          let pbr = 0;
+          let k = openIdx + 1;
+          while (k < s.length && d > 0) {
+            const pc = s[k];
+            if (pq) {
+              if (pc === "\\" && k + 1 < s.length) k++;
+              else if (pc === pq) pq = null;
+            } else if (pc === "\\" && k + 1 < s.length) {
+              k++;
+            } else if (pc === '"' || pc === "'") {
+              pq = pc;
+            } else if (pc === "[") {
+              pbr++;
+            } else if (pc === "]" && pbr > 0) {
+              pbr--;
+            } else if (pbr === 0) {
+              if (pc === "(") d++;
+              else if (pc === ")") d--;
+            }
+            k++;
+          }
+          if (d === 0) {
+            i = k;
+            continue;
+          }
+        }
+      }
+    }
+    i++;
+  }
+  return [s];
+}
+
 function branchSubjectsCoversTarget(repBranchSubj, remTargetSubj) {
   const tr = String(repBranchSubj || "")
     .replace(/(?<!\\):focus(?:-visible|-within)?(?![a-zA-Z0-9_-])/gi, "")
     .trim()
     .toLowerCase();
-  const isW = /^:(?:is|where)\(([\s\S]*)\)$/i.exec(tr);
-  if (isW) {
-    return splitTopLevelCommas(isW[1]).some((ib) => branchSubjectsCoversTarget(extractSubjectSelector(ib.trim()), remTargetSubj));
+  const remTr = String(remTargetSubj || "")
+    .replace(/(?<!\\):focus(?:-visible|-within)?(?![a-zA-Z0-9_-])/gi, "")
+    .trim()
+    .toLowerCase();
+  const repInner = unwrapOuterIsWhere(tr);
+  if (repInner !== null) {
+    return splitTopLevelCommas(repInner).some((ib) => branchSubjectsCoversTarget(extractSubjectSelector(ib.trim()), remTr));
   }
-  return selectorCoversSubject(tr, remTargetSubj);
+  const remInner = unwrapOuterIsWhere(remTr);
+  if (remInner !== null) {
+    const remBranches = splitTopLevelCommas(remInner).map((ib) => ib.trim()).filter(Boolean);
+    return remBranches.length > 0 && remBranches.every((ib) => branchSubjectsCoversTarget(tr, extractSubjectSelector(ib)));
+  }
+  return selectorCoversSubject(tr, remTr);
 }
 
 function isArbitraryFocusSpecInvisible(utilName, inner) {
@@ -988,7 +1489,7 @@ function isArbitraryFocusSpecInvisible(utilName, inner) {
     return true;
   }
   const lowerProp = String(utilName || "").toLowerCase();
-  if (/^(?:outline|border(?:-[trblxyse])?|ring)$/.test(lowerProp)) {
+  if (/^(?:outline|border(?:-[trblxyse])?|(?:inset-)?ring)$/.test(lowerProp)) {
     const stripped = stripCssParens(valStr);
     const tokens = stripped ? stripped.split(/\s+/).filter(Boolean) : [];
     if (
@@ -1030,19 +1531,19 @@ export function isInvisibleTwFocusUtility(tok) {
   if (/^border-(?:t|r|b|l|x|y|s|e)-(?:0|none|hidden|transparent|\[(?:(?:length|color):)?(?:(?:0(?:\.0+)?|\.0+)(?:px|rem|em|vw|vh|%)?|none|hidden|transparent)\])$/i.test(util)) {
     return true;
   }
-  if (/^(?:ring|border|outline)-(?:0|none|hidden|transparent)$/i.test(util)) {
+  if (/^(?:(?:inset-)?ring|border|outline)-(?:0|none|hidden|transparent)$/i.test(util)) {
     return true;
   }
-  if (/^(?:ring|border|outline)-\[(?:(?:length|color):)?(?:(?:0(?:\.0+)?|\.0+)(?:px|rem|em|vw|vh|%)?|none|hidden|transparent)\]$/i.test(util)) {
+  if (/^(?:(?:inset-)?ring|border|outline)-\[(?:(?:length|color):)?(?:(?:0(?:\.0+)?|\.0+)(?:px|rem|em|vw|vh|%)?|none|hidden|transparent)\]$/i.test(util)) {
     return true;
   }
-  if (/^(?:ring|border|outline)-opacity-(?:0+(?:\.0+)?|\[(?:0+(?:\.0+)?|\.0+)%?\])$/i.test(util)) return true;
-  if (/\/(?:0(?:\.0+)?|\.0+|\[(?:0(?:\.0+)?|\.0+)%?\])$/.test(util)) return true;
-  const arbPropM = /^\[(outline|border(?:-[trblxyse])?|ring)(?:-(?:style|width|color))?:([^\]]+)\]$/i.exec(util);
+  if (/^(?:(?:inset-)?ring|border|outline)-opacity-(?:0+(?:\.0+)?|\[(?:0+(?:\.0+)?|\.0+)%?\])$/i.test(util)) return true;
+  if (/\/(?:(?:0(?:\.0+)?|\.0+)%?|\[(?:0(?:\.0+)?|\.0+)%?\])$/.test(util)) return true;
+  const arbPropM = /^\[(outline|border(?:-[trblxyse])?|(?:inset-)?ring)(?:-(?:style|width|color))?:([^\]]+)\]$/i.exec(util);
   if (arbPropM) {
     return isArbitraryFocusSpecInvisible(arbPropM[1], arbPropM[2]);
   }
-  const propM = /^(outline|border(?:-[trblxyse])?|ring)(?=-|$)/i.exec(util);
+  const propM = /^(outline|border(?:-[trblxyse])?|(?:inset-)?ring)(?=-|$)/i.exec(util);
   const utilProp = propM ? propM[1] : "";
   for (const bm of util.matchAll(/\[([^\]]+)\]/g)) {
     if (isArbitraryFocusSpecInvisible(utilProp, bm[1])) return true;
@@ -1060,10 +1561,11 @@ export function isInvisibleTwFocusUtility(tok) {
 
 function isTwOutlineRemoval(tok) {
   const util = getTwUtilityPart(tok);
-  if (/^outline-\[/i.test(util) || /^\[outline(?:-(?:style|width|color))?:/i.test(util)) {
+  if (/^outline-offset-/i.test(util)) return false;
+  if (/^outline-/i.test(util) || /^\[outline(?:-(?:style|width|color))?:/i.test(util)) {
     return isInvisibleTwFocusUtility(tok);
   }
-  return /^outline-(?:none|0|hidden|transparent)$/i.test(util);
+  return false;
 }
 
 function hasArgCoversTargets(hasInner, targetPrefixes) {
@@ -1111,24 +1613,25 @@ function stripTrailingTwAlphaModifier(util) {
 
 function classifyTwRingOrBorder(tok) {
   const util = getTwUtilityPart(tok).toLowerCase();
+  const isArbitraryProp = /^\[/.test(util);
   if (/^shadow(?:-|$)/.test(util) || /^\[box-shadow:/.test(util)) {
     if (/^shadow-none$/.test(util) || isInvisibleTwFocusUtility(tok)) {
-      return { family: "shadow", side: "", killsWidth: true, killsStyle: true, killsColor: true, setsWidth: false, setsStyle: false, setsColor: false };
+      return { family: "shadow", side: "", isArbitraryProp, killsWidth: true, killsStyle: true, killsColor: true, setsWidth: false, setsStyle: false, setsColor: false };
     }
     if (/^shadow-\[/.test(util) || /^\[box-shadow:/.test(util)) {
-      return { family: "shadow", side: "", killsWidth: false, killsStyle: false, killsColor: false, setsWidth: true, setsStyle: true, setsColor: true };
+      return { family: "shadow", side: "", isArbitraryProp, killsWidth: false, killsStyle: false, killsColor: false, setsWidth: true, setsStyle: true, setsColor: true };
     }
     return null;
   }
-  const arbPm = /^\[(ring|border|outline)(?:-(t|r|b|l|x|y|s|e))?(?:-(style|width|color))?:([^\]]+)\]$/.exec(util);
-  const pm = arbPm ? [arbPm[0], arbPm[1]] : /^(ring|border|outline)(?:-|$)/.exec(util);
+  const arbPm = /^\[(inset-ring|ring|border|outline)(?:-(t|r|b|l|x|y|s|e))?(?:-(style|width|color))?:([^\]]+)\]$/.exec(util);
+  const pm = arbPm ? [arbPm[0], arbPm[1]] : /^(inset-ring|ring|border|outline)(?:-|$)/.exec(util);
   if (!pm) return null;
   const family = pm[1];
   const sideM = arbPm ? null : family === "border" ? /^border-(t|r|b|l|x|y|s|e)(?=-|$)/.exec(util) : null;
   const side = arbPm && arbPm[2] ? arbPm[2] : sideM ? sideM[1] : "";
   const subProp = arbPm && arbPm[3] ? arbPm[3] : null;
   if (!arbPm) {
-    if (family === "ring" && /^ring-(?:offset-|inset\b)/i.test(util)) return null;
+    if ((family === "ring" || family === "inset-ring") && /^(?:inset-)?ring-(?:offset-|inset\b)/i.test(util)) return null;
     if (family === "border" && /^border-(?:collapse|separate|spacing-)/i.test(util)) return null;
     if (family === "outline" && /^outline-offset-/i.test(util)) return null;
   }
@@ -1141,19 +1644,19 @@ function classifyTwRingOrBorder(tok) {
       const killsColor = subProp === "color" || (!subProp && hasZeroCol);
       const killsStyle = subProp === "style" || (!subProp && hasNoneKw);
       const killsWidth = subProp === "width" || (!subProp && (hasZeroLen || hasNoneKw || (!hasZeroCol && !hasNoneKw)));
-      return { family, side, killsWidth, killsStyle, killsColor, setsWidth: false, setsStyle: false, setsColor: false };
+      return { family, side, isArbitraryProp, killsWidth, killsStyle, killsColor, setsWidth: false, setsStyle: false, setsColor: false };
     }
-    if (/^(?:ring|border|outline)-opacity-/i.test(util)) {
-      if (/^(?:ring|border|outline)-opacity-(?:0(?:\.0+)?|\.0+|\[(?:0(?:\.0+)?|\.0+)%?\])$/i.test(util)) {
-        return { family, side: "", killsWidth: false, killsStyle: false, killsColor: true, setsWidth: false, setsStyle: false, setsColor: false };
+    if (/^(?:(?:inset-)?ring|border|outline)-opacity-/i.test(util)) {
+      if (/^(?:(?:inset-)?ring|border|outline)-opacity-(?:0(?:\.0+)?|\.0+|\[(?:0(?:\.0+)?|\.0+)%?\])$/i.test(util)) {
+        return { family, side, isArbitraryProp, killsWidth: false, killsStyle: false, killsColor: true, setsWidth: false, setsStyle: false, setsColor: false };
       }
       return null;
     }
     const { bare: noAlphaMod, alphaMod } = stripTrailingTwAlphaModifier(util);
     const hasZeroMod = Boolean(alphaMod) && /^(?:0(?:\.0+)?|\.0+|\[(?:0(?:\.0+)?|\.0+)%?\])$/.test(alphaMod);
-    const isTransparentKw = /^(?:ring|border|outline)(?:-[trblxyse])?-transparent$/i.test(noAlphaMod);
-    const isNoneStyleKw = /^(?:ring|border|outline)(?:-[trblxyse])?-(?:none|hidden)$/i.test(noAlphaMod);
-    const isZeroWidthKw = /^(?:ring|border|outline)(?:-[trblxyse])?-(?:0|none|hidden)$/i.test(noAlphaMod);
+    const isTransparentKw = /^(?:(?:inset-)?ring|border|outline)(?:-[trblxyse])?-transparent$/i.test(noAlphaMod);
+    const isNoneStyleKw = /^(?:(?:inset-)?ring|border|outline)(?:-[trblxyse])?-(?:none|hidden)$/i.test(noAlphaMod);
+    const isZeroWidthKw = /^(?:(?:inset-)?ring|border|outline)(?:-[trblxyse])?-(?:0|none|hidden)$/i.test(noAlphaMod);
     let killsWidth = isZeroWidthKw;
     let killsStyle = isNoneStyleKw;
     let killsColor = isTransparentKw || hasZeroMod;
@@ -1166,12 +1669,12 @@ function classifyTwRingOrBorder(tok) {
       if (!killsWidth && !killsColor && !killsStyle) killsWidth = true;
     }
     if (!killsWidth && !killsColor && !killsStyle) killsWidth = true;
-    return { family, side, killsWidth, killsStyle, killsColor, setsWidth: false, setsStyle: false, setsColor: false };
+    return { family, side, isArbitraryProp, killsWidth, killsStyle, killsColor, setsWidth: false, setsStyle: false, setsColor: false };
   }
   if (arbPm) {
-    if (subProp === "style") return { family, side, killsWidth: false, killsStyle: false, killsColor: false, setsWidth: false, setsStyle: true, setsColor: false };
-    if (subProp === "width") return { family, side, killsWidth: false, killsStyle: false, killsColor: false, setsWidth: true, setsStyle: false, setsColor: false };
-    if (subProp === "color") return { family, side, killsWidth: false, killsStyle: false, killsColor: false, setsWidth: false, setsStyle: false, setsColor: true };
+    if (subProp === "style") return { family, side, isArbitraryProp, killsWidth: false, killsStyle: false, killsColor: false, setsWidth: false, setsStyle: true, setsColor: false };
+    if (subProp === "width") return { family, side, isArbitraryProp, killsWidth: false, killsStyle: false, killsColor: false, setsWidth: true, setsStyle: false, setsColor: false };
+    if (subProp === "color") return { family, side, isArbitraryProp, killsWidth: false, killsStyle: false, killsColor: false, setsWidth: false, setsStyle: false, setsColor: true };
     const inner = arbPm[4].replace(/_/g, " ").trim();
     const tokens = stripCssParens(inner).split(/\s+/).filter(Boolean);
     const hasStyleKw = tokens.some((t) => /^(?:solid|dashed|dotted|double|groove|ridge|inset|outset|auto)$/i.test(t));
@@ -1180,11 +1683,12 @@ function classifyTwRingOrBorder(tok) {
     return {
       family,
       side,
+      isArbitraryProp,
       killsWidth: false,
       killsStyle: false,
       killsColor: false,
       setsWidth: hasLen || tokens.length === 0,
-      setsStyle: hasStyleKw || (family === "ring" && hasLen) || tokens.length === 0,
+      setsStyle: hasStyleKw || ((family === "ring" || family === "inset-ring") && hasLen) || tokens.length === 0,
       setsColor: hasCol,
     };
   }
@@ -1192,12 +1696,13 @@ function classifyTwRingOrBorder(tok) {
   let setsWidth = false;
   let setsStyle = false;
   let setsColor = false;
-  if (family === "ring") {
-    if (/^ring(?:-(?:1|2|4|8|\d+))?$/i.test(bare) || /^ring-\((?:length:)?--[^)]+\)$/i.test(bare)) {
+  if (family === "ring" || family === "inset-ring") {
+    const ringTail = bare.replace(/^(?:inset-)?ring/, "");
+    if (/^(?:-(?:1|2|4|8|\d+))?$/i.test(ringTail) || /^-\(length:--[^)]+\)$/i.test(ringTail)) {
       setsWidth = true;
       setsStyle = true;
-    } else if (/^ring-\[([^\]]+)\]$/.test(bare)) {
-      const inner = bare.slice(6, -1).replace(/_/g, " ").trim();
+    } else if (/^-\[([^\]]+)\]$/.test(ringTail)) {
+      const inner = ringTail.slice(2, -1).replace(/_/g, " ").trim();
       const tokens = stripCssParens(inner).split(/\s+/).filter(Boolean);
       const hasLen = /^length:/i.test(inner) || tokens.some((t) => /^(?:\d|\.\d)/.test(t));
       const hasCol = /^color:/i.test(inner) || tokens.some((t) => !/^(?:length:|\d|\.\d)/.test(t));
@@ -1208,7 +1713,7 @@ function classifyTwRingOrBorder(tok) {
       setsColor = true;
     }
   } else if (family === "outline") {
-    if (/^outline(?:-\d+)?$/i.test(bare) || /^outline-\((?:length:)?--[^)]+\)$/i.test(bare)) {
+    if (/^outline(?:-\d+)?$/i.test(bare) || /^outline-\(length:--[^)]+\)$/i.test(bare)) {
       setsWidth = true;
       setsStyle = true;
     } else if (/^outline-(?:solid|dashed|dotted|double)$/i.test(bare)) {
@@ -1226,7 +1731,7 @@ function classifyTwRingOrBorder(tok) {
       setsColor = true;
     }
   } else {
-    if (/^border(?:-(?:t|r|b|l|x|y|s|e))?$/i.test(bare) || /^border(?:-(?:t|r|b|l|x|y|s|e))?-\((?:length:)?--[^)]+\)$/i.test(bare)) {
+    if (/^border(?:-(?:t|r|b|l|x|y|s|e))?$/i.test(bare) || /^border(?:-(?:t|r|b|l|x|y|s|e))?-\(length:--[^)]+\)$/i.test(bare)) {
       setsWidth = true;
       setsStyle = true;
     } else if (/^border(?:-(?:t|r|b|l|x|y|s|e))?-\d+$/i.test(bare)) {
@@ -1246,18 +1751,19 @@ function classifyTwRingOrBorder(tok) {
       setsColor = true;
     }
   }
-  return { family, side, killsWidth: false, killsStyle: false, killsColor: false, setsWidth, setsStyle, setsColor };
+  return { family, side, isArbitraryProp, killsWidth: false, killsStyle: false, killsColor: false, setsWidth, setsStyle, setsColor };
 }
 
-export function analyzeTailwindOutline(classes, extraReplacementClasses = "", prevSameRuleClasses = "") {
+export function analyzeTailwindOutline(classes, extraReplacementClasses = "", prevSameRuleClasses = "", options = {}) {
   const s = String(classes || "");
+  const forceMainImportant = Boolean(options?.forceMainImportant);
   const twOutlineRemovalAllRe = new RegExp(`(?:^|\\s)(!?(?:${TW_VARIANT_SEG})*!?${TW_OUTLINE_REM_BODY}!?)(?=$|[\\s;])`, "g");
   const twFocusReplacementRe = new RegExp(
-    `(?:^|\\s)(!?(?:${TW_VARIANT_SEG})*(?:focus(?:-visible|-within)?|has-${TW_NESTED_BRACKET}):(?:${TW_VARIANT_SEG})*!?(?:${TW_RING_VIS_BODY}|${TW_OUTLINE_VIS_BODY}|${TW_BORDER_VIS_BODY}|${TW_SHADOW_VIS_BODY})!?)(?=$|[\\s;])`,
+    `(?:^|\\s)(!?(?:${TW_VARIANT_SEG})+!?(?:${TW_RING_VIS_BODY}|${TW_OUTLINE_VIS_BODY}|${TW_BORDER_VIS_BODY}|${TW_SHADOW_VIS_BODY})!?)(?=$|[\\s;])`,
     "g"
   );
   const twRingBorderAllRe = new RegExp(
-    `(?:^|\\s)(!?(?:${TW_VARIANT_SEG})*!?(?:(?:ring|border|outline|shadow)(?:-[^\\s"'\`;]+)?|\\[(?:ring|border(?:-[trblxyse])?|outline|box-shadow)(?:-(?:style|width|color))?:[^\\]\\s\`;]+\\])!?)(?=$|[\\s;])`,
+    `(?:^|\\s)(!?(?:${TW_VARIANT_SEG})*!?(?:(?:inset-ring|ring|border|outline|shadow)(?:-[^\\s"'\`;]+)?|\\[(?:inset-ring|ring|border(?:-[trblxyse])?|outline|box-shadow)(?:-(?:style|width|color))?:[^\\]\\s\`;]+\\])!?)(?=$|[\\s;])`,
     "g"
   );
   const removals = [];
@@ -1268,7 +1774,7 @@ export function analyzeTailwindOutline(classes, extraReplacementClasses = "", pr
     removals.push({
       tokStr,
       tokIdx,
-      isImportant: /(?:^|:)!|!$/.test(tokStr),
+      isImportant: forceMainImportant || /(?:^|:)!|!$/.test(tokStr),
       ...splitTailwindVariants(tokStr),
     });
   }
@@ -1283,6 +1789,7 @@ export function analyzeTailwindOutline(classes, extraReplacementClasses = "", pr
   const collectRepls = (chunk, fromSource) => {
     const chunkStr = String(chunk || "");
     if (!chunkStr) return;
+    const impMain = fromSource === "main" && forceMainImportant;
     for (const m of chunkStr.matchAll(twFocusReplacementRe)) {
       const tok = m[1];
       if (isInvisibleTwFocusUtility(tok)) continue;
@@ -1292,7 +1799,7 @@ export function analyzeTailwindOutline(classes, extraReplacementClasses = "", pr
       replacements.push({
         tokIdx,
         fromSource,
-        isImportant: /(?:^|:)!|!$/.test(tok),
+        isImportant: impMain || /(?:^|:)!|!$/.test(tok),
         isOutlineProp: /(?:^|:)!?(?:outline(?:-|$|!)|\[outline(?:-(?:style|width|color))?:)/i.test(tok),
         rbInfo: classifyTwRingOrBorder(tok),
         ...info,
@@ -1307,7 +1814,7 @@ export function analyzeTailwindOutline(classes, extraReplacementClasses = "", pr
       rbEvents.push({
         tokIdx,
         fromSource,
-        isImportant: /(?:^|:)!|!$/.test(tok),
+        isImportant: impMain || /(?:^|:)!|!$/.test(tok),
         ...rbInfo,
         ...info,
       });
@@ -1340,12 +1847,15 @@ export function analyzeTailwindOutline(classes, extraReplacementClasses = "", pr
     }
     return false;
   };
+  const isRingFamily = (f) => f === "ring" || f === "inset-ring";
   const findConditionalKillers = (rep, rem = null) => {
     const rb = rep.rbInfo;
     if (!rb) return [];
     const reqConds = new Set([...rep.condPrefixes, ...(rem?.condPrefixes || [])]);
     const sameMetaAnyCond = (ev) => {
-      if (ev.family !== rb.family) return false;
+      const crossShadowKill =
+        isRingFamily(rb.family) && ev.family === "shadow" && (ev.killsWidth || ev.killsStyle || ev.killsColor);
+      if (ev.family !== rb.family && !crossShadowKill) return false;
       if (!sameSet(ev.targetPrefixes, rep.targetPrefixes)) return false;
       if (ev.focusKind === rep.focusKind) return true;
       if (rep.focusKind === "focus" && ev.focusKind === "focus-visible") return true;
@@ -1363,6 +1873,7 @@ export function analyzeTailwindOutline(classes, extraReplacementClasses = "", pr
       if (bMoreSpec) return false;
       const aMoreSpec = condSubset(b.condPrefixes, a.condPrefixes) && a.condPrefixes.size > b.condPrefixes.size;
       if (aMoreSpec) return true;
+      if (b.family === "shadow" && isRingFamily(a.family) && !a.isArbitraryProp) return false;
       return cmpPos(a, b) > 0;
     };
     const setterCoversRep = (ev) =>
@@ -1376,6 +1887,18 @@ export function analyzeTailwindOutline(classes, extraReplacementClasses = "", pr
       if (condSubset(kEv.condPrefixes, rep.condPrefixes)) continue;
       if (condsConflict(kEv.condPrefixes, reqConds)) continue;
       const combinedConds = new Set([...reqConds, ...kEv.condPrefixes]);
+      if (kEv.family === "shadow" && isRingFamily(rb.family)) {
+        const hasShadowRestorer = evsAll.some(
+          (se) =>
+            ((isRingFamily(se.family) && se.setsWidth && se.setsStyle) ||
+              (se.family === "shadow" && se.setsWidth && se.setsStyle && se.setsColor)) &&
+            setterCoversRep(se) &&
+            condSubset(se.condPrefixes, combinedConds) &&
+            beatsCond(se, kEv)
+        );
+        if (!hasShadowRestorer) extraKillConds.push(combinedConds);
+        continue;
+      }
       const sideMatches = (ev, sideKey) => !sideKey || (BORDER_SIDE_MAP[ev.side] || BORDER_SIDE_MAP[""]).includes(sideKey);
       let kIsRestored = true;
       for (const sideKey of reqSides) {
@@ -1388,6 +1911,7 @@ export function analyzeTailwindOutline(classes, extraReplacementClasses = "", pr
           if (!kEv[kFlag]) continue;
           const hasRestorer = evsAll.some(
             (se) =>
+              se.family === rb.family &&
               se[sFlag] &&
               sideMatches(se, sideKey) &&
               setterCoversRep(se) &&
@@ -1409,7 +1933,9 @@ export function analyzeTailwindOutline(classes, extraReplacementClasses = "", pr
     const rb = rep.rbInfo;
     if (!rb) return false;
     const sameMeta = (ev) => {
-      if (ev.family !== rb.family) return false;
+      const crossShadowKill =
+        isRingFamily(rb.family) && ev.family === "shadow" && (ev.killsWidth || ev.killsStyle || ev.killsColor);
+      if (ev.family !== rb.family && !crossShadowKill) return false;
       if (!sameSet(ev.targetPrefixes, rep.targetPrefixes)) return false;
       if (!condSubset(ev.condPrefixes, rep.condPrefixes)) return false;
       if (ev.focusKind === rep.focusKind) return true;
@@ -1427,6 +1953,7 @@ export function analyzeTailwindOutline(classes, extraReplacementClasses = "", pr
       if (bMoreSpec) return false;
       const aMoreSpec = condSubset(b.condPrefixes, a.condPrefixes) && a.condPrefixes.size > b.condPrefixes.size;
       if (aMoreSpec) return true;
+      if (b.family === "shadow" && isRingFamily(a.family) && !a.isArbitraryProp) return false;
       return cmpPos(a, b) > 0;
     };
     const setterCoversRep = (ev) =>
@@ -1435,21 +1962,41 @@ export function analyzeTailwindOutline(classes, extraReplacementClasses = "", pr
       (rep.focusKind === "focus" && ev.focusKind === "focus-visible");
     const isKillUnrestored = (evsList, killFlag, setFlag, sideKey = null) => {
       const sideOk = (ev) => !sideKey || (BORDER_SIDE_MAP[ev.side] || BORDER_SIDE_MAP[""]).includes(sideKey);
-      const killers = evsList.filter((ev) => ev[killFlag] && sideOk(ev));
+      const killers = evsList.filter((ev) => ev.family === rb.family && ev[killFlag] && sideOk(ev));
       return killers.some(
-        (kEv) => !evsList.some((se) => se[setFlag] && sideOk(se) && setterCoversRep(se) && beats(se, kEv))
+        (kEv) => !evsList.some((se) => se.family === rb.family && se[setFlag] && sideOk(se) && setterCoversRep(se) && beats(se, kEv))
+      );
+    };
+    const isShadowKillUnrestored = (evsList) => {
+      if (!isRingFamily(rb.family)) return false;
+      const killers = evsList.filter((ev) => ev.family === "shadow" && (ev.killsWidth || ev.killsStyle || ev.killsColor));
+      return killers.some(
+        (kEv) =>
+          !evsList.some(
+            (se) =>
+              ((isRingFamily(se.family) && se.setsWidth && se.setsStyle) ||
+                (se.family === "shadow" && se.setsWidth && se.setsStyle && se.setsColor)) &&
+              setterCoversRep(se) &&
+              beats(se, kEv)
+          )
       );
     };
     const hasLiveSetter = (evsList, setFlag, killFlag, sideKey = null) => {
       const sideOk = (ev) => !sideKey || (BORDER_SIDE_MAP[ev.side] || BORDER_SIDE_MAP[""]).includes(sideKey);
       return evsList.some(
         (ev) =>
+          ev.family === rb.family &&
           ev[setFlag] &&
           sideOk(ev) &&
           setterCoversRep(ev) &&
           !(rep.isImportant && !ev.isImportant && ev.focusKind !== null) &&
           !evsList.some(
-            (kEv) => kEv[killFlag] && sideOk(kEv) && beats(kEv, ev) && !evsList.some((re) => re[setFlag] && sideOk(re) && setterCoversRep(re) && beats(re, kEv))
+            (kEv) =>
+              kEv.family === rb.family &&
+              kEv[killFlag] &&
+              sideOk(kEv) &&
+              beats(kEv, ev) &&
+              !evsList.some((re) => re.family === rb.family && re[setFlag] && sideOk(re) && setterCoversRep(re) && beats(re, kEv))
           )
       );
     };
@@ -1465,6 +2012,7 @@ export function analyzeTailwindOutline(classes, extraReplacementClasses = "", pr
       );
       return !okAllSides;
     }
+    if (isShadowKillUnrestored(evs)) return true;
     if (isKillUnrestored(evs, "killsWidth", "setsWidth")) return true;
     if (isKillUnrestored(evs, "killsStyle", "setsStyle")) return true;
     if (isKillUnrestored(evs, "killsColor", "setsColor")) return true;
@@ -3070,6 +3618,38 @@ function compareSpecificity(spA, spB) {
   return 0;
 }
 
+function makeBorderSideState() {
+  return {
+    style: { state: null, imp: false, offset: -1, candWinsImportant: false },
+    width: { state: null, imp: false, offset: -1, candWinsImportant: false },
+    color: { state: null, imp: false, offset: -1, candWinsImportant: false },
+    styleInvNormalOff: -1,
+    widthInvNormalOff: -1,
+    colorInvNormalOff: -1,
+  };
+}
+
+function expandBorderSideChars(side = "") {
+  if (side === "x") return ["l", "r"];
+  if (side === "y") return ["t", "b"];
+  if (side === "s") return ["l"];
+  if (side === "e") return ["r"];
+  if (side === "t" || side === "r" || side === "b" || side === "l") return [side];
+  return ["t", "r", "b", "l"];
+}
+
+function collectRingTupleState(initTuple = null) {
+  return (
+    initTuple || {
+      width: { state: null, imp: false, offset: -1, candWinsImportant: false },
+      color: { state: null, imp: false, offset: -1, candWinsImportant: false },
+      widthInvNormalOff: -1,
+      colorInvNormalOff: -1,
+      saw: false,
+    }
+  );
+}
+
 function collectBorderTupleState(maskedBody, initTuple = null, baseOffset = 0, impFilter = "all", candMeta = null) {
   const borderTuple = initTuple || {
     style: { state: null, imp: false, offset: -1, candWinsImportant: false },
@@ -3078,39 +3658,228 @@ function collectBorderTupleState(maskedBody, initTuple = null, baseOffset = 0, i
     styleInvNormalOff: -1,
     widthInvNormalOff: -1,
     colorInvNormalOff: -1,
+    sides: {
+      t: makeBorderSideState(),
+      r: makeBorderSideState(),
+      b: makeBorderSideState(),
+      l: makeBorderSideState(),
+    },
     sawBorder: false,
   };
-  const setBorderComp = (comp, state, imp, off) => {
+  if (!borderTuple.sides) {
+    borderTuple.sides = {
+      t: makeBorderSideState(),
+      r: makeBorderSideState(),
+      b: makeBorderSideState(),
+      l: makeBorderSideState(),
+    };
+  }
+  const setTargetComp = (targetObj, comp, state, imp, off) => {
     if (!imp && state === "invisible") {
-      borderTuple[`${comp}InvNormalOff`] = Math.max(borderTuple[`${comp}InvNormalOff`] ?? -1, off);
+      targetObj[`${comp}InvNormalOff`] = Math.max(targetObj[`${comp}InvNormalOff`] ?? -1, off);
     }
-    const cur = borderTuple[comp];
+    const cur = targetObj[comp];
     if (cur.state !== null && cur.imp && !imp) return;
-    borderTuple[comp] = {
+    targetObj[comp] = {
       state,
       imp,
       offset: off,
       candWinsImportant: candMeta ? Boolean(candMeta.candWinsImportant) : Boolean(cur.candWinsImportant),
     };
   };
-  for (const bm of String(maskedBody || "").matchAll(/(?<![a-zA-Z0-9_$-])(border|border-style|border-width|border-color)\s*:\s*((?:[^#;{}]|#\{[^{}]*\}|#(?!\{))+)/gi)) {
-    const bProp = bm[1].toLowerCase();
-    const bInfo = classifyBorderDecl(bProp, bm[2]);
+  const setBorderComp = (comp, state, imp, off, side = "") => {
+    if (!side) setTargetComp(borderTuple, comp, state, imp, off);
+    for (const sCh of expandBorderSideChars(side)) {
+      setTargetComp(borderTuple.sides[sCh], comp, state, imp, off);
+    }
+  };
+  const SIDE_WORD_MAP = { top: "t", right: "r", bottom: "b", left: "l" };
+  for (const bm of String(maskedBody || "").matchAll(/(?<![a-zA-Z0-9_$-])border(?:-(top|right|bottom|left))?(?:-(style|width|color))?\s*:\s*((?:[^#;{}]|#\{[^{}]*\}|#(?!\{))+)/gi)) {
+    const side = bm[1] ? SIDE_WORD_MAP[bm[1].toLowerCase()] || "" : "";
+    const sub = bm[2] ? bm[2].toLowerCase() : "";
+    const bProp = sub ? `border-${sub}` : "border";
+    const bInfo = classifyBorderDecl(bProp, bm[3]);
     if (impFilter === "normal-only" && bInfo.isImportant) continue;
     if (impFilter === "important-only" && !bInfo.isImportant) continue;
     borderTuple.sawBorder = true;
     const off = baseOffset + bm.index;
-    if (bProp === "border-style") setBorderComp("style", bInfo.state, bInfo.isImportant, off);
-    else if (bProp === "border-width") setBorderComp("width", bInfo.state, bInfo.isImportant, off);
-    else if (bProp === "border-color") setBorderComp("color", bInfo.state, bInfo.isImportant, off);
+    if (bProp === "border-style") setBorderComp("style", bInfo.state, bInfo.isImportant, off, side);
+    else if (bProp === "border-width") setBorderComp("width", bInfo.state, bInfo.isImportant, off, side);
+    else if (bProp === "border-color") setBorderComp("color", bInfo.state, bInfo.isImportant, off, side);
     else {
       const bSup = new Set(bInfo.suppressedProps);
-      setBorderComp("style", bSup.has("style") ? "invisible" : "visible", bInfo.isImportant, off);
-      setBorderComp("width", bSup.has("width") ? "invisible" : "visible", bInfo.isImportant, off);
-      setBorderComp("color", bSup.has("color") ? "invisible" : "visible", bInfo.isImportant, off);
+      setBorderComp("style", bSup.has("style") ? "invisible" : "visible", bInfo.isImportant, off, side);
+      setBorderComp("width", bSup.has("width") ? "invisible" : "visible", bInfo.isImportant, off, side);
+      setBorderComp("color", bSup.has("color") ? "invisible" : "visible", bInfo.isImportant, off, side);
     }
   }
   return borderTuple;
+}
+
+function collectRuleBorderAndShadowFromRawBody(rawBody, options = {}) {
+  const {
+    borderTuple = collectBorderTupleState(""),
+    ringTuple = collectRingTupleState(),
+    insetRingTuple = collectRingTupleState(),
+    baseOffset = 0,
+    impFilter = "all",
+    candWinsImportant = false,
+    allowFocusVariants = false,
+    treatFocusMatch = false,
+    applyKillersOnly = false,
+  } = options;
+  const rawStr = String(rawBody || "");
+  const masked = maskCssQuotedStringsPreservingLines(rawStr);
+  const cssDeclOnly = maskAtApplyDeclsPreservingLines(masked);
+  const setTargetComp = (targetObj, comp, state, imp, off) => {
+    if (impFilter === "normal-only" && imp) return;
+    if (impFilter === "important-only" && !imp) return;
+    if (!imp && state === "invisible") {
+      targetObj[`${comp}InvNormalOff`] = Math.max(targetObj[`${comp}InvNormalOff`] ?? -1, off);
+    }
+    const cur = targetObj[comp];
+    if (cur.state !== null && cur.imp && !imp) return;
+    targetObj[comp] = {
+      state,
+      imp,
+      offset: off,
+      candWinsImportant: candWinsImportant || Boolean(cur.candWinsImportant),
+    };
+  };
+  const setBorderComp = (comp, state, imp, off, side = "") => {
+    if (!side) setTargetComp(borderTuple, comp, state, imp, off);
+    for (const sCh of expandBorderSideChars(side)) {
+      setTargetComp(borderTuple.sides[sCh], comp, state, imp, off);
+    }
+  };
+  const setRingComp = (targetTuple, comp, state, imp, off) => {
+    targetTuple.saw = true;
+    setTargetComp(targetTuple, comp, state, imp, off);
+  };
+
+  const SIDE_WORD_MAP = { top: "t", right: "r", bottom: "b", left: "l" };
+  const events = [];
+  for (const bm of cssDeclOnly.matchAll(/(?<![a-zA-Z0-9_$-])border(?:-(top|right|bottom|left))?(?:-(style|width|color))?\s*:\s*((?:[^#;{}]|#\{[^{}]*\}|#(?!\{))+)/gi)) {
+    const side = bm[1] ? SIDE_WORD_MAP[bm[1].toLowerCase()] || "" : "";
+    const sub = bm[2] ? bm[2].toLowerCase() : "";
+    const bProp = sub ? `border-${sub}` : "border";
+    const bInfo = classifyBorderDecl(bProp, bm[3]);
+    if (impFilter === "normal-only" && bInfo.isImportant) continue;
+    if (impFilter === "important-only" && !bInfo.isImportant) continue;
+    events.push({ kind: "css-border", offset: baseOffset + bm.index, side, bProp, bInfo });
+  }
+  for (const bm of cssDeclOnly.matchAll(/(?<![a-zA-Z0-9_$-])box-shadow\s*:\s*((?:[^#;{}]|#\{[^{}]*\}|#(?!\{))+)/gi)) {
+    const imp = /!\s*important\b/i.test(bm[1]);
+    if (impFilter === "normal-only" && imp) continue;
+    if (impFilter === "important-only" && !imp) continue;
+    const cleanBox = bm[1].replace(/!\s*important\b/gi, "").trim();
+    const vis = Boolean(
+      cleanBox &&
+        !/^(?:none|0|initial|inherit|unset)$/i.test(cleanBox) &&
+        splitTopLevelCommas(cleanBox).some((layer) => isBoxShadowLayerVisible(layer))
+    );
+    events.push({ kind: "box", offset: baseOffset + bm.index, imp, vis, fromRingFamily: null });
+  }
+
+  const applyMask = maskCssQuotedStringsPreservingLines(rawStr, "_");
+  for (const am of masked.matchAll(/(?<![a-zA-Z0-9_$-])@apply\s+((?:[^#;{}]|#\{[^{}]*\}|#(?!\{))+)/gi)) {
+    const appStart = am.index + am[0].indexOf(am[1]);
+    const rawStmt = applyMask.slice(appStart, appStart + am[1].length);
+    const stmtImp = /\s*!\s*important\s*$/i.test(rawStmt);
+    const appNoImp = stmtImp ? rawStmt.replace(/\s*!\s*important\s*$/i, "") : rawStmt;
+    let tokSeq = 0;
+    for (const rawTok of appNoImp.trim().split(/\s+/).filter(Boolean)) {
+      const info = splitTailwindVariants(rawTok);
+      if (info.targetPrefixes.size > 0 || info.condPrefixes.size > 0) continue;
+      if (info.focusKind !== null && (!allowFocusVariants || (info.focusKind !== "focus" && info.focusKind !== "focus-visible"))) {
+        continue;
+      }
+      if (info.focusKind === null && treatFocusMatch === false && allowFocusVariants === false) {
+        continue;
+      }
+      const rb = classifyTwRingOrBorder(rawTok);
+      if (!rb) continue;
+      const tokImp = stmtImp || /(?:^|:)!|!$/.test(rawTok);
+      if (impFilter === "normal-only" && tokImp) continue;
+      if (impFilter === "important-only" && !tokImp) continue;
+      const off = baseOffset + am.index + tokSeq++ * 0.0001;
+      if (rb.family === "border") {
+        const isKiller = rb.killsWidth || rb.killsStyle || rb.killsColor;
+        const isSetter = rb.setsWidth || rb.setsStyle || rb.setsColor;
+        if (isKiller || (!applyKillersOnly && isSetter)) {
+          events.push({ kind: "tw-border", offset: off, imp: tokImp, rb, isKiller });
+        }
+      } else if (rb.family === "ring" || rb.family === "inset-ring") {
+        const isKiller = rb.killsWidth || rb.killsStyle || rb.killsColor;
+        const isSetter = rb.setsWidth || rb.setsColor;
+        if (isKiller || (!applyKillersOnly && isSetter)) {
+          events.push({ kind: "tw-ring", offset: off, imp: tokImp, rb });
+        }
+        if (rb.killsWidth || rb.killsStyle) {
+          events.push({ kind: "box", offset: off, imp: tokImp, vis: false, fromRingFamily: rb.family });
+        }
+      } else if (rb.family === "shadow") {
+        const isKiller = rb.killsWidth;
+        const isSetter = rb.setsWidth && rb.setsStyle && rb.setsColor;
+        if (isKiller) {
+          events.push({ kind: "box", offset: off, imp: tokImp, vis: false, fromRingFamily: null });
+        } else if (!applyKillersOnly && isSetter) {
+          events.push({ kind: "box", offset: off, imp: tokImp, vis: true, fromRingFamily: null });
+        }
+      }
+    }
+  }
+
+  events.sort((a, b) => a.offset - b.offset);
+  const boxDecls = [];
+  for (const ev of events) {
+    if (ev.kind === "box") {
+      boxDecls.push({ vis: ev.vis, imp: ev.imp, offset: ev.offset, candWinsImportant, fromRingFamily: ev.fromRingFamily || null });
+      continue;
+    }
+    if (ev.kind === "css-border") {
+      borderTuple.sawBorder = true;
+      const { bProp, bInfo, offset, side } = ev;
+      if (bProp === "border-style") setBorderComp("style", bInfo.state, bInfo.isImportant, offset, side);
+      else if (bProp === "border-width") setBorderComp("width", bInfo.state, bInfo.isImportant, offset, side);
+      else if (bProp === "border-color") setBorderComp("color", bInfo.state, bInfo.isImportant, offset, side);
+      else {
+        const bSup = new Set(bInfo.suppressedProps);
+        setBorderComp("style", bSup.has("style") ? "invisible" : "visible", bInfo.isImportant, offset, side);
+        setBorderComp("width", bSup.has("width") ? "invisible" : "visible", bInfo.isImportant, offset, side);
+        setBorderComp("color", bSup.has("color") ? "invisible" : "visible", bInfo.isImportant, offset, side);
+      }
+      continue;
+    }
+    if (ev.kind === "tw-border") {
+      borderTuple.sawBorder = true;
+      const { rb, imp, offset } = ev;
+      if (rb.killsStyle) setBorderComp("style", "invisible", imp, offset, rb.side);
+      else if (!applyKillersOnly && rb.setsStyle) setBorderComp("style", "visible", imp, offset, rb.side);
+      if (rb.killsWidth) setBorderComp("width", "invisible", imp, offset, rb.side);
+      else if (!applyKillersOnly && rb.setsWidth) setBorderComp("width", "visible", imp, offset, rb.side);
+      if (rb.killsColor) setBorderComp("color", "invisible", imp, offset, rb.side);
+      else if (!applyKillersOnly && rb.setsColor) setBorderComp("color", "visible", imp, offset, rb.side);
+      continue;
+    }
+    if (ev.kind === "tw-ring") {
+      const { rb, imp, offset } = ev;
+      const tgt = rb.family === "inset-ring" ? insetRingTuple : ringTuple;
+      if (rb.killsWidth || rb.killsStyle) setRingComp(tgt, "width", "invisible", imp, offset);
+      else if (!applyKillersOnly && rb.setsWidth) setRingComp(tgt, "width", "visible", imp, offset);
+      if (rb.killsColor) setRingComp(tgt, "color", "invisible", imp, offset);
+      else if (!applyKillersOnly && rb.setsColor) setRingComp(tgt, "color", "visible", imp, offset);
+    }
+  }
+  for (const comp of ["style", "width", "color"]) {
+    const sideStates = ["t", "r", "b", "l"].map((sCh) => borderTuple.sides[sCh][comp]);
+    if (sideStates.every((st) => st.state === "invisible")) {
+      const allImp = sideStates.every((st) => st.imp);
+      const maxOff = Math.max(...sideStates.map((st) => st.offset));
+      setTargetComp(borderTuple, comp, "invisible", allImp, maxOff);
+    }
+  }
+  return { borderTuple, boxDecls, ringTuple, insetRingTuple };
 }
 
 export function hasVisibleFocusIndicator(body, selector = "", options = {}) {
@@ -3122,22 +3891,69 @@ export function hasVisibleFocusIndicator(body, selector = "", options = {}) {
     Boolean(options.treatAsFocusSelector) ||
     (selBranches.length > 0 &&
       selBranches.every((b) => /(?<!\\)(?::focus(?:-visible|-within)?\b|:has\([^;]*:focus)/i.test(stripNotPseudo(extractSubjectSelector(b)))));
+  const { borderTuple, boxDecls, ringTuple, insetRingTuple } = collectRuleBorderAndShadowFromRawBody(rawBody, {
+    allowFocusVariants: true,
+    treatFocusMatch: isFocusSelector,
+    applyKillersOnly: true,
+  });
   let winBox = null;
   let lastInvNormalBoxOff = -1;
-  for (const bm of cssDeclBody.matchAll(/(?<![a-zA-Z0-9_$-])box-shadow\s*:\s*((?:[^#;{}]|#\{[^{}]*\}|#(?!\{))+)/gi)) {
-    const imp = /!\s*important\b/i.test(bm[1]);
-    const cleanBox = bm[1].replace(/!\s*important\b/gi, "").trim();
-    const vis = Boolean(
-      cleanBox &&
-        !/^(?:none|0|initial|inherit|unset)$/i.test(cleanBox) &&
-        splitTopLevelCommas(cleanBox).some((layer) => isBoxShadowLayerVisible(layer))
-    );
-    if (!imp && !vis) lastInvNormalBoxOff = Math.max(lastInvNormalBoxOff, bm.index);
-    if (!winBox || imp || !winBox.imp) {
-      winBox = { val: bm[1], imp, vis, offset: bm.index };
+  let winPureBox = null;
+  let lastInvNormalPureBoxOff = -1;
+  for (const bd of boxDecls) {
+    if (!bd.imp && !bd.vis) lastInvNormalBoxOff = Math.max(lastInvNormalBoxOff, bd.offset);
+    if (!winBox || bd.imp || !winBox.imp) {
+      winBox = { imp: bd.imp, vis: bd.vis, offset: bd.offset };
+    }
+    if (!bd.fromRingFamily) {
+      if (!bd.imp && !bd.vis) lastInvNormalPureBoxOff = Math.max(lastInvNormalPureBoxOff, bd.offset);
+      if (!winPureBox || bd.imp || !winPureBox.imp) {
+        winPureBox = { imp: bd.imp, vis: bd.vis, offset: bd.offset };
+      }
     }
   }
-  const borderTuple = collectBorderTupleState(cssDeclBody);
+  const pureBoxImpSup =
+    options.pureBoxShadowImportantSuppressed !== undefined
+      ? Boolean(options.pureBoxShadowImportantSuppressed)
+      : Boolean(options.boxShadowImportantSuppressed);
+  const pureBoxUnrecov =
+    options.pureBoxShadowUnrecoverable !== undefined
+      ? Boolean(options.pureBoxShadowUnrecoverable)
+      : Boolean(options.boxShadowUnrecoverable);
+  const pureBoxSrcSup =
+    options.pureBoxShadowSuppressedBySrc !== undefined
+      ? Boolean(options.pureBoxShadowSuppressedBySrc)
+      : Boolean(options.boxShadowSuppressedBySrc);
+  const extSideImp = options.borderSideImportantSuppressed || {};
+  const extSideNorm = options.borderSideSuppressed || {};
+  const extSideUnrec = options.borderSideUnrecoverable || {};
+  const borderNeedsImp = Boolean(options.requireImportantOnly || (options.requireImportantOutlineOnly && options.borderSuppressedBySrc));
+  const checkCssSideBorderVisible = (sCh) => {
+    const sBt = borderTuple.sides?.[sCh] || borderTuple;
+    if ((options.borderUnrecoverableProps || []).length > 0 || (extSideUnrec[sCh] || []).length > 0) return false;
+    const effComp = (comp) => {
+      const a = borderTuple[comp];
+      const b = sBt[comp];
+      if (!b || b.state === null) return a;
+      if (!a || a.state === null) return b;
+      if (a.imp && !b.imp) return a;
+      if (b.imp && !a.imp) return b;
+      return b.offset >= a.offset ? b : a;
+    };
+    const eComps = ["style", "width", "color"].map(effComp);
+    if (eComps.some((c) => c.state === "invisible") || !eComps.some((c) => c.state === "visible")) return false;
+    const reqNorm = new Set([...(options.borderSuppressedProps || []), ...(extSideNorm[sCh] || [])]);
+    const reqImp = new Set([...(options.borderImportantSuppressedProps || []), ...(extSideImp[sCh] || [])]);
+    for (const req of reqNorm) {
+      if (effComp(req)?.state !== "visible") return false;
+    }
+    for (const req of reqImp) {
+      const ec = effComp(req);
+      if (ec?.state !== "visible" || !ec?.imp) return false;
+    }
+    if (borderNeedsImp && !eComps.some((c) => c.state === "visible" && c.imp)) return false;
+    return true;
+  };
   if (isFocusSelector) {
     if (winBox) {
       const boxNeedsImp = Boolean(options.requireImportantOnly || (options.requireImportantOutlineOnly && options.boxShadowSuppressedBySrc));
@@ -3148,18 +3964,13 @@ export function hasVisibleFocusIndicator(body, selector = "", options = {}) {
       }
     }
     if (borderTuple.sawBorder) {
-      const bComps = [borderTuple.style, borderTuple.width, borderTuple.color];
-      const blockedByOwn = bComps.some((c) => c.state === "invisible");
-      const blockedByUnrecoverable = (options.borderUnrecoverableProps || []).length > 0;
-      const blockedByInherited = (options.borderSuppressedProps || []).some(
-        (req) => borderTuple[req]?.state !== "visible"
-      );
-      const blockedByInheritedImp = (options.borderImportantSuppressedProps || []).some(
-        (req) => borderTuple[req]?.state !== "visible" || !borderTuple[req]?.imp
-      );
-      const borderNeedsImp = Boolean(options.requireImportantOnly || (options.requireImportantOutlineOnly && options.borderSuppressedBySrc));
-      const blockedByReqImp = borderNeedsImp && !bComps.some((c) => c.state === "visible" && c.imp);
-      if (!blockedByOwn && !blockedByUnrecoverable && !blockedByInherited && !blockedByInheritedImp && !blockedByReqImp && bComps.some((c) => c.state === "visible")) {
+      const allSideVisible = ["style", "width", "color"].every((c) => borderTuple[c].state !== "invisible") &&
+        ["style", "width", "color"].some((c) => borderTuple[c].state === "visible") &&
+        !(options.borderUnrecoverableProps || []).length &&
+        !(options.borderSuppressedProps || []).some((req) => borderTuple[req]?.state !== "visible") &&
+        !(options.borderImportantSuppressedProps || []).some((req) => borderTuple[req]?.state !== "visible" || !borderTuple[req]?.imp) &&
+        (!borderNeedsImp || ["style", "width", "color"].some((c) => borderTuple[c].state === "visible" && borderTuple[c].imp));
+      if (allSideVisible || ["t", "r", "b", "l"].some(checkCssSideBorderVisible)) {
         return true;
       }
     }
@@ -3172,8 +3983,8 @@ export function hasVisibleFocusIndicator(body, selector = "", options = {}) {
     const nonOutlineEntries = [];
     const appOutlineRemRe = new RegExp(`(?:^|\\s)(!?(?:${TW_VARIANT_SEG})*!?${TW_OUTLINE_REM_BODY}!?)(?=$|[\\s;])`, "g");
     const appOutlineVisRe = new RegExp(`(?:^|\\s)(!?(?:${TW_VARIANT_SEG})*!?${TW_OUTLINE_VIS_BODY}!?(?=$|[\\s;]))`, "g");
-    const sameRuleBoxImpSup = Boolean(winBox && !winBox.vis && winBox.imp);
-    const sameRuleBoxImpOff = sameRuleBoxImpSup ? winBox.offset : -1;
+    const sameRuleBoxImpSup = Boolean(winPureBox && !winPureBox.vis && winPureBox.imp);
+    const sameRuleBoxImpOff = sameRuleBoxImpSup ? winPureBox.offset : -1;
     const extBorderImpSet = new Set(options.borderImportantSuppressedProps || []);
     const extBorderNormSet = new Set(options.borderSuppressedProps || []);
     const borderUnrecoverable = (options.borderUnrecoverableProps || []).length > 0;
@@ -3188,25 +3999,41 @@ export function hasVisibleFocusIndicator(body, selector = "", options = {}) {
         if (info.targetPrefixes.size > 0) continue;
         if (options.forWrapperChildFocus && (info.focusKind === "focus" || info.focusKind === "focus-visible")) continue;
         const util = getTwUtilityPart(rawTok).toLowerCase();
-        if (/^outline(?:-|$)/i.test(util)) continue;
+        if (/^(?:outline(?:-|$)|\[outline(?:-(?:style|width|color))?:)/i.test(util)) continue;
         const isKiller = isInvisibleTwFocusUtility(rawTok);
         let tok = isFocusSelector && !info.focusKind ? `focus-visible:${rawTok}` : rawTok;
         if (stmtImp && !/(?:^|:)!|!$/.test(tok)) tok = `!${tok}`;
         const tokHasImp = /(?:^|:)!|!$/.test(tok);
         const rb = classifyTwRingOrBorder(rawTok);
-        const isRingOrShadow = rb ? rb.family === "ring" || rb.family === "shadow" : /^(?:ring|shadow)(?:-|$)/i.test(util);
+        const isRingOrShadow = rb
+          ? rb.family === "ring" || rb.family === "inset-ring" || rb.family === "shadow"
+          : /^(?:(?:inset-)?ring|shadow)(?:-|$)/i.test(util);
         const isBorderUtil = rb ? rb.family === "border" : /^border(?:-|$)/i.test(util);
+        const isRingFamily = rb ? rb.family === "ring" : /^ring(?:-|$)/i.test(util);
+        const isInsetRingFamily = rb ? rb.family === "inset-ring" : /^inset-ring(?:-|$)/i.test(util);
         const tokNeedsImp =
           Boolean(options.requireImportantOnly) ||
           (Boolean(options.requireImportantOutlineOnly) &&
-            ((isRingOrShadow && Boolean(options.boxShadowSuppressedBySrc)) ||
+            (((isRingFamily && options.ringSuppressedBySrc) ||
+              (isInsetRingFamily && options.insetRingSuppressedBySrc) ||
+              (isRingOrShadow && pureBoxSrcSup)) ||
               (isBorderUtil && Boolean(options.borderSuppressedBySrc))));
         if (!isKiller && tokNeedsImp && !tokHasImp) continue;
         if (!isKiller && isRingOrShadow) {
-          if (options.boxShadowUnrecoverable) continue;
-          if (options.boxShadowImportantSuppressed && !tokHasImp) continue;
+          if (pureBoxUnrecov) continue;
+          if (pureBoxImpSup && !tokHasImp) continue;
           if (sameRuleBoxImpSup && (!tokHasImp || appStart < sameRuleBoxImpOff)) continue;
-          if (!tokHasImp && lastInvNormalBoxOff > appStart) continue;
+          if (!tokHasImp && lastInvNormalPureBoxOff > appStart) continue;
+          if (isRingFamily && rb) {
+            if ((options.ringUnrecoverableProps || []).length > 0) continue;
+            nonOutlineEntries.push({ tok, isBorderCand: false, isRingCand: true, appStart, tokHasImp, rb });
+            continue;
+          }
+          if (isInsetRingFamily && rb) {
+            if ((options.insetRingUnrecoverableProps || []).length > 0) continue;
+            nonOutlineEntries.push({ tok, isBorderCand: false, isInsetRingCand: true, appStart, tokHasImp, rb });
+            continue;
+          }
         }
         const coversFocus = isKiller || isFocusSelector || info.focusKind === "focus" || info.focusKind === "focus-visible";
         if (!coversFocus) continue;
@@ -3217,22 +4044,23 @@ export function hasVisibleFocusIndicator(body, selector = "", options = {}) {
           nonOutlineEntries.push({ tok, isBorderCand: false });
         }
       }
-      for (const m of rawStmt.matchAll(appOutlineRemRe)) {
+      for (const m of appNoImp.matchAll(appOutlineRemRe)) {
         const tok = m[1];
         if (!isTwOutlineRemoval(tok)) continue;
         const info = splitTailwindVariants(tok);
-        if (info.condPrefixes.size === 0 && info.targetPrefixes.size === 0 && (isFocusSelector || info.focusKind === "focus" || info.focusKind === "focus-visible")) {
+        if (info.condPrefixes.size === 0 && info.targetPrefixes.size === 0 && (isFocusSelector || info.focusKind === null || info.focusKind === "focus" || info.focusKind === "focus-visible")) {
           events.push({
             offset: appStart + m.index,
             kind: "apply-outline",
             state: "invisible",
-            isImportant: /(?:^|:)!|!$/.test(tok),
+            isImportant: stmtImp || /(?:^|:)!|!$/.test(tok),
             spec: info.focusKind === "focus-visible" ? 2 : info.focusKind === "focus" ? 1 : 0,
+            rb: classifyTwRingOrBorder(tok),
           });
         }
       }
       if (!options.ignoreApplyOutline && !options.outlineUnrecoverable) {
-        for (const m of rawStmt.matchAll(appOutlineVisRe)) {
+        for (const m of appNoImp.matchAll(appOutlineVisRe)) {
           const tok = m[1];
           if (isInvisibleTwFocusUtility(tok)) continue;
           const info = splitTailwindVariants(tok);
@@ -3242,56 +4070,138 @@ export function hasVisibleFocusIndicator(body, selector = "", options = {}) {
               offset: appStart + m.index,
               kind: "apply-outline",
               state: "visible",
-              isImportant: /(?:^|:)!|!$/.test(tok),
+              isImportant: stmtImp || /(?:^|:)!|!$/.test(tok),
               spec: info.focusKind === "focus-visible" ? 2 : info.focusKind === "focus" ? 1 : 0,
+              rb: classifyTwRingOrBorder(tok),
             });
           }
         }
       }
     }
-    const borderTokenCands = nonOutlineEntries.filter((e) => e.isBorderCand);
-    let borderCandsValid = !borderUnrecoverable;
-    if (borderTokenCands.length > 0 && borderCandsValid) {
+    const validateRingGroup = (cands, sameTuple, extNormArr, extImpArr, extUnrecArr, needsImpReq) => {
+      if (cands.length === 0) return { valid: true, impComps: new Set() };
+      if ((extUnrecArr || []).length > 0) return { valid: false, impComps: new Set() };
+      const extNormSet = new Set(extNormArr || []);
+      const extImpSet = new Set(extImpArr || []);
+      const reqImpComps = new Set(extImpArr || []);
       for (const [comp, setFlag] of [
-        ["style", "setsStyle"],
         ["width", "setsWidth"],
         ["color", "setsColor"],
       ]) {
-        const extImp = extBorderImpSet.has(comp);
-        const extNorm = extBorderNormSet.has(comp);
-        const btComp = borderTuple[comp];
+        const extImp = extImpSet.has(comp);
+        const extNorm = extNormSet.has(comp);
+        const btComp = sameTuple[comp];
         const sameImp = btComp.state === "invisible" && btComp.imp;
         const sameImpOff = sameImp ? btComp.offset : -1;
-        const sameNormOff = borderTuple[`${comp}InvNormalOff`] ?? -1;
-        const hasAnySupp = extImp || extNorm || sameImp || sameNormOff >= 0;
+        const sameNormOff = sameTuple[`${comp}InvNormalOff`] ?? -1;
+        if (sameImp) reqImpComps.add(comp);
+        const hasAnySupp = extImp || extNorm || sameImp || sameNormOff >= 0 || (needsImpReq && comp === "width");
         if (!hasAnySupp) continue;
-        const cssRestored =
-          isFocusSelector &&
-          btComp.state === "visible" &&
-          (!extImp || btComp.imp) &&
-          (!borderNeedsImpReq || btComp.imp);
-        if (cssRestored) continue;
-        const twRestored = borderTokenCands.some((c) => {
+        const twRestored = cands.some((c) => {
           if (!c.rb[setFlag]) return false;
-          if (extImp && !c.tokHasImp) return false;
+          if ((extImp || needsImpReq) && !c.tokHasImp) return false;
           if (sameImp && (!c.tokHasImp || c.appStart < sameImpOff)) return false;
           if (!sameImp && sameNormOff > c.appStart && !c.tokHasImp) return false;
           return true;
         });
-        if (!twRestored) {
-          borderCandsValid = false;
-          break;
+        if (!twRestored) return { valid: false, impComps: reqImpComps };
+      }
+      return { valid: true, impComps: reqImpComps };
+    };
+    const ringRes = validateRingGroup(
+      nonOutlineEntries.filter((e) => e.isRingCand),
+      ringTuple,
+      options.ringSuppressedProps,
+      options.ringImportantSuppressedProps,
+      options.ringUnrecoverableProps,
+      Boolean(options.requireImportantOnly || (options.requireImportantOutlineOnly && options.ringSuppressedBySrc))
+    );
+    const insetRingRes = validateRingGroup(
+      nonOutlineEntries.filter((e) => e.isInsetRingCand),
+      insetRingTuple,
+      options.insetRingSuppressedProps,
+      options.insetRingImportantSuppressedProps,
+      options.insetRingUnrecoverableProps,
+      Boolean(options.requireImportantOnly || (options.requireImportantOutlineOnly && options.insetRingSuppressedBySrc))
+    );
+    const borderTokenCands = nonOutlineEntries.filter((e) => e.isBorderCand);
+    const validBorderSides = new Set();
+    if (borderTokenCands.length > 0 && !borderUnrecoverable) {
+      const touchedSides = new Set(borderTokenCands.flatMap((c) => expandBorderSideChars(c.rb.side)));
+      for (const sCh of touchedSides) {
+        if ((extSideUnrec[sCh] || []).length > 0) continue;
+        const sideCands = borderTokenCands.filter((c) => expandBorderSideChars(c.rb.side).includes(sCh));
+        const sImpSet = new Set([...extBorderImpSet, ...(extSideImp[sCh] || [])]);
+        const sNormSet = new Set([...extBorderNormSet, ...(extSideNorm[sCh] || [])]);
+        const sBt = borderTuple.sides?.[sCh] || borderTuple;
+        let sideOk = true;
+        for (const [comp, setFlag] of [
+          ["style", "setsStyle"],
+          ["width", "setsWidth"],
+          ["color", "setsColor"],
+        ]) {
+          const extImp = sImpSet.has(comp);
+          const extNorm = sNormSet.has(comp);
+          const allComp = borderTuple[comp];
+          const sideComp = sBt[comp];
+          const sameImp = (sideComp.state === "invisible" && sideComp.imp) || (allComp.state === "invisible" && allComp.imp);
+          const sameImpOff = Math.max(
+            sideComp.state === "invisible" && sideComp.imp ? sideComp.offset : -1,
+            allComp.state === "invisible" && allComp.imp ? allComp.offset : -1
+          );
+          const sameNormOff = Math.max(sBt[`${comp}InvNormalOff`] ?? -1, borderTuple[`${comp}InvNormalOff`] ?? -1);
+          const hasAnySupp = extImp || extNorm || sameImp || sameNormOff >= 0;
+          if (!hasAnySupp) continue;
+          const cssRestored =
+            isFocusSelector &&
+            ((sideComp.state === "visible" && (!extImp || sideComp.imp) && (!borderNeedsImpReq || sideComp.imp)) ||
+              (allComp.state === "visible" && sideComp.state !== "invisible" && (!extImp || allComp.imp) && (!borderNeedsImpReq || allComp.imp)));
+          if (cssRestored) continue;
+          const twRestored = sideCands.some((c) => {
+            if (!c.rb[setFlag]) return false;
+            if (extImp && !c.tokHasImp) return false;
+            if (sameImp && (!c.tokHasImp || c.appStart < sameImpOff)) return false;
+            if (!sameImp && sameNormOff > c.appStart && !c.tokHasImp) return false;
+            return true;
+          });
+          if (!twRestored) {
+            sideOk = false;
+            break;
+          }
         }
+        if (sideOk) validBorderSides.add(sCh);
       }
     }
     const nonOutlineTwTokens = nonOutlineEntries
       .filter((e) => {
+        if (e.isRingCand) {
+          if (!ringRes.valid) return false;
+          const needsImp =
+            (e.rb.setsWidth && ringRes.impComps.has("width")) ||
+            (e.rb.setsColor && ringRes.impComps.has("color"));
+          return !(needsImp && !e.tokHasImp);
+        }
+        if (e.isInsetRingCand) {
+          if (!insetRingRes.valid) return false;
+          const needsImp =
+            (e.rb.setsWidth && insetRingRes.impComps.has("width")) ||
+            (e.rb.setsColor && insetRingRes.impComps.has("color"));
+          return !(needsImp && !e.tokHasImp);
+        }
         if (!e.isBorderCand) return true;
-        if (!borderCandsValid) return false;
-        const extAnyImp =
-          (e.rb.setsStyle && (extBorderImpSet.has("style") || (borderTuple.style.state === "invisible" && borderTuple.style.imp))) ||
-          (e.rb.setsWidth && (extBorderImpSet.has("width") || (borderTuple.width.state === "invisible" && borderTuple.width.imp))) ||
-          (e.rb.setsColor && (extBorderImpSet.has("color") || (borderTuple.color.state === "invisible" && borderTuple.color.imp)));
+        const cSides = expandBorderSideChars(e.rb.side);
+        if (!cSides.some((sCh) => validBorderSides.has(sCh))) return false;
+        const extAnyImp = cSides
+          .filter((sCh) => validBorderSides.has(sCh))
+          .some((sCh) => {
+            const sBt = borderTuple.sides?.[sCh] || borderTuple;
+            const sImpSet = new Set([...extBorderImpSet, ...(extSideImp[sCh] || [])]);
+            return (
+              (e.rb.setsStyle && (sImpSet.has("style") || (sBt.style.state === "invisible" && sBt.style.imp) || (borderTuple.style.state === "invisible" && borderTuple.style.imp))) ||
+              (e.rb.setsWidth && (sImpSet.has("width") || (sBt.width.state === "invisible" && sBt.width.imp) || (borderTuple.width.state === "invisible" && borderTuple.width.imp))) ||
+              (e.rb.setsColor && (sImpSet.has("color") || (sBt.color.state === "invisible" && sBt.color.imp) || (borderTuple.color.state === "invisible" && borderTuple.color.imp)))
+            );
+          });
         return !(extAnyImp && !e.tokHasImp);
       })
       .map((e) => e.tok);
@@ -3303,11 +4213,13 @@ export function hasVisibleFocusIndicator(body, selector = "", options = {}) {
   if (options.outlineUnrecoverable) return false;
   for (const m of cssDeclBody.matchAll(/(?<![a-zA-Z0-9_$-])(outline|outline-style|outline-width|outline-color)\s*:\s*((?:[^#;{}]|#\{[^{}]*\}|#(?!\{))+)/gi)) {
     const prop = m[1].toLowerCase();
+    const info = classifyOutlineDecl(prop, m[2]);
+    if (options.applyFocusOnly && info.state === "visible") continue;
     events.push({
       offset: m.index,
       kind: "css-outline",
       prop,
-      info: classifyOutlineDecl(prop, m[2]),
+      info,
     });
   }
   events.sort((a, b) => a.offset - b.offset);
@@ -3329,9 +4241,15 @@ export function hasVisibleFocusIndicator(body, selector = "", options = {}) {
   for (const ev of events) {
     sawOutline = true;
     if (ev.kind === "apply-outline") {
-      setComp("style", ev.state, ev.isImportant, ev.spec);
-      setComp("width", ev.state, ev.isImportant, ev.spec);
-      setComp("color", ev.state, ev.isImportant, ev.spec);
+      if (ev.state === "invisible") {
+        if (!ev.rb || ev.rb.killsStyle) setComp("style", "invisible", ev.isImportant, ev.spec);
+        if (!ev.rb || ev.rb.killsWidth) setComp("width", "invisible", ev.isImportant, ev.spec);
+        if (!ev.rb || ev.rb.killsColor) setComp("color", "invisible", ev.isImportant, ev.spec);
+      } else {
+        if (!ev.rb || ev.rb.setsStyle) setComp("style", "visible", ev.isImportant, ev.spec);
+        if (!ev.rb || ev.rb.setsWidth) setComp("width", "visible", ev.isImportant, ev.spec);
+        if (!ev.rb || ev.rb.setsColor) setComp("color", "visible", ev.isImportant, ev.spec);
+      }
       continue;
     }
     const { prop, info } = ev;
@@ -3401,6 +4319,7 @@ export function discoverExternalDsCss(startDir = ".", explicitPaths = []) {
   }
 
   const focusBlocks = [];
+  let extSeq = 0;
   for (const p of paths) {
     let raw = "";
     try {
@@ -3411,11 +4330,19 @@ export function discoverExternalDsCss(startDir = ".", explicitPaths = []) {
     const clean = stripCommentsPreservingLines(raw);
     for (const blk of extractCssRuleBlocks(clean)) {
       const sel = blk.resolvedSelector || blk.selector;
-      if (/(?<!\\)(?::focus-within\b|:has\([^;]*:focus(?:-visible)?\b)/i.test(sel) && hasVisibleFocusIndicator(blk.body, sel)) {
+      const hasFocusSel = /(?<!\\)(?::focus(?:-visible|-within)?(?![a-z-])|:has\([^;]*:focus(?:-visible)?\b)/i.test(sel);
+      const hasFocusOrSuppDecl =
+        /@apply\b/i.test(blk.body) ||
+        /(?<![a-zA-Z0-9_$-])(?:outline(?:-(?:style|width|color))?|border(?:-(?:top|right|bottom|left|inline|block|x|y|s|e)(?:-(?:start|end))?)?(?:-(?:style|width|color))?|box-shadow)\s*:/i.test(
+          blk.body
+        );
+      if (hasFocusSel || hasFocusOrSuppDecl) {
         focusBlocks.push({
           selector: sel,
           resolvedSelector: sel,
           body: blk.body,
+          bodyStart: blk.bodyStart,
+          docBodyStart: ++extSeq,
           conditions: blk.conditions || [],
           layer: blk.layer ?? null,
           layerPath: blk.layerPath ?? null,
@@ -3431,19 +4358,54 @@ export function discoverExternalDsCss(startDir = ".", explicitPaths = []) {
 }
 
 export function createCascadeLayerComparator(orderedBlocks = []) {
-  const mergedTree = { orderIndex: 0, children: new Map() };
+  const mkNode = () => ({ orderIndex: 0, children: new Map(), edges: new Map(), firstSeen: new Map() });
+  const mergedTree = mkNode();
   const treeIds = new Map();
   let nextTreeId = 1;
+  const canReach = (edges, start, target) => {
+    if (start === target) return true;
+    const seen = new Set([start]);
+    const q = [start];
+    while (q.length > 0) {
+      const cur = q.shift();
+      const nexts = edges.get(cur);
+      if (!nexts) continue;
+      for (const nxt of nexts) {
+        if (nxt === target) return true;
+        if (!seen.has(nxt)) {
+          seen.add(nxt);
+          q.push(nxt);
+        }
+      }
+    }
+    return false;
+  };
+  const addEdge = (node, fromKey, toKey) => {
+    if (!fromKey || !toKey || fromKey === toKey) return;
+    if (canReach(node.edges, toKey, fromKey)) return;
+    let nexts = node.edges.get(fromKey);
+    if (!nexts) {
+      nexts = new Set();
+      node.edges.set(fromKey, nexts);
+    }
+    nexts.add(toKey);
+  };
   const mergeNode = (srcNode, dstNode, treeId) => {
     const entries = [...srcNode.children.entries()].sort((a, b) => a[1].orderIndex - b[1].orderIndex);
+    const orderedKeys = [];
     for (const [seg, srcChild] of entries) {
       const mergedKey = seg.startsWith("__anon_") ? `${seg}__t${treeId}` : seg;
+      orderedKeys.push(mergedKey);
       let dstChild = dstNode.children.get(mergedKey);
       if (!dstChild) {
-        dstChild = { orderIndex: dstNode.children.size, children: new Map() };
+        dstChild = mkNode();
         dstNode.children.set(mergedKey, dstChild);
+        dstNode.firstSeen.set(mergedKey, dstNode.firstSeen.size);
       }
       mergeNode(srcChild, dstChild, treeId);
+    }
+    for (let i = 0; i + 1 < orderedKeys.length; i++) {
+      addEdge(dstNode, orderedKeys[i], orderedKeys[i + 1]);
     }
   };
   const ensurePath = (lp, treeId = 0) => {
@@ -3452,8 +4414,9 @@ export function createCascadeLayerComparator(orderedBlocks = []) {
       const key = seg.startsWith("__anon_") && treeId ? `${seg}__t${treeId}` : seg;
       let child = cur.children.get(key);
       if (!child) {
-        child = { orderIndex: cur.children.size, children: new Map() };
+        child = mkNode();
         cur.children.set(key, child);
+        cur.firstSeen.set(key, cur.firstSeen.size);
       }
       cur = child;
     }
@@ -3478,6 +4441,44 @@ export function createCascadeLayerComparator(orderedBlocks = []) {
       : [];
     if (lp.length > 0) ensurePath(lp, 0);
   }
+  const assignTopoOrder = (node) => {
+    const keys = [...node.children.keys()];
+    if (keys.length === 0) return;
+    const inDeg = new Map();
+    for (const k of keys) inDeg.set(k, 0);
+    for (const [u, nexts] of node.edges.entries()) {
+      if (!node.children.has(u)) continue;
+      for (const v of nexts) {
+        if (node.children.has(v)) inDeg.set(v, (inDeg.get(v) || 0) + 1);
+      }
+    }
+    const bySeen = (a, b) => (node.firstSeen.get(a) ?? 0) - (node.firstSeen.get(b) ?? 0);
+    const ready = keys.filter((k) => inDeg.get(k) === 0).sort(bySeen);
+    let idx = 0;
+    const placed = new Set();
+    while (ready.length > 0) {
+      const k = ready.shift();
+      placed.add(k);
+      node.children.get(k).orderIndex = idx++;
+      const nexts = node.edges.get(k);
+      if (nexts) {
+        for (const v of nexts) {
+          if (!inDeg.has(v)) continue;
+          const nd = inDeg.get(v) - 1;
+          inDeg.set(v, nd);
+          if (nd === 0) {
+            ready.push(v);
+            ready.sort(bySeen);
+          }
+        }
+      }
+    }
+    for (const k of keys.sort(bySeen)) {
+      if (!placed.has(k)) node.children.get(k).orderIndex = idx++;
+      assignTopoOrder(node.children.get(k));
+    }
+  };
+  assignTopoOrder(mergedTree);
   const getTuple = (blk) => {
     const lp = Array.isArray(blk?.layerPath)
       ? blk.layerPath
@@ -3518,6 +4519,11 @@ export function createCascadeLayerComparator(orderedBlocks = []) {
 
 export function createFocusSafetyChecker(cssBlocks, externalBlocks = []) {
   const combinedFocusBlocks = [...cssBlocks, ...(Array.isArray(externalBlocks) ? externalBlocks : [])];
+  const externalBlockSet = new Set(Array.isArray(externalBlocks) ? externalBlocks : []);
+  const externalOrderMap = new Map();
+  if (Array.isArray(externalBlocks)) {
+    externalBlocks.forEach((b, idx) => externalOrderMap.set(b, idx + 1));
+  }
   const compareCascadeLayerOrder = createCascadeLayerComparator([
     ...(Array.isArray(externalBlocks) ? externalBlocks : []),
     ...cssBlocks,
@@ -3572,22 +4578,30 @@ export function createFocusSafetyChecker(cssBlocks, externalBlocks = []) {
     let hasApplyFocusOrFvRemoval = false;
     if (blkApplies.length > 0) {
       const twAppRemRe = new RegExp(`(?:^|[\\s"'\`])(!?(?:${TW_VARIANT_SEG})*!?${TW_OUTLINE_REM_BODY}!?)(?=$|[\\s"'\`;])`, "g");
-      for (const m of blkApplies.join(" ").matchAll(twAppRemRe)) {
-        const tok = m[1];
-        if (!isTwOutlineRemoval(tok)) continue;
-        const info = splitTailwindVariants(tok);
-        if (info.condPrefixes.size > 0 || (info.targetPrefixes && info.targetPrefixes.size > 0)) continue;
-        if (info.focusKind === "focus" || info.focusKind === "focus-visible") {
-          hasApplyFocusOrFvRemoval = true;
-        }
-        if (info.focusKind === "focus-visible" || info.focusKind === "focus" || info.focusKind === null) {
-          supSet.add("style");
-          supSet.add("width");
-          supSet.add("color");
-          if (/(?:^|:)!|!$/.test(tok)) {
-            impSupSet.add("style");
-            impSupSet.add("width");
-            impSupSet.add("color");
+      for (const rawStmt of blkApplies) {
+        const stmtImp = /\s*!\s*important\s*$/i.test(rawStmt);
+        const appNoImp = stmtImp ? rawStmt.replace(/\s*!\s*important\s*$/i, "") : rawStmt;
+        for (const m of appNoImp.matchAll(twAppRemRe)) {
+          const tok = m[1];
+          if (!isTwOutlineRemoval(tok)) continue;
+          const info = splitTailwindVariants(tok);
+          if (info.condPrefixes.size > 0 || (info.targetPrefixes && info.targetPrefixes.size > 0)) continue;
+          if (info.focusKind === "focus" || info.focusKind === "focus-visible") {
+            hasApplyFocusOrFvRemoval = true;
+          }
+          if (info.focusKind === "focus-visible" || info.focusKind === "focus" || info.focusKind === null) {
+            const rb = classifyTwRingOrBorder(tok);
+            const kStyle = rb ? rb.killsStyle : true;
+            const kWidth = rb ? rb.killsWidth : true;
+            const kColor = rb ? rb.killsColor : true;
+            if (kStyle) supSet.add("style");
+            if (kWidth) supSet.add("width");
+            if (kColor) supSet.add("color");
+            if (stmtImp || /(?:^|:)!|!$/.test(tok)) {
+              if (kStyle) impSupSet.add("style");
+              if (kWidth) impSupSet.add("width");
+              if (kColor) impSupSet.add("color");
+            }
           }
         }
       }
@@ -3599,8 +4613,17 @@ export function createFocusSafetyChecker(cssBlocks, externalBlocks = []) {
     };
   };
   const getBlockOrder = (b) => (typeof b?.docBodyStart === "number" ? b.docBodyStart : typeof b?.bodyStart === "number" ? b.bodyStart : null);
-  const splitSelectorCompounds = (sel) => {
-    const comps = [];
+  const compareBlockOrder = (a, b) => {
+    const aExt = externalBlockSet.has(a);
+    const bExt = externalBlockSet.has(b);
+    if (aExt !== bExt) return aExt ? -1 : 1;
+    const ao = getBlockOrder(a) ?? (aExt ? externalOrderMap.get(a) ?? 0 : 0);
+    const bo = getBlockOrder(b) ?? (bExt ? externalOrderMap.get(b) ?? 0 : 0);
+    return ao - bo;
+  };
+  const splitSelectorChain = (sel) => {
+    const segs = [];
+    const combs = [];
     let p = 0, b = 0, q = null, start = 0;
     const str = String(sel || "").trim();
     for (let i = 0; i < str.length; i++) {
@@ -3617,37 +4640,114 @@ export function createFocusSafetyChecker(cssBlocks, externalBlocks = []) {
       else if (ch === "]") b = Math.max(0, b - 1);
       else if (p === 0 && b === 0 && /[\s>+~]/.test(ch)) {
         const seg = str.slice(start, i).trim();
-        if (seg) comps.push(seg);
-        while (i + 1 < str.length && /[\s>+~]/.test(str[i + 1])) i++;
-        start = i + 1;
+        let comb = " ";
+        while (i < str.length && /[\s>+~]/.test(str[i])) {
+          if (str[i] === ">" || str[i] === "+" || str[i] === "~") comb = str[i];
+          i++;
+        }
+        if (seg) {
+          segs.push(seg);
+          combs.push(comb);
+        }
+        start = i;
+        i--;
       }
     }
     const tail = str.slice(start).trim();
-    if (tail) comps.push(tail);
-    return comps;
+    if (tail) segs.push(tail);
+    else if (combs.length >= segs.length) combs.pop();
+    return { segs, combs };
   };
+  const splitSelectorCompounds = (sel) => splitSelectorChain(sel).segs;
   const selectorCoversBranchChain = (broadBase, narrowBase) => {
-    const bSegs = splitSelectorCompounds(broadBase);
-    const nSegs = splitSelectorCompounds(narrowBase);
+    const { segs: bSegs, combs: bCombs } = splitSelectorChain(broadBase);
+    const { segs: nSegs, combs: nCombs } = splitSelectorChain(narrowBase);
     if (bSegs.length === 0 || nSegs.length < bSegs.length) return false;
     if (!branchSubjectsCoversTarget(bSegs[bSegs.length - 1], nSegs[nSegs.length - 1])) return false;
     if (bSegs.length === 1) return true;
-    let ni = 0;
-    for (let bi = 0; bi < bSegs.length - 1; bi++) {
-      let matched = false;
-      while (ni < nSegs.length - 1) {
-        if (branchSubjectsCoversTarget(bSegs[bi], nSegs[ni])) {
-          ni++;
-          matched = true;
-          break;
-        }
-        ni++;
+    const matchAt = (bi, ni) => {
+      if (bi === 0) return true;
+      const bc = bCombs[bi - 1];
+      const bTarget = bSegs[bi - 1];
+      if (bc === ">" || bc === "+") {
+        if (ni - 1 < 0 || nCombs[ni - 1] !== bc) return false;
+        return branchSubjectsCoversTarget(bTarget, nSegs[ni - 1]) && matchAt(bi - 1, ni - 1);
       }
-      if (!matched) return false;
-    }
-    return true;
+      if (bc === "~") {
+        for (let k = ni - 1; k >= 0; k--) {
+          if (nCombs[k] !== "+" && nCombs[k] !== "~") break;
+          if (branchSubjectsCoversTarget(bTarget, nSegs[k]) && matchAt(bi - 1, k)) return true;
+        }
+        return false;
+      }
+      for (let k = ni - 1; k >= 0; k--) {
+        const nc = nCombs[k];
+        if (nc === " " || nc === ">") {
+          if (branchSubjectsCoversTarget(bTarget, nSegs[k]) && matchAt(bi - 1, k)) return true;
+        }
+      }
+      return false;
+    };
+    return matchAt(bSegs.length - 1, nSegs.length - 1);
   };
-  const hasTwFocusApply = (b) => /(?<![a-zA-Z0-9_$-])@apply\s+[^;{}]*:focus(?:-visible)?\b/i.test(String(b?.body || ""));
+  const extractNonFocusNotClauses = (sel) => {
+    const clauses = new Set();
+    const str = String(sel || "");
+    let q = null;
+    for (let i = 0; i < str.length; i++) {
+      const c = str[i];
+      if (q) {
+        if (c === "\\" && i + 1 < str.length) i++;
+        else if (c === q) q = null;
+        continue;
+      }
+      if (c === '"' || c === "'") { q = c; continue; }
+      if (c === ":" && !(i > 0 && str[i - 1] === "\\") && str.slice(i, i + 5).toLowerCase() === ":not(") {
+        let depth = 1;
+        let j = i + 5;
+        let nq = null;
+        while (j < str.length && depth > 0) {
+          const nc = str[j];
+          if (nq) {
+            if (nc === "\\" && j + 1 < str.length) { j += 2; continue; }
+            if (nc === nq) nq = null;
+          } else if (nc === '"' || nc === "'") { nq = nc; }
+          else if (nc === "(") depth++;
+          else if (nc === ")") {
+            depth--;
+            if (depth === 0) break;
+          }
+          j++;
+        }
+        if (depth === 0) {
+          const inner = str.slice(i + 5, j).replace(/\s+/g, " ").trim().toLowerCase();
+          if (!/^:focus(?:-visible|-within)?$/i.test(inner)) {
+            clauses.add(`:not(${inner})`);
+          }
+          i = j;
+        }
+      }
+    }
+    return clauses;
+  };
+  const getTwFocusApplyKinds = (b) => {
+    const kinds = new Set();
+    const rawBody = String(b?.body || "");
+    if (!/@apply\b/i.test(rawBody)) return kinds;
+    const masked = maskCssQuotedStringsPreservingLines(rawBody, "_");
+    for (const am of masked.matchAll(/(?<![a-zA-Z0-9_$-])@apply\s+((?:[^#;{}]|#\{[^{}]*\}|#(?!\{))+)/gi)) {
+      const stmt = am[1].replace(/\s*!\s*important\s*$/i, "");
+      for (const tok of stmt.trim().split(/\s+/).filter(Boolean)) {
+        const info = splitTailwindVariants(tok);
+        if (info.targetPrefixes.size > 0) continue;
+        if (info.focusKind === "focus" || info.focusKind === "focus-visible" || info.focusKind === "focus-within" || info.focusKind === "has-focus") {
+          kinds.add(info.focusKind);
+        }
+      }
+    }
+    return kinds;
+  };
+  const hasTwFocusApply = (b) => getTwFocusApplyKinds(b).size > 0;
   const maskSelectorBrackets = (sel) => {
     let out = "";
     let br = 0;
@@ -3681,20 +4781,112 @@ export function createFocusSafetyChecker(cssBlocks, externalBlocks = []) {
     return out;
   };
   const stripFocusPseudosOutsideBrackets = (sel) => {
-    const masked = maskSelectorBrackets(sel);
+    const isPureFocusStr = (part) => {
+      const stripped = stripPureFocusWrappers(String(part || "").trim());
+      return stripped.replace(/(?<!\\):focus(?:-visible|-within)?(?![a-zA-Z0-9_-])/gi, "").trim() === "";
+    };
+    const stripPureFocusWrappers = (input) => {
+      let cur = String(input || "");
+      let changed = true;
+      while (changed) {
+        changed = false;
+        let out = "";
+        let br = 0;
+        let q = null;
+        for (let i = 0; i < cur.length; i++) {
+          const ch = cur[i];
+          if (q) {
+            out += ch;
+            if (ch === "\\" && i + 1 < cur.length) {
+              out += cur[i + 1];
+              i++;
+            } else if (ch === q) {
+              q = null;
+            }
+            continue;
+          }
+          if (ch === "\\" && i + 1 < cur.length) {
+            out += ch + cur[i + 1];
+            i++;
+            continue;
+          }
+          if (ch === '"' || ch === "'") {
+            q = ch;
+            out += ch;
+            continue;
+          }
+          if (ch === "[") {
+            br++;
+            out += ch;
+            continue;
+          }
+          if (ch === "]" && br > 0) {
+            br--;
+            out += ch;
+            continue;
+          }
+          if (br === 0 && ch === ":") {
+            const wm = /^:(?:is|where)\(/i.exec(cur.slice(i, i + 8));
+            if (wm) {
+              const openP = i + wm[0].length - 1;
+              let depth = 1;
+              let pq = null;
+              let pbr = 0;
+              let k = openP + 1;
+              while (k < cur.length && depth > 0) {
+                const pc = cur[k];
+                if (pq) {
+                  if (pc === "\\" && k + 1 < cur.length) k++;
+                  else if (pc === pq) pq = null;
+                } else if (pc === "\\" && k + 1 < cur.length) {
+                  k++;
+                } else if (pc === '"' || pc === "'") {
+                  pq = pc;
+                } else if (pc === "[") {
+                  pbr++;
+                } else if (pc === "]" && pbr > 0) {
+                  pbr--;
+                } else if (pbr === 0) {
+                  if (pc === "(") depth++;
+                  else if (pc === ")") depth--;
+                }
+                k++;
+              }
+              if (depth === 0) {
+                const closeP = k - 1;
+                const inner = cur.slice(openP + 1, closeP);
+                const branches = splitTopLevelCommas(inner);
+                if (branches.some((b) => b.trim().length > 0 && isPureFocusStr(b))) {
+                  changed = true;
+                  i = closeP;
+                  continue;
+                }
+              }
+            }
+          }
+          out += ch;
+        }
+        cur = out;
+      }
+      return cur;
+    };
+    const withoutWrappers = stripPureFocusWrappers(sel);
+    const masked = maskSelectorBrackets(withoutWrappers);
     const re = /(?<!\\):focus(?:-visible|-within)?(?![a-zA-Z0-9_-])/gi;
     let out = "";
     let last = 0;
     let m;
     while ((m = re.exec(masked)) !== null) {
-      out += sel.slice(last, m.index);
+      out += withoutWrappers.slice(last, m.index);
       last = m.index + m[0].length;
     }
-    out += sel.slice(last);
+    out += withoutWrappers.slice(last);
     return out.trim();
   };
   const parseFocusMeta = (branchSel) => {
-    const noNot = collapseFocusFv(stripNotPseudo(String(branchSel || "")));
+    const rawStr = String(branchSel || "");
+    const notClauses = extractNonFocusNotClauses(rawStr);
+    const noNot = collapseFocusFv(stripNotPseudo(rawStr));
     const outerNoNot = maskSelectorBrackets(noNot);
     const hasFv = /(?<!\\):focus-visible(?![a-z-])/i.test(outerNoNot);
     const hasFocus = /(?<!\\):focus(?![a-z-])/i.test(outerNoNot) && !hasFv;
@@ -3703,8 +4895,10 @@ export function createFocusSafetyChecker(cssBlocks, externalBlocks = []) {
     const hasActive = /(?<!\\):active(?![a-zA-Z0-9_-])/i.test(outerNoNot);
     const base = stripFocusPseudosOutsideBrackets(noNot);
     const spec = computeSelectorSpecificity(branchSel);
-    return { noNot, hasFv, hasFocus, hasFw, hasHover, hasActive, base, spec };
+    return { noNot, hasFv, hasFocus, hasFw, hasHover, hasActive, base, spec, notClauses };
   };
+  const notClausesCover = (broadNot, narrowNot) =>
+    !broadNot || broadNot.size === 0 || [...broadNot].every((nc) => narrowNot && narrowNot.has(nc));
   const parseBoxShadowDecls = (candBody) => {
     const out = [];
     for (const bm of candBody.matchAll(/(?<![a-zA-Z0-9_$-])box-shadow\s*:\s*((?:[^#;{}]|#\{[^{}]*\}|#(?!\{))+)/gi)) {
@@ -3719,11 +4913,99 @@ export function createFocusSafetyChecker(cssBlocks, externalBlocks = []) {
     }
     return out;
   };
+  const createOutlineTupleState = () => ({
+    style: { state: null, candWinsImportant: false },
+    width: { state: null, candWinsImportant: false },
+    color: { state: null, candWinsImportant: false },
+  });
+  const collectOutlineTupleFromRawBody = (rawBody, { outlineTuple, impFilter = "all", candWinsImportant = false }) => {
+    const body = String(rawBody || "");
+    const maskedBody = maskCssQuotedStringsPreservingLines(body);
+    const applyEvents = [];
+    const applyRe = /(?<![a-zA-Z0-9_$-])@apply\s+((?:[^#;{}]|#\{[^{}]*\}|#(?!\{))+)/gi;
+    const rawNoApply = maskedBody.replace(/(?<![a-zA-Z0-9_$-])@apply\s+(?:[^#;{}]|#\{[^{}]*\}|#(?!\{))+;?/gi, (m) => m.replace(/[^\n]/g, " "));
+    for (const m of rawNoApply.matchAll(/(?<![a-zA-Z0-9_$-])(outline|outline-style|outline-width|outline-color)\s*:\s*((?:[^#;{}]|#\{[^{}]*\}|#(?!\{))+)/gi)) {
+      const prop = m[1].toLowerCase();
+      const info = classifyOutlineDecl(prop, m[2]);
+      if (impFilter === "normal-only" && info.isImportant) continue;
+      if (impFilter === "important-only" && !info.isImportant) continue;
+      applyEvents.push({ offset: m.index, kind: "css", prop, info });
+    }
+    const appOutlineVisRe = new RegExp(`(?:^|\\s)(!?(?:${TW_VARIANT_SEG})*!?${TW_OUTLINE_VIS_BODY}!?(?=$|[\\s;]))`, "g");
+    for (const am of maskedBody.matchAll(applyRe)) {
+      const appStart = am.index + am[0].indexOf(am[1]);
+      const rawStmt = body.slice(appStart, appStart + am[1].length);
+      const stmtImp = /\s*!\s*important\s*$/i.test(rawStmt);
+      const appNoImp = stmtImp ? rawStmt.replace(/\s*!\s*important\s*$/i, "") : rawStmt;
+      let tokCursor = 0;
+      for (const rawTok of appNoImp.split(/\s+/).filter(Boolean)) {
+        const tokPos = appNoImp.indexOf(rawTok, tokCursor);
+        if (tokPos !== -1) tokCursor = tokPos + rawTok.length;
+        const tok = rawTok.replace(/;+$/, "");
+        if (!tok) continue;
+        const info = splitTailwindVariants(tok);
+        if (info.condPrefixes.size > 0 || (info.targetPrefixes && info.targetPrefixes.size > 0)) continue;
+        if (info.focusKind !== null && info.focusKind !== "focus" && info.focusKind !== "focus-visible") continue;
+        const isImp = stmtImp || /(?:^|:)!|!$/.test(tok);
+        if (impFilter === "normal-only" && isImp) continue;
+        if (impFilter === "important-only" && !isImp) continue;
+        const rb = classifyTwRingOrBorder(tok);
+        if (isTwOutlineRemoval(tok)) {
+          applyEvents.push({
+            offset: appStart + Math.max(0, tokPos),
+            kind: "tw",
+            state: "invisible",
+            styleFlag: rb ? rb.killsStyle : true,
+            widthFlag: rb ? rb.killsWidth : true,
+            colorFlag: rb ? rb.killsColor : true,
+          });
+        } else {
+          appOutlineVisRe.lastIndex = 0;
+          if (appOutlineVisRe.test(` ${tok}`) && !isInvisibleTwFocusUtility(tok)) {
+            applyEvents.push({
+              offset: appStart + Math.max(0, tokPos),
+              kind: "tw",
+              state: "visible",
+              styleFlag: rb ? rb.setsStyle : true,
+              widthFlag: rb ? rb.setsWidth : true,
+              colorFlag: rb ? rb.setsColor : true,
+            });
+          }
+        }
+      }
+    }
+    applyEvents.sort((a, b) => a.offset - b.offset);
+    const setComp = (comp, st) => {
+      outlineTuple[comp] = {
+        state: st,
+        candWinsImportant: st === "invisible" ? Boolean(candWinsImportant) : false,
+      };
+    };
+    for (const ev of applyEvents) {
+      if (ev.kind === "tw") {
+        if (ev.styleFlag) setComp("style", ev.state);
+        if (ev.widthFlag) setComp("width", ev.state);
+        if (ev.colorFlag) setComp("color", ev.state);
+      } else {
+        const { prop, info } = ev;
+        if (prop === "outline-style") setComp("style", info.state);
+        else if (prop === "outline-width") setComp("width", info.state);
+        else if (prop === "outline-color") setComp("color", info.state);
+        else {
+          const sup = new Set(info.suppressedProps);
+          setComp("style", sup.has("style") ? "invisible" : "visible");
+          setComp("width", sup.has("width") ? "invisible" : "visible");
+          setComp("color", sup.has("color") ? "invisible" : "visible");
+        }
+      }
+    }
+  };
   const getBorderSuppressionForRule = (selBranch, blk = null, srcBlk = null, isSubgroupCheck = false) => {
     const blkMeta = parseFocusMeta(selBranch);
     const base = blkMeta.base;
     const blkOrder = getBlockOrder(blk) ?? 0;
-    const blkHasTwFocusApply = !blkMeta.hasFv && !blkMeta.hasFocus && !blkMeta.hasFw && hasTwFocusApply(blk);
+    const blkTwFocusKinds = !blkMeta.hasFv && !blkMeta.hasFocus && !blkMeta.hasFw ? getTwFocusApplyKinds(blk) : new Set();
+    const blkHasTwFocusApply = blkTwFocusKinds.size > 0;
     const effBlkSpec = blkHasTwFocusApply ? [blkMeta.spec[0], blkMeta.spec[1] + 1, blkMeta.spec[2]] : blkMeta.spec;
     const blkSubjHasPseudoEl = /(?<!\\)::[a-z-]/i.test(extractSubjectSelector(stripNotPseudo(selBranch)));
 
@@ -3743,7 +5025,7 @@ export function createFocusSafetyChecker(cssBlocks, externalBlocks = []) {
         const cbSubjNoNot = extractSubjectSelector(stripNotPseudo(cbRaw));
         if (!blkSubjHasPseudoEl && /(?<!\\)::[a-z-]/i.test(cbSubjNoNot)) continue;
         if (/(?:disabled\b|aria-disabled\s*=\s*["']?true)/i.test(cbRaw)) continue;
-        if (blkMeta.hasFv && /(?<!\\):not\(:focus-visible\)/i.test(cbRaw)) continue;
+        if ((blkMeta.hasFv || blkMeta.hasFocus) && /(?<!\\):not\(:focus-visible\)/i.test(cbRaw)) continue;
         const cbMeta = parseFocusMeta(cbRaw);
         if (!isForcedSrc && isPointerGatedCandidate(cbMeta.noNot, blkMeta.hasHover, blkMeta.hasActive)) continue;
         const isBaseRule = !cbMeta.hasFv && !cbMeta.hasFocus && !cbMeta.hasFw;
@@ -3751,13 +5033,19 @@ export function createFocusSafetyChecker(cssBlocks, externalBlocks = []) {
           (blkMeta.hasFv && (cbMeta.hasFv || cbMeta.hasFocus)) ||
           (blkMeta.hasFocus && (cbMeta.hasFocus || cbMeta.hasFv)) ||
           (blkMeta.hasFw && cbMeta.hasFw) ||
-          (blkHasTwFocusApply && (cbMeta.hasFv || cbMeta.hasFocus));
+          (blkHasTwFocusApply && (cbMeta.hasFv || cbMeta.hasFocus || (blkTwFocusKinds.has("focus-within") && cbMeta.hasFw)));
         const specCmp = compareSpecificity(cbMeta.spec, cbMeta.hasFv || cbMeta.hasFocus ? effBlkSpec : blkMeta.spec);
-        const orderCmp = candOrder - blkOrder;
+        const orderCmp = compareBlockOrder(cand, blk);
         const candWinsNormal = layerCmp > 0 || (layerCmp === 0 && (specCmp > 0 || (specCmp === 0 && orderCmp > 0)));
         const candWinsImportant = layerCmp < 0 || (layerCmp === 0 && (specCmp > 0 || (specCmp === 0 && orderCmp > 0)));
-        const item = { cand, cbRaw, cbMeta, candOrder, layerCmp, specCmp, orderCmp, candWinsNormal, candWinsImportant };
-        if (base && cbMeta.base === base && (isBaseRule || focusCovers)) {
+        const item = { cand, cbRaw, cbMeta, candOrder, layerCmp, specCmp, orderCmp, candWinsNormal, candWinsImportant, focusCovers };
+        if (
+          base &&
+          cbMeta.base &&
+          (cbMeta.base === base || selectorCoversBranchChain(cbMeta.base, base)) &&
+          notClausesCover(cbMeta.notClauses, blkMeta.notClauses) &&
+          (isBaseRule || focusCovers)
+        ) {
           if (
             !bestExact ||
             item.specCmp > bestExact.specCmp ||
@@ -3773,12 +5061,17 @@ export function createFocusSafetyChecker(cssBlocks, externalBlocks = []) {
           base &&
           cbMeta.base &&
           cbMeta.base !== base &&
-          focusCovers &&
+          (focusCovers || isBaseRule) &&
           (candWinsNormal || candWinsImportant) &&
-          selectorCoversBranchChain(base, cbMeta.base)
+          selectorCoversBranchChain(base, cbMeta.base) &&
+          notClausesCover(blkMeta.notClauses, cbMeta.notClauses)
         ) {
           const prev = bestNarrowBySubBase.get(cbMeta.base);
-          if (!prev || compareSpecificity(item.cbMeta.spec, prev.cbMeta.spec) > 0) {
+          if (
+            !prev ||
+            item.specCmp > prev.specCmp ||
+            (item.specCmp === prev.specCmp && compareSpecificity(item.cbMeta.spec, prev.cbMeta.spec) > 0)
+          ) {
             bestNarrowBySubBase.set(cbMeta.base, item);
           }
         }
@@ -3788,32 +5081,93 @@ export function createFocusSafetyChecker(cssBlocks, externalBlocks = []) {
       for (const nItem of bestNarrowBySubBase.values()) narrowerFocusCands.push(nItem);
     }
 
-    const ascNormalCmp = (a, b) => a.layerCmp - b.layerCmp || compareSpecificity(a.cbMeta.spec, b.cbMeta.spec) || a.candOrder - b.candOrder;
-    const ascImpCmp = (a, b) => -compareCascadeLayerOrder(a.cand, b.cand) || compareSpecificity(a.cbMeta.spec, b.cbMeta.spec) || a.candOrder - b.candOrder;
+    const ascNormalCmp = (a, b) => compareCascadeLayerOrder(a.cand, b.cand) || compareSpecificity(a.cbMeta.spec, b.cbMeta.spec) || compareBlockOrder(a.cand, b.cand);
+    const ascImpCmp = (a, b) => -compareCascadeLayerOrder(a.cand, b.cand) || compareSpecificity(a.cbMeta.spec, b.cbMeta.spec) || compareBlockOrder(a.cand, b.cand);
 
     const inheritedBorder = collectBorderTupleState("");
+    const inheritedRing = collectRingTupleState();
+    const inheritedInsetRing = collectRingTupleState();
+    const inheritedOutline = createOutlineTupleState();
     for (const item of exactCands.filter((x) => !x.candWinsNormal).sort(ascNormalCmp)) {
-      const candBody = maskAtApplyDeclsPreservingLines(maskCssQuotedStringsPreservingLines(item.cand.body || ""));
-      collectBorderTupleState(candBody, inheritedBorder, 0, "normal-only");
+      collectRuleBorderAndShadowFromRawBody(item.cand.body || "", {
+        borderTuple: inheritedBorder,
+        ringTuple: inheritedRing,
+        insetRingTuple: inheritedInsetRing,
+        impFilter: "normal-only",
+        allowFocusVariants: true,
+        treatFocusMatch: true,
+      });
+      if (item.cand !== srcBlk) {
+        collectOutlineTupleFromRawBody(item.cand.body || "", {
+          outlineTuple: inheritedOutline,
+          impFilter: "normal-only",
+        });
+      }
     }
 
     const overridingBorder = collectBorderTupleState("");
+    const overridingRing = collectRingTupleState();
+    const overridingInsetRing = collectRingTupleState();
+    const overridingOutline = createOutlineTupleState();
     let overridingWinBox = null;
+    let overridingPureWinBox = null;
     for (const item of exactCands.filter((x) => x.candWinsNormal).sort(ascNormalCmp)) {
-      const candBody = maskAtApplyDeclsPreservingLines(maskCssQuotedStringsPreservingLines(item.cand.body || ""));
-      collectBorderTupleState(candBody, overridingBorder, 0, "normal-only");
-      for (const bd of parseBoxShadowDecls(candBody)) {
+      const { boxDecls } = collectRuleBorderAndShadowFromRawBody(item.cand.body || "", {
+        borderTuple: overridingBorder,
+        ringTuple: overridingRing,
+        insetRingTuple: overridingInsetRing,
+        impFilter: "normal-only",
+        allowFocusVariants: true,
+        treatFocusMatch: true,
+      });
+      if (item.cand !== srcBlk) {
+        collectOutlineTupleFromRawBody(item.cand.body || "", {
+          outlineTuple: overridingOutline,
+          impFilter: "normal-only",
+        });
+      }
+      for (const bd of boxDecls) {
         if (!bd.imp) overridingWinBox = bd;
+        if (!bd.imp && !bd.fromRingFamily) overridingPureWinBox = bd;
       }
     }
 
     const impBorder = collectBorderTupleState("");
+    const impRing = collectRingTupleState();
+    const impInsetRing = collectRingTupleState();
+    const impOutline = createOutlineTupleState();
     let winBoxImp = null;
+    let pureWinBoxImp = null;
     for (const item of [...exactCands].sort(ascImpCmp)) {
-      const candBody = maskAtApplyDeclsPreservingLines(maskCssQuotedStringsPreservingLines(item.cand.body || ""));
-      collectBorderTupleState(candBody, impBorder, 0, "important-only", { candWinsImportant: item.candWinsImportant });
-      for (const bd of parseBoxShadowDecls(candBody)) {
+      const { boxDecls } = collectRuleBorderAndShadowFromRawBody(item.cand.body || "", {
+        borderTuple: impBorder,
+        ringTuple: impRing,
+        insetRingTuple: impInsetRing,
+        impFilter: "important-only",
+        candWinsImportant: item.candWinsImportant,
+        allowFocusVariants: true,
+        treatFocusMatch: true,
+      });
+      if (item.cand !== srcBlk) {
+        collectOutlineTupleFromRawBody(item.cand.body || "", {
+          outlineTuple: impOutline,
+          impFilter: "important-only",
+          candWinsImportant: item.candWinsImportant,
+        });
+      }
+      for (const bd of boxDecls) {
         if (bd.imp) winBoxImp = { ...bd, candWinsImportant: item.candWinsImportant };
+        if (bd.imp && !bd.fromRingFamily) pureWinBoxImp = { ...bd, candWinsImportant: item.candWinsImportant };
+      }
+    }
+
+    const extraOutlineSupSet = new Set(["style", "width", "color"].filter((c) => inheritedOutline[c].state === "invisible"));
+    const extraOutlineImpSupSet = new Set(["style", "width", "color"].filter((c) => overridingOutline[c].state === "invisible"));
+    let extraOutlineUnrecoverable = false;
+    for (const c of ["style", "width", "color"]) {
+      if (impOutline[c].state === "invisible") {
+        extraOutlineImpSupSet.add(c);
+        if (impOutline[c].candWinsImportant) extraOutlineUnrecoverable = true;
       }
     }
 
@@ -3826,8 +5180,41 @@ export function createFocusSafetyChecker(cssBlocks, externalBlocks = []) {
         if (impBorder[c].candWinsImportant) borderUnrecovSet.add(c);
       }
     }
+    const sideSup = { t: new Set(), r: new Set(), b: new Set(), l: new Set() };
+    const sideImpSup = { t: new Set(), r: new Set(), b: new Set(), l: new Set() };
+    const sideUnrecov = { t: new Set(), r: new Set(), b: new Set(), l: new Set() };
+    for (const sCh of ["t", "r", "b", "l"]) {
+      for (const c of ["style", "width", "color"]) {
+        if (inheritedBorder.sides[sCh][c].state === "invisible") sideSup[sCh].add(c);
+        if (overridingBorder.sides[sCh][c].state === "invisible") sideImpSup[sCh].add(c);
+        if (impBorder.sides[sCh][c].state === "invisible") {
+          sideImpSup[sCh].add(c);
+          if (impBorder.sides[sCh][c].candWinsImportant) sideUnrecov[sCh].add(c);
+        }
+      }
+    }
+    const ringSupSet = new Set(["width", "color"].filter((c) => inheritedRing[c].state === "invisible"));
+    const ringImpSupSet = new Set(["width", "color"].filter((c) => overridingRing[c].state === "invisible"));
+    const ringUnrecovSet = new Set();
+    for (const c of ["width", "color"]) {
+      if (impRing[c].state === "invisible") {
+        ringImpSupSet.add(c);
+        if (impRing[c].candWinsImportant) ringUnrecovSet.add(c);
+      }
+    }
+    const insetRingSupSet = new Set(["width", "color"].filter((c) => inheritedInsetRing[c].state === "invisible"));
+    const insetRingImpSupSet = new Set(["width", "color"].filter((c) => overridingInsetRing[c].state === "invisible"));
+    const insetRingUnrecovSet = new Set();
+    for (const c of ["width", "color"]) {
+      if (impInsetRing[c].state === "invisible") {
+        insetRingImpSupSet.add(c);
+        if (impInsetRing[c].candWinsImportant) insetRingUnrecovSet.add(c);
+      }
+    }
     let boxShadowImportantSuppressed = Boolean((overridingWinBox && !overridingWinBox.vis) || (winBoxImp && !winBoxImp.vis));
     let boxShadowUnrecoverable = Boolean(winBoxImp && !winBoxImp.vis && winBoxImp.candWinsImportant);
+    let pureBoxShadowImportantSuppressed = Boolean((overridingPureWinBox && !overridingPureWinBox.vis) || (pureWinBoxImp && !pureWinBoxImp.vis));
+    let pureBoxShadowUnrecoverable = Boolean(pureWinBoxImp && !pureWinBoxImp.vis && pureWinBoxImp.candWinsImportant);
 
     if (!isSubgroupCheck && narrowerFocusCands.length > 0) {
       const refBlk = srcBlk || blk;
@@ -3840,41 +5227,96 @@ export function createFocusSafetyChecker(cssBlocks, externalBlocks = []) {
         list.push(item);
         bySubBase.set(item.cbMeta.base, list);
       }
+      const getRefSpecForSubBase = (subBase) => {
+        if (refBlk === blk) return blkMeta.spec;
+        let bestSpec = null;
+        for (const rb of getBlockBranches(refBlk)) {
+          const rbMeta = parseFocusMeta(rb);
+          if (rbMeta.base && (rbMeta.base === subBase || selectorCoversBranchChain(rbMeta.base, subBase))) {
+            if (!bestSpec || compareSpecificity(rbMeta.spec, bestSpec) > 0) bestSpec = rbMeta.spec;
+          }
+        }
+        return bestSpec || blkMeta.spec;
+      };
       for (const subItems of bySubBase.values()) {
         const subHasOwnFocus = subItems.some((subItem) => {
+          if (!subItem.focusCovers) return false;
           const refLayerCmp = compareCascadeLayerOrder(subItem.cand, refBlk);
-          const refSpecCmp = compareSpecificity(subItem.cbMeta.spec, parseFocusMeta(subItem.cbRaw).base ? computeSelectorSpecificity(refBlk?.resolvedSelector || refBlk?.selector || selBranch) : blkMeta.spec);
-          const refOrderCmp = subItem.candOrder - refOrder;
+          const refSpecCmp = compareSpecificity(subItem.cbMeta.spec, getRefSpecForSubBase(subItem.cbMeta.base));
+          const refOrderCmp = compareBlockOrder(subItem.cand, refBlk);
           const subRequireImpOutline = refHasImpSup || refLayerCmp < 0 || (refLayerCmp === 0 && (refSpecCmp < 0 || (refSpecCmp === 0 && refOrderCmp < 0)));
           const subOutlineUnrecov = refHasImpSup && (refLayerCmp > 0 || (refLayerCmp === 0 && (refSpecCmp < 0 || (refSpecCmp === 0 && refOrderCmp <= 0))));
           const subBorderSupp = getBorderSuppressionForRule(subItem.cbRaw, subItem.cand, null, true);
           return hasVisibleFocusIndicator(subItem.cand.body, subItem.cbRaw, {
-            suppressedProps: refSupProps,
-            importantSuppressedProps: refImpSupProps,
-            requireImportantOutlineOnly: subRequireImpOutline,
-            outlineUnrecoverable: subOutlineUnrecov,
             ...subBorderSupp,
+            suppressedProps: [...new Set([...refSupProps, ...(subBorderSupp.extraOutlineSuppressedProps || [])])],
+            importantSuppressedProps: [...new Set([...refImpSupProps, ...(subBorderSupp.extraOutlineImportantSuppressedProps || [])])],
+            requireImportantOutlineOnly: subRequireImpOutline,
+            outlineUnrecoverable: subOutlineUnrecov || Boolean(subBorderSupp.extraOutlineUnrecoverable),
           });
         });
         if (subHasOwnFocus) continue;
 
         const subNormBorder = collectBorderTupleState("");
+        const subNormRing = collectRingTupleState();
+        const subNormInsetRing = collectRingTupleState();
+        const subNormOutline = createOutlineTupleState();
         let subNormBox = null;
+        let subNormPureBox = null;
         for (const item of [...subItems].sort(ascNormalCmp)) {
           if (!item.candWinsNormal) continue;
-          const candBody = maskAtApplyDeclsPreservingLines(maskCssQuotedStringsPreservingLines(item.cand.body || ""));
-          collectBorderTupleState(candBody, subNormBorder, 0, "normal-only");
-          for (const bd of parseBoxShadowDecls(candBody)) {
+          const { boxDecls } = collectRuleBorderAndShadowFromRawBody(item.cand.body || "", {
+            borderTuple: subNormBorder,
+            ringTuple: subNormRing,
+            insetRingTuple: subNormInsetRing,
+            impFilter: "normal-only",
+            allowFocusVariants: true,
+            treatFocusMatch: true,
+          });
+          if (item.cand !== srcBlk) {
+            collectOutlineTupleFromRawBody(item.cand.body || "", {
+              outlineTuple: subNormOutline,
+              impFilter: "normal-only",
+            });
+          }
+          for (const bd of boxDecls) {
             if (!bd.imp) subNormBox = bd;
+            if (!bd.imp && !bd.fromRingFamily) subNormPureBox = bd;
           }
         }
         const subImpBorder = collectBorderTupleState("");
+        const subImpRing = collectRingTupleState();
+        const subImpInsetRing = collectRingTupleState();
+        const subImpOutline = createOutlineTupleState();
         let subImpBox = null;
+        let subImpPureBox = null;
         for (const item of [...subItems].sort(ascImpCmp)) {
-          const candBody = maskAtApplyDeclsPreservingLines(maskCssQuotedStringsPreservingLines(item.cand.body || ""));
-          collectBorderTupleState(candBody, subImpBorder, 0, "important-only", { candWinsImportant: item.candWinsImportant });
-          for (const bd of parseBoxShadowDecls(candBody)) {
+          const { boxDecls } = collectRuleBorderAndShadowFromRawBody(item.cand.body || "", {
+            borderTuple: subImpBorder,
+            ringTuple: subImpRing,
+            insetRingTuple: subImpInsetRing,
+            impFilter: "important-only",
+            candWinsImportant: item.candWinsImportant,
+            allowFocusVariants: true,
+            treatFocusMatch: true,
+          });
+          if (item.cand !== srcBlk) {
+            collectOutlineTupleFromRawBody(item.cand.body || "", {
+              outlineTuple: subImpOutline,
+              impFilter: "important-only",
+              candWinsImportant: item.candWinsImportant,
+            });
+          }
+          for (const bd of boxDecls) {
             if (bd.imp) subImpBox = { ...bd, candWinsImportant: item.candWinsImportant };
+            if (bd.imp && !bd.fromRingFamily) subImpPureBox = { ...bd, candWinsImportant: item.candWinsImportant };
+          }
+        }
+        for (const c of ["style", "width", "color"]) {
+          if (subNormOutline[c].state === "invisible") extraOutlineImpSupSet.add(c);
+          if (subImpOutline[c].state === "invisible") {
+            extraOutlineImpSupSet.add(c);
+            if (subImpOutline[c].candWinsImportant) extraOutlineUnrecoverable = true;
           }
         }
         for (const c of ["style", "width", "color"]) {
@@ -3883,37 +5325,89 @@ export function createFocusSafetyChecker(cssBlocks, externalBlocks = []) {
             borderImpSupSet.add(c);
             if (subImpBorder[c].candWinsImportant) borderUnrecovSet.add(c);
           }
+          for (const sCh of ["t", "r", "b", "l"]) {
+            if (subNormBorder.sides[sCh][c].state === "invisible") sideImpSup[sCh].add(c);
+            if (subImpBorder.sides[sCh][c].state === "invisible") {
+              sideImpSup[sCh].add(c);
+              if (subImpBorder.sides[sCh][c].candWinsImportant) sideUnrecov[sCh].add(c);
+            }
+          }
+        }
+        for (const c of ["width", "color"]) {
+          if (subNormRing[c].state === "invisible") ringImpSupSet.add(c);
+          if (subImpRing[c].state === "invisible") {
+            ringImpSupSet.add(c);
+            if (subImpRing[c].candWinsImportant) ringUnrecovSet.add(c);
+          }
+          if (subNormInsetRing[c].state === "invisible") insetRingImpSupSet.add(c);
+          if (subImpInsetRing[c].state === "invisible") {
+            insetRingImpSupSet.add(c);
+            if (subImpInsetRing[c].candWinsImportant) insetRingUnrecovSet.add(c);
+          }
         }
         if (subNormBox && !subNormBox.vis) boxShadowImportantSuppressed = true;
         if (subImpBox && !subImpBox.vis) {
           boxShadowImportantSuppressed = true;
           if (subImpBox.candWinsImportant) boxShadowUnrecoverable = true;
         }
+        if (subNormPureBox && !subNormPureBox.vis) pureBoxShadowImportantSuppressed = true;
+        if (subImpPureBox && !subImpPureBox.vis) {
+          pureBoxShadowImportantSuppressed = true;
+          if (subImpPureBox.candWinsImportant) pureBoxShadowUnrecoverable = true;
+        }
       }
     }
 
     let boxShadowSuppressedBySrc = false;
+    let pureBoxShadowSuppressedBySrc = false;
     let borderSuppressedBySrc = false;
+    let ringSuppressedBySrc = false;
+    let insetRingSuppressedBySrc = false;
     if (srcBlk && srcBlk !== blk) {
-      const srcBody = maskAtApplyDeclsPreservingLines(maskCssQuotedStringsPreservingLines(srcBlk.body || ""));
-      const srcBorder = collectBorderTupleState(srcBody);
+      const { borderTuple: srcBorder, boxDecls: srcBoxes, ringTuple: srcRing, insetRingTuple: srcInsetRing } = collectRuleBorderAndShadowFromRawBody(srcBlk.body || "", {
+        allowFocusVariants: true,
+        treatFocusMatch: true,
+      });
       borderSuppressedBySrc =
         srcBorder.sawBorder &&
-        ["style", "width", "color"].some((c) => srcBorder[c].state === "invisible");
+        (["style", "width", "color"].some((c) => srcBorder[c].state === "invisible") ||
+          ["t", "r", "b", "l"].some((sCh) => ["style", "width", "color"].some((c) => srcBorder.sides[sCh][c].state === "invisible")));
       let srcWinBox = null;
-      for (const bd of parseBoxShadowDecls(srcBody)) {
+      let srcPureWinBox = null;
+      for (const bd of srcBoxes) {
         if (!srcWinBox || bd.imp || !srcWinBox.imp) srcWinBox = bd;
+        if (!bd.fromRingFamily && (!srcPureWinBox || bd.imp || !srcPureWinBox.imp)) srcPureWinBox = bd;
       }
       boxShadowSuppressedBySrc = Boolean(srcWinBox && !srcWinBox.vis);
+      pureBoxShadowSuppressedBySrc = Boolean(srcPureWinBox && !srcPureWinBox.vis);
+      ringSuppressedBySrc = srcRing.saw && ["width", "color"].some((c) => srcRing[c].state === "invisible");
+      insetRingSuppressedBySrc = srcInsetRing.saw && ["width", "color"].some((c) => srcInsetRing[c].state === "invisible");
     }
     return {
       borderSuppressedProps: [...borderSupSet],
       borderImportantSuppressedProps: [...borderImpSupSet],
       borderUnrecoverableProps: [...borderUnrecovSet],
+      borderSideSuppressed: { t: [...sideSup.t], r: [...sideSup.r], b: [...sideSup.b], l: [...sideSup.l] },
+      borderSideImportantSuppressed: { t: [...sideImpSup.t], r: [...sideImpSup.r], b: [...sideImpSup.b], l: [...sideImpSup.l] },
+      borderSideUnrecoverable: { t: [...sideUnrecov.t], r: [...sideUnrecov.r], b: [...sideUnrecov.b], l: [...sideUnrecov.l] },
+      ringSuppressedProps: [...ringSupSet],
+      ringImportantSuppressedProps: [...ringImpSupSet],
+      ringUnrecoverableProps: [...ringUnrecovSet],
+      insetRingSuppressedProps: [...insetRingSupSet],
+      insetRingImportantSuppressedProps: [...insetRingImpSupSet],
+      insetRingUnrecoverableProps: [...insetRingUnrecovSet],
       boxShadowImportantSuppressed,
       boxShadowUnrecoverable,
       boxShadowSuppressedBySrc,
+      pureBoxShadowImportantSuppressed,
+      pureBoxShadowUnrecoverable,
+      pureBoxShadowSuppressedBySrc,
       borderSuppressedBySrc,
+      ringSuppressedBySrc,
+      insetRingSuppressedBySrc,
+      extraOutlineSuppressedProps: [...extraOutlineSupSet],
+      extraOutlineImportantSuppressedProps: [...extraOutlineImpSupSet],
+      extraOutlineUnrecoverable,
     };
   };
   const replaceFocusOutsideNot = (part, repSuffix) => {
@@ -3963,14 +5457,22 @@ export function createFocusSafetyChecker(cssBlocks, externalBlocks = []) {
     if (focusComps.length === 0) return /(?<!\\):not\(:focus-visible\)/i.test(extractSubjectSelector(sel));
     return focusComps.every((c) => /(?<!\\):not\(:focus-visible\)/i.test(c));
   };
-  const hasBranchSiblingFocusVisible = (p, blk = null) => {
+  const hasBranchSiblingFocusVisible = (p, blk = null, specOverride = null) => {
     const rawSubj = extractSubjectSelector(p);
     const pSubj = stripNotPseudo(rawSubj);
     const pNoNot = stripNotPseudo(p);
+    const pMeta = parseFocusMeta(p);
     const hasFvInBranch = /(?<!\\):focus-visible(?![a-z-])/i.test(pNoNot);
-    const hasSubjFocus = /(?<!\\):focus(?![a-z-])/i.test(pSubj) && !/(?<!\\):focus-visible(?![a-z-])/i.test(pSubj);
+    const hasSubjFv = /(?<!\\):focus-visible(?![a-z-])/i.test(pSubj);
+    const hasSubjFocus = /(?<!\\):focus(?![a-z-])/i.test(pSubj) && !hasSubjFv;
     const hasFocusInBranch = /(?<!\\):focus(?![a-z-])/i.test(pNoNot) && !hasFvInBranch;
     const isPlainFocus = hasFocusInBranch;
+    const hasAncestorFocus =
+      (hasFvInBranch && !hasSubjFv) ||
+      (hasFocusInBranch && !/(?<!\\):focus(?![a-z-])/i.test(pSubj)) ||
+      /(?<!\\):focus-within(?![a-z-])/i.test(pNoNot);
+    const allowBaseCoverage = !hasAncestorFocus;
+    const pSubjHasPseudoEl = /(?<!\\)::[a-z-]/i.test(pSubj);
     const prefixPart = p.slice(0, p.length - rawSubj.length);
     const targetSel = collapseFocusFv(
       hasFvInBranch
@@ -3981,36 +5483,82 @@ export function createFocusSafetyChecker(cssBlocks, externalBlocks = []) {
         ? `${replaceFocusOutsideNot(prefixPart, ":focus-visible")}${rawSubj}`
         : `${p.replace(/(?<!\\):focus(?:-visible)?\s*$/i, "").trim()}:focus-visible`
     );
+    const targetPlainFocusSel =
+      !hasFvInBranch && !hasFocusInBranch
+        ? collapseFocusFv(`${p.replace(/(?<!\\):focus(?:-visible)?\s*$/i, "").trim()}:focus`)
+        : null;
     const { suppressedProps, importantSuppressedProps, hasApplyFocusOrFvRemoval } = getBlkOutlineSuppression(blk);
+    const blkHasTwFocusApply = !pMeta.hasFv && !pMeta.hasFocus && !pMeta.hasFw && hasTwFocusApply(blk);
+    const effPSpec = specOverride || (blkHasTwFocusApply ? [pMeta.spec[0], pMeta.spec[1] + 1, pMeta.spec[2]] : pMeta.spec);
     const blkOrder = getBlockOrder(blk);
     const blkHasImportantSup = importantSuppressedProps.length > 0;
-    return cssBlocks.some((other) => {
+    const directCovered = combinedFocusBlocks.some((other) => {
       if (other === blk) return false;
       if (!conditionsCover(other, blk)) return false;
       const layerCmp = compareCascadeLayerOrder(other, blk);
+      const isOtherExternal = externalBlockSet.has(other);
       const otherOrder = getBlockOrder(other);
-      const sameLayerEarlier =
-        layerCmp === 0 &&
-        (isPlainFocus || hasFvInBranch || hasApplyFocusOrFvRemoval) &&
-        otherOrder !== null &&
-        blkOrder !== null &&
-        otherOrder <= blkOrder;
-      const outlineUnrecoverable = blkHasImportantSup && (layerCmp > 0 || sameLayerEarlier);
-      const requireImportantOutlineOnly = !blkHasImportantSup && (layerCmp < 0 || sameLayerEarlier);
+      const otherHasTwFocus = allowBaseCoverage && hasTwFocusApply(other);
+      const isEarlierOnSameLayer =
+        (layerCmp === 0 &&
+          (isPlainFocus || hasFvInBranch || hasApplyFocusOrFvRemoval) &&
+          ((otherOrder !== null && blkOrder !== null && otherOrder <= blkOrder) || isOtherExternal)) ||
+        (isOtherExternal && layerCmp === 0 && isPlainFocus);
       return getBlockBranches(other).some((os) => {
         const trimSel = os.trim();
-        return (
-          collapseFocusFv(trimSel) === targetSel &&
-          hasVisibleFocusIndicator(other.body, trimSel, {
-            suppressedProps,
-            importantSuppressedProps,
-            requireImportantOutlineOnly,
-            outlineUnrecoverable,
-            ...getBorderSuppressionForRule(trimSel, other, blk),
-          })
-        );
+        const normTrim = collapseFocusFv(trimSel);
+        let effOtherSpec = null;
+        let applyFocusOnly = false;
+        if (normTrim === targetSel || (isOtherExternal && targetPlainFocusSel && normTrim === targetPlainFocusSel)) {
+          effOtherSpec = computeSelectorSpecificity(trimSel);
+        } else if (allowBaseCoverage && pMeta.base) {
+          if (/(?:disabled\b|aria-disabled\s*=\s*["']?true)/i.test(trimSel)) return false;
+          const osSubjNoNot = extractSubjectSelector(stripNotPseudo(trimSel));
+          if (!pSubjHasPseudoEl && /(?<!\\)::[a-z-]/i.test(osSubjNoNot)) return false;
+          const osMeta = parseFocusMeta(trimSel);
+          if (isPointerGatedCandidate(osMeta.noNot, pMeta.hasHover, pMeta.hasActive)) return false;
+          if (
+            !osMeta.base ||
+            (osMeta.base !== pMeta.base && !selectorCoversBranchChain(osMeta.base, pMeta.base)) ||
+            !notClausesCover(osMeta.notClauses, pMeta.notClauses)
+          ) {
+            return false;
+          }
+          if (osMeta.hasFv) {
+            effOtherSpec = osMeta.spec;
+          } else if (otherHasTwFocus && !osMeta.hasFv && !osMeta.hasFocus && !osMeta.hasFw) {
+            effOtherSpec = [osMeta.spec[0], osMeta.spec[1] + 1, osMeta.spec[2]];
+            applyFocusOnly = true;
+          } else {
+            return false;
+          }
+        } else {
+          return false;
+        }
+        const specCmp = compareSpecificity(effOtherSpec, effPSpec);
+        const otherLosesNormalOutline = layerCmp < 0 || (layerCmp === 0 && (specCmp < 0 || (specCmp === 0 && isEarlierOnSameLayer)));
+        const otherLosesImpOutline = layerCmp > 0 || (layerCmp === 0 && (specCmp < 0 || (specCmp === 0 && isEarlierOnSameLayer)));
+        const outlineUnrecoverable = blkHasImportantSup && otherLosesImpOutline;
+        const requireImportantOutlineOnly = !blkHasImportantSup && otherLosesNormalOutline;
+        const bSupp = getBorderSuppressionForRule(trimSel, other, blk);
+        return hasVisibleFocusIndicator(other.body, trimSel, {
+          ...bSupp,
+          suppressedProps: [...new Set([...suppressedProps, ...(bSupp.extraOutlineSuppressedProps || [])])],
+          importantSuppressedProps: [...new Set([...importantSuppressedProps, ...(bSupp.extraOutlineImportantSuppressedProps || [])])],
+          requireImportantOutlineOnly,
+          outlineUnrecoverable: outlineUnrecoverable || Boolean(bSupp.extraOutlineUnrecoverable),
+          ...(applyFocusOnly ? { applyFocusOnly: true } : {}),
+        });
       });
     });
+    if (directCovered) return true;
+    if (!specOverride) {
+      const expandedBranches = expandTopLevelIsWhereBranches(p);
+      if (expandedBranches.length > 1) {
+        return expandedBranches.every((subP) => hasBranchSiblingFocusVisible(subP, blk, effPSpec));
+      }
+    }
+    return false;
   };
   const hasBranchItemHighlightRule = (p, blk = null) => {
     const base = p.replace(/(?<!\\):focus(?:-visible)?\s*$/i, "").trim().toLowerCase();
@@ -4341,28 +5889,72 @@ export function createFocusSafetyChecker(cssBlocks, externalBlocks = []) {
     const supSet = new Set();
     const impSet = new Set();
     const unrecovSet = new Set();
+    const sideSup = { t: new Set(), r: new Set(), b: new Set(), l: new Set() };
+    const sideImpSup = { t: new Set(), r: new Set(), b: new Set(), l: new Set() };
+    const sideUnrecov = { t: new Set(), r: new Set(), b: new Set(), l: new Set() };
+    const ringSup = new Set();
+    const ringImpSup = new Set();
+    const ringUnrecov = new Set();
+    const insetRingSup = new Set();
+    const insetRingImpSup = new Set();
+    const insetRingUnrecov = new Set();
     let boxShadowImportantSuppressed = false;
     let boxShadowUnrecoverable = false;
     let boxShadowSuppressedBySrc = false;
+    let pureBoxShadowImportantSuppressed = false;
+    let pureBoxShadowUnrecoverable = false;
+    let pureBoxShadowSuppressedBySrc = false;
     let borderSuppressedBySrc = false;
+    let ringSuppressedBySrc = false;
+    let insetRingSuppressedBySrc = false;
     for (const p of parts) {
       const res = getBorderSuppressionForRule(p, blk, srcBlk);
       for (const s of res.borderSuppressedProps) supSet.add(s);
       for (const s of res.borderImportantSuppressedProps) impSet.add(s);
       for (const s of res.borderUnrecoverableProps || []) unrecovSet.add(s);
+      for (const sCh of ["t", "r", "b", "l"]) {
+        for (const s of res.borderSideSuppressed?.[sCh] || []) sideSup[sCh].add(s);
+        for (const s of res.borderSideImportantSuppressed?.[sCh] || []) sideImpSup[sCh].add(s);
+        for (const s of res.borderSideUnrecoverable?.[sCh] || []) sideUnrecov[sCh].add(s);
+      }
+      for (const s of res.ringSuppressedProps || []) ringSup.add(s);
+      for (const s of res.ringImportantSuppressedProps || []) ringImpSup.add(s);
+      for (const s of res.ringUnrecoverableProps || []) ringUnrecov.add(s);
+      for (const s of res.insetRingSuppressedProps || []) insetRingSup.add(s);
+      for (const s of res.insetRingImportantSuppressedProps || []) insetRingImpSup.add(s);
+      for (const s of res.insetRingUnrecoverableProps || []) insetRingUnrecov.add(s);
       if (res.boxShadowImportantSuppressed) boxShadowImportantSuppressed = true;
       if (res.boxShadowUnrecoverable) boxShadowUnrecoverable = true;
       if (res.boxShadowSuppressedBySrc) boxShadowSuppressedBySrc = true;
+      if (res.pureBoxShadowImportantSuppressed) pureBoxShadowImportantSuppressed = true;
+      if (res.pureBoxShadowUnrecoverable) pureBoxShadowUnrecoverable = true;
+      if (res.pureBoxShadowSuppressedBySrc) pureBoxShadowSuppressedBySrc = true;
       if (res.borderSuppressedBySrc) borderSuppressedBySrc = true;
+      if (res.ringSuppressedBySrc) ringSuppressedBySrc = true;
+      if (res.insetRingSuppressedBySrc) insetRingSuppressedBySrc = true;
     }
     return {
       borderSuppressedProps: [...supSet],
       borderImportantSuppressedProps: [...impSet],
       borderUnrecoverableProps: [...unrecovSet],
+      borderSideSuppressed: { t: [...sideSup.t], r: [...sideSup.r], b: [...sideSup.b], l: [...sideSup.l] },
+      borderSideImportantSuppressed: { t: [...sideImpSup.t], r: [...sideImpSup.r], b: [...sideImpSup.b], l: [...sideImpSup.l] },
+      borderSideUnrecoverable: { t: [...sideUnrecov.t], r: [...sideUnrecov.r], b: [...sideUnrecov.b], l: [...sideUnrecov.l] },
+      ringSuppressedProps: [...ringSup],
+      ringImportantSuppressedProps: [...ringImpSup],
+      ringUnrecoverableProps: [...ringUnrecov],
+      insetRingSuppressedProps: [...insetRingSup],
+      insetRingImportantSuppressedProps: [...insetRingImpSup],
+      insetRingUnrecoverableProps: [...insetRingUnrecov],
       boxShadowImportantSuppressed,
       boxShadowUnrecoverable,
       boxShadowSuppressedBySrc,
+      pureBoxShadowImportantSuppressed,
+      pureBoxShadowUnrecoverable,
+      pureBoxShadowSuppressedBySrc,
       borderSuppressedBySrc,
+      ringSuppressedBySrc,
+      insetRingSuppressedBySrc,
     };
   };
   checker.compareLayerOrder = compareCascadeLayerOrder;
@@ -4700,22 +6292,36 @@ export function scanUiContent(raw, filePath, options = {}) {
     const applyMaskedBody = maskCssQuotedStringsPreservingLines(String(body || ""), "_");
     const applyMatches = [...maskedBody.matchAll(/(?<![a-zA-Z0-9_$-])@apply\s+((?:[^#;{}]|#\{[^{}]*\}|#(?!\{))+)/gi)].map((am) => {
       const appRelStart = am.index + am[0].indexOf(am[1]);
+      const appText = applyMaskedBody.slice(appRelStart, appRelStart + am[1].length);
+      const stmtImp = /\s*!\s*important\s*$/i.test(appText);
+      const cleanAppText = stmtImp ? appText.replace(/\s*!\s*important\s*$/i, "") : appText;
       return {
         appBase: baseOff + appRelStart,
-        appText: applyMaskedBody.slice(appRelStart, appRelStart + am[1].length),
+        appText,
+        cleanAppText,
+        stmtImp,
       };
     });
+    const formatSiblingApply = (entry) => {
+      if (!entry.stmtImp) return entry.cleanAppText;
+      return entry.cleanAppText
+        .trim()
+        .split(/\s+/)
+        .filter(Boolean)
+        .map((tok) => (/(?:^|:)!|!$/.test(tok) ? tok : `!${tok}`))
+        .join(" ");
+    };
     const applyTransRe = new RegExp(`(?<=^|\\s)!?(?:${TW_VARIANT_SEG})*!?${TW_TRANS_ALL_CORE}!?(?=$|[\\s;])`, "g");
     const applyVwRe = new RegExp(`(?<=^|\\s)!?(?:${TW_VARIANT_SEG})*!?${TW_VW_CORE}!?(?=$|[\\s;])`, "g");
     for (let amIdx = 0; amIdx < applyMatches.length; amIdx++) {
-      const { appBase, appText } = applyMatches[amIdx];
+      const { appBase, appText, cleanAppText, stmtImp } = applyMatches[amIdx];
       const afterApplyText = applyMatches
         .slice(amIdx + 1)
-        .map((x) => x.appText)
+        .map(formatSiblingApply)
         .join(" ");
       const prevApplyText = applyMatches
         .slice(0, amIdx)
-        .map((x) => x.appText)
+        .map(formatSiblingApply)
         .join(" ");
       for (const tm of appText.matchAll(applyTransRe)) {
         findings.push({
@@ -4737,25 +6343,42 @@ export function scanUiContent(raw, filePath, options = {}) {
           message: "Disallowed Tailwind `@apply w-[100vw]`; use `w-full`.",
         });
       }
-      const appTwOutline = !inKeyframes ? analyzeTailwindOutline(appText, afterApplyText, prevApplyText) : { hasRemoval: false, naked: false, uncovered: [] };
+      const appTwOutline = !inKeyframes
+        ? analyzeTailwindOutline(cleanAppText, afterApplyText, prevApplyText, { forceMainImportant: stmtImp })
+        : { hasRemoval: false, naked: false, uncovered: [] };
       const appUncovered = appTwOutline.uncovered || (appTwOutline.firstRemoval ? [appTwOutline.firstRemoval] : []);
-      if (appTwOutline.hasRemoval && appTwOutline.naked && appUncovered.length > 0) {
-        const ignoreApplyOutline = !/(?<!\\):focus-visible(?![a-z-])/i.test(stripNotPseudo(effSelector));
-        const borderSupp = isSelectorSafeForOutlineNone.getBorderSuppression ? isSelectorSafeForOutlineNone.getBorderSuppression(effSelector, blk) : {};
-        const selfCovered = hasVisibleFocusIndicator(body, effSelector, { ignoreApplyOutline, ...borderSupp }) || isSelectorSafeForOutlineNone(effSelector, blk);
-        const targetCovered = isSelectorSafeForOutlineNone(effSelector, blk, { targetOnly: true });
-        const effectiveUncovered = appUncovered.filter((u) =>
-          u.targetPrefixes && u.targetPrefixes.size > 0 ? !targetCovered : !selfCovered
-        );
-        if (effectiveUncovered.length > 0) {
-          findings.push({
-            file: filePath,
-            line: offsetToLine(cleanComments, appBase + effectiveUncovered[0].tokIdx),
-            ruleId: "dsaf/no-outline-none-naked",
-            tier: "floor",
-            severity: "error",
-            message: "Tailwind `@apply outline-none`/`outline-0` without paired `focus-visible:ring-*` or focus `outline-*`.",
-          });
+      if (appTwOutline.hasRemoval) {
+        if (appTwOutline.naked && appUncovered.length > 0) {
+          const ignoreApplyOutline = !/(?<!\\):focus-visible(?![a-z-])/i.test(stripNotPseudo(effSelector));
+          const borderSupp = isSelectorSafeForOutlineNone.getBorderSuppression ? isSelectorSafeForOutlineNone.getBorderSuppression(effSelector, blk) : {};
+          const selfCovered = hasVisibleFocusIndicator(body, effSelector, { ignoreApplyOutline, ...borderSupp }) || isSelectorSafeForOutlineNone(effSelector, blk);
+          const targetCovered = isSelectorSafeForOutlineNone(effSelector, blk, { targetOnly: true });
+          const effectiveUncovered = appUncovered.filter((u) =>
+            u.targetPrefixes && u.targetPrefixes.size > 0 ? !targetCovered : !selfCovered
+          );
+          if (effectiveUncovered.length > 0) {
+            findings.push({
+              file: filePath,
+              line: offsetToLine(cleanComments, appBase + effectiveUncovered[0].tokIdx),
+              ruleId: "dsaf/no-outline-none-naked",
+              tier: "floor",
+              severity: "error",
+              message: "Tailwind `@apply outline-none`/`outline-0` without paired `focus-visible:ring-*` or focus `outline-*`.",
+            });
+          }
+        } else if (!appTwOutline.naked && appTwOutline.firstRemoval && !(appTwOutline.firstRemoval.targetPrefixes?.size > 0)) {
+          const borderSupp = isSelectorSafeForOutlineNone.getBorderSuppression ? isSelectorSafeForOutlineNone.getBorderSuppression(effSelector, blk) : {};
+          const selfCovered = hasVisibleFocusIndicator(body, effSelector, { ignoreApplyOutline: false, ...borderSupp }) || isSelectorSafeForOutlineNone(effSelector, blk);
+          if (!selfCovered) {
+            findings.push({
+              file: filePath,
+              line: offsetToLine(cleanComments, appBase + appTwOutline.firstRemoval.tokIdx),
+              ruleId: "dsaf/no-outline-none-naked",
+              tier: "floor",
+              severity: "error",
+              message: "Tailwind `@apply outline-none`/`outline-0` paired ring is suppressed by CSS `box-shadow`/`border` declaration.",
+            });
+          }
         }
       }
     }
@@ -6349,8 +7972,10 @@ export function scanUiContent(raw, filePath, options = {}) {
           } else if (c === "{") {
             const closeB = findBal(str, k, "{", "}");
             if (closeB !== -1 && closeB < lEnd) {
-              scanCssInJsObjectSpan(k + 1, closeB);
-              foundObj = true;
+              if (!isAlreadyScannedStyledSpan(k, closeB + 1)) {
+                scanCssInJsObjectSpan(k + 1, closeB);
+                foundObj = true;
+              }
               k = closeB;
               lastSig = "}";
             } else {
@@ -6508,15 +8133,18 @@ export function scanUiContent(raw, filePath, options = {}) {
               break;
             }
             if (bl < br && nonStyleClean[bl] === "{" && findBal(nonStyleClean, bl, "{", "}") === br - 1) {
-              if (bodyWrapped) scanCssInJsObjectSpan(bl + 1, br - 1);
-              else scanBlockReturnsForObjects(nonStyleClean, bl + 1, br - 1);
+              if (bodyWrapped) {
+                if (!isAlreadyScannedStyledSpan(bl, br)) scanCssInJsObjectSpan(bl + 1, br - 1);
+              } else {
+                scanBlockReturnsForObjects(nonStyleClean, bl + 1, br - 1);
+              }
             } else {
               scanTopObjectLiterals(nonStyleClean, bl, br);
             }
             continue;
           }
           if (nonStyleClean[l] === "{" && findBal(nonStyleClean, l, "{", "}") === r - 1) {
-            scanCssInJsObjectSpan(l + 1, r - 1);
+            if (!isAlreadyScannedStyledSpan(l, r)) scanCssInJsObjectSpan(l + 1, r - 1);
           } else {
             scanTopObjectLiterals(nonStyleClean, l, r);
           }
@@ -6530,6 +8158,10 @@ export function scanUiContent(raw, filePath, options = {}) {
         markupCtx.openTags.some((t) => idx > t.start && idx < t.end && inTagSpan(idx, t.attrValueSpans));
       const styledRe = /(?<![a-zA-Z0-9_$.])(?:styled(?:\.[a-zA-Z0-9_$]+\b|\s*(?=\())|\bcss\b|\bcreateGlobalStyle\b)\s*/g;
       const styledTemplateRanges = [];
+      const styledObjCallRanges = [];
+      const isAlreadyScannedStyledSpan = (sOff, eOff) =>
+        styledObjCallRanges.some(([os, oe]) => sOff >= os && eOff <= oe) ||
+        styledTemplateRanges.some((r) => sOff >= r.start && eOff <= r.end);
       for (const m of nonStyleClean.matchAll(styledRe)) {
         if (isInNonCodeCssInJsCtx(m.index)) continue;
         let cur = m.index + m[0].length;
@@ -6561,6 +8193,7 @@ export function scanUiContent(raw, filePath, options = {}) {
           const endObj = findBal(nonStyleClean, cur, "(", ")");
           if (endObj !== -1) {
             scanCssInJsCallArgs(cur + 1, endObj);
+            styledObjCallRanges.push([m.index, endObj + 1]);
           }
           continue;
         }
@@ -6586,9 +8219,157 @@ export function scanUiContent(raw, filePath, options = {}) {
           styledTemplateRanges.push({ start: tStart, end: tEnd, exprSpans });
         }
       }
+      const unwrapStyledInterpolationExpr = (exprRaw, baseOff, depth = 0) => {
+        if (depth > 8) return [{ expr: exprRaw, offset: baseOff }];
+        let l = 0;
+        let r = exprRaw.length;
+        while (true) {
+          while (l < r && /\s/.test(exprRaw[l])) l++;
+          while (r > l && /\s/.test(exprRaw[r - 1])) r--;
+          const tsEnd = ciStripTrailingTsCastEnd(exprRaw, l, r);
+          if (tsEnd !== r) {
+            r = tsEnd;
+            continue;
+          }
+          if (l < r && exprRaw[l] === "(" && findBal(exprRaw, l, "(", ")") === r - 1) {
+            l++;
+            r--;
+            continue;
+          }
+          break;
+        }
+        if (l >= r) return [];
+        const cur = exprRaw.slice(l, r);
+        const curOff = baseOff + l;
+        let bodyRel = -1;
+        let pCur = 0;
+        if (/^async\s+(?=[A-Za-z_$(])/.test(cur)) {
+          const am = /^async\s+/.exec(cur);
+          pCur = am[0].length;
+        }
+        if (cur[pCur] === "(") {
+          const pEnd = findBal(cur, pCur, "(", ")");
+          if (pEnd !== -1) {
+            let afterP = pEnd + 1;
+            while (afterP < cur.length && /\s/.test(cur[afterP])) afterP++;
+            if (cur[afterP] === ":") {
+              let k = afterP + 1;
+              let pq = null, pd = 0, pb = 0, pbr = 0, pa = 0;
+              while (k < cur.length) {
+                const c = cur[k];
+                if (pq) {
+                  if (c === "\\" && k + 1 < cur.length) { k += 2; continue; }
+                  if (c === pq || (pq !== "`" && c === "\n")) pq = null;
+                  k++;
+                  continue;
+                }
+                if (c === '"' || c === "'" || c === "`") pq = c;
+                else if (c === "(") pd++;
+                else if (c === ")") pd = Math.max(0, pd - 1);
+                else if (c === "[") pb++;
+                else if (c === "]") pb = Math.max(0, pb - 1);
+                else if (c === "{") pbr++;
+                else if (c === "}") pbr = Math.max(0, pbr - 1);
+                else if (c === "<" && pd === 0 && pb === 0 && pbr === 0) pa++;
+                else if (c === ">" && cur[k - 1] !== "=" && pd === 0 && pb === 0 && pbr === 0) {
+                  if (pa > 0) pa--;
+                  else break;
+                } else if (c === "=" && cur[k + 1] === ">" && pd === 0 && pb === 0 && pbr === 0 && pa === 0) {
+                  bodyRel = k + 2;
+                  break;
+                }
+                k++;
+              }
+            } else if (cur[afterP] === "=" && cur[afterP + 1] === ">") {
+              bodyRel = afterP + 2;
+            }
+          }
+        } else {
+          const idArrow = /^[A-Za-z_$][\w$]*\s*=>/.exec(cur.slice(pCur));
+          if (idArrow) bodyRel = pCur + idArrow[0].length;
+        }
+        if (bodyRel !== -1) {
+          while (bodyRel < cur.length && /\s/.test(cur[bodyRel])) bodyRel++;
+          if (cur[bodyRel] === "{") {
+            const bEnd = findBal(cur, bodyRel, "{", "}");
+            if (bEnd !== -1) {
+              const outRets = [];
+              let rq = null, rLast = "{", rp = 0, rb = 0, rbr = 0;
+              const rPStack = [];
+              for (let k = bodyRel + 1; k < bEnd; k++) {
+                const c = cur[k];
+                if (rq) {
+                  if (c === "\\" && k + 1 < bEnd) { k++; continue; }
+                  if (rq === "`" && c === "$" && cur[k + 1] === "{") {
+                    const se = findBal(cur, k + 1, "{", "}");
+                    if (se !== -1 && se < bEnd) { k = se; rLast = "}"; continue; }
+                  }
+                  if (c === rq || (rq !== "`" && c === "\n")) { rq = null; rLast = c; }
+                  continue;
+                }
+                const reE = skipJsRegexInExpr(cur, k, rLast, bodyRel + 1);
+                if (reE !== -1 && reE <= bEnd) { k = reE - 1; rLast = "/"; continue; }
+                if (c === '"' || c === "'" || c === "`") rq = c;
+                else if (c === "(") { rPStack.push(/(?:^|[^\w$])(?:if|while|for|with)\s*$/.test(cur.slice(Math.max(bodyRel + 1, k - 16), k))); rp++; rLast = "("; }
+                else if (c === ")") { rp = Math.max(0, rp - 1); rLast = rPStack.pop() ? "control)" : ")"; }
+                else if (c === "[") { rb++; rLast = "["; }
+                else if (c === "]") { rb = Math.max(0, rb - 1); rLast = "]"; }
+                else if (c === "{") { rbr++; rLast = "{"; }
+                else if (c === "}") { rbr = Math.max(0, rbr - 1); rLast = "}"; }
+                else if (rp === 0 && rb === 0 && c === "r" && cur.startsWith("return", k)) {
+                  const prevC = k > bodyRel + 1 ? cur[k - 1] : "";
+                  const nextC = cur[k + 6] || "";
+                  if (!/[A-Za-z0-9_$]/.test(prevC) && !/[A-Za-z0-9_$]/.test(nextC)) {
+                    let rs = k + 6;
+                    while (rs < bEnd && /\s/.test(cur[rs])) rs++;
+                    let re = rs, ep = 0, eb = 0, ebr = 0, eq = null, eLast = "return";
+                    const ePStack = [];
+                    while (re < bEnd) {
+                      const ec = cur[re];
+                      if (eq) {
+                        if (ec === "\\" && re + 1 < bEnd) { re += 2; continue; }
+                        if (eq === "`" && ec === "$" && cur[re + 1] === "{") {
+                          const se = findBal(cur, re + 1, "{", "}");
+                          if (se !== -1 && se < bEnd) { re = se + 1; eLast = "}"; continue; }
+                        }
+                        if (ec === eq || (eq !== "`" && ec === "\n")) { eq = null; eLast = ec; }
+                        re++;
+                        continue;
+                      }
+                      const re2 = skipJsRegexInExpr(cur, re, eLast, rs);
+                      if (re2 !== -1 && re2 <= bEnd) { re = re2; eLast = "/"; continue; }
+                      if (ec === '"' || ec === "'" || ec === "`") eq = ec;
+                      else if (ec === "(") { ePStack.push(/(?:^|[^\w$])(?:if|while|for|with)\s*$/.test(cur.slice(Math.max(rs, re - 16), re))); ep++; eLast = "("; }
+                      else if (ec === ")") { if (ep === 0) break; ep--; eLast = ePStack.pop() ? "control)" : ")"; }
+                      else if (ec === "[") { eb++; eLast = "["; }
+                      else if (ec === "]") { if (eb === 0) break; eb--; eLast = "]"; }
+                      else if (ec === "{") { ebr++; eLast = "{"; }
+                      else if (ec === "}") { if (ebr === 0) break; ebr--; eLast = "}"; }
+                      else if (ec === ";" && ep === 0 && eb === 0 && ebr === 0) break;
+                      else if (!/\s/.test(ec)) eLast = ec;
+                      re++;
+                    }
+                    if (re > rs) {
+                      outRets.push(...unwrapStyledInterpolationExpr(cur.slice(rs, re), curOff + rs, depth + 1));
+                    }
+                    k = re;
+                    rLast = ";";
+                    continue;
+                  }
+                } else if (!/\s/.test(c)) rLast = c;
+              }
+              return outRets;
+            }
+          }
+          return unwrapStyledInterpolationExpr(cur.slice(bodyRel), curOff + bodyRel, depth + 1);
+        }
+        return [{ expr: cur, offset: curOff }];
+      };
+
       // Process innermost-safe CSS-in-JS template slices (masking child ${...} spans; inject dynamic value tokens only inside declaration values)
       for (const tr of styledTemplateRanges) {
         const innerChars = nonStyleClean.slice(tr.start, tr.end).split("");
+        const tplExprMeta = [];
         for (const [es, ee] of tr.exprSpans) {
           const sRel = es - tr.start;
           const eRel = ee - tr.start;
@@ -6607,6 +8388,7 @@ export function scanUiContent(raw, filePath, options = {}) {
             const tok = segEnd - sRel >= 8 ? "var(--_)" : segEnd - sRel >= 2 ? "$_" : "";
             for (let k = 0; k < tok.length; k++) innerChars[sRel + k] = tok[k];
           }
+          tplExprMeta.push({ es, ee, sRel, eRel, inDeclVal });
         }
         const WRAP_PRE = ".dsaf-styled-root{";
         const commentFreeTpl = stripCssCommentsInTemplatePreservingLines(innerChars.join(""));
@@ -6616,6 +8398,127 @@ export function scanUiContent(raw, filePath, options = {}) {
         for (const blk of cBlocks) {
           const effSel = blk.resolvedSelector || blk.selector;
           checkCssDeclsFloor(blk.body, tr.start + blk.bodyStart - WRAP_PRE.length, effSel, blk, safeFocus);
+        }
+        const findContainingTplBlock = (sRelPos) => {
+          const wPos = WRAP_PRE.length + sRelPos;
+          let best = null;
+          for (const b of cBlocks) {
+            if (wPos >= b.bodyStart && wPos <= b.bodyEnd && (!best || b.bodyEnd - b.bodyStart <= best.bodyEnd - best.bodyStart)) {
+              best = b;
+            }
+          }
+          return best || cBlocks[0] || { selector: ".dsaf-styled-root", resolvedSelector: ".dsaf-styled-root", body: "", inKeyframes: false, inStartingStyle: false };
+        };
+        for (const meta of tplExprMeta) {
+          const rawExpr = nonStyleClean.slice(meta.es + 2, meta.ee - 1);
+          const containingBlk = findContainingTplBlock(meta.sRel);
+          const effSel = containingBlk.resolvedSelector || containingBlk.selector;
+          if (meta.inDeclVal) {
+            let declStart = meta.sRel - 1;
+            while (declStart >= 0 && commentFreeTpl[declStart] !== "{" && commentFreeTpl[declStart] !== "}" && commentFreeTpl[declStart] !== ";") {
+              declStart--;
+            }
+            let declEnd = meta.eRel;
+            while (declEnd < commentFreeTpl.length && commentFreeTpl[declEnd] !== "{" && commentFreeTpl[declEnd] !== "}" && commentFreeTpl[declEnd] !== ";") {
+              declEnd++;
+            }
+            const preDecl = commentFreeTpl.slice(declStart + 1, meta.sRel);
+            const colIdx = preDecl.indexOf(":");
+            if (colIdx === -1) continue;
+            const propName = preDecl.slice(0, colIdx).trim().toLowerCase();
+            if (!propName || propName.startsWith("--")) continue;
+            const staticPrefix = preDecl.slice(colIdx + 1);
+            const staticSuffix = commentFreeTpl.slice(meta.eRel, declEnd);
+            const isTransProp = propName === "transition" || propName === "transition-property";
+            const isWidthProp = VW_WIDTH_KEYS.has(propName);
+            const cssOutlineProp = normalizeOutlineCssProp(propName);
+            if (!isTransProp && !isWidthProp && (!cssOutlineProp || containingBlk.inKeyframes)) continue;
+            const staticPlaceholderVal = `${staticPrefix} var(--_) ${staticSuffix}`;
+            const staticTransAll = isTransProp && /(?<![a-zA-Z0-9_$-])all(?![a-zA-Z0-9_-])/i.test(stripCssParens(staticPlaceholderVal));
+            const staticLayoutTrans = isTransProp && /(?<![a-zA-Z0-9_$-])(width|height|top|left)(?![a-zA-Z0-9_-])/i.test(stripCssParens(staticPlaceholderVal));
+            const static100vw = isWidthProp && /(?:^|[\s,(*/+-])100vw(?=$|[\s,)*/+-]|!\s*important)/i.test(staticPlaceholderVal.replace(/--[a-zA-Z0-9_-]+/g, " "));
+            const staticInvOutline = Boolean(cssOutlineProp) && classifyOutlineDecl(cssOutlineProp, staticPlaceholderVal).state === "invisible";
+            for (const { expr, offset } of unwrapStyledInterpolationExpr(rawExpr, meta.es + 2)) {
+              const { values, condHasVisibleOutline } = extractJsStyleExprValues(expr, offset, cssOutlineProp);
+              for (const item of values) {
+                const composedVal = `${staticPrefix}${item.val}${staticSuffix}`;
+                if (isTransProp) {
+                  const strippedTrans = stripCssParens(composedVal);
+                  if (!staticTransAll && /(?<![a-zA-Z0-9_$-])all(?![a-zA-Z0-9_-])/i.test(strippedTrans)) {
+                    findings.push({
+                      file: filePath,
+                      line: offsetToLine(cleanComments, item.offset),
+                      ruleId: "dsaf/no-transition-all",
+                      tier: "floor",
+                      severity: "error",
+                      message: `Disallowed inline style \`transition: ${composedVal.trim()}\`; transition explicit composited properties instead.`,
+                    });
+                  }
+                  const lHit = !staticLayoutTrans ? /(?<![a-zA-Z0-9_$-])(width|height|top|left)(?![a-zA-Z0-9_-])/i.exec(strippedTrans) : null;
+                  if (lHit) {
+                    findings.push({
+                      file: filePath,
+                      line: offsetToLine(cleanComments, item.offset),
+                      ruleId: "dsaf/no-layout-transition",
+                      tier: "floor",
+                      severity: "error",
+                      message: `Disallowed layout transition on \`${lHit[1]}\`; animate \`transform\` or \`opacity\`.`,
+                    });
+                  }
+                } else if (isWidthProp && !static100vw) {
+                  const cleanVwVal = composedVal.replace(/--[a-zA-Z0-9_-]+/g, " ");
+                  if (/(?:^|[\s,(*/+-])100vw(?=$|[\s,)*/+-]|!\s*important)/i.test(cleanVwVal)) {
+                    findings.push({
+                      file: filePath,
+                      line: offsetToLine(cleanComments, item.offset),
+                      ruleId: "dsaf/no-100vw",
+                      tier: "floor",
+                      severity: "error",
+                      message: "Disallowed `100vw` width; use `100%` with `overflow-x: clip` to prevent scrollbar overflow.",
+                    });
+                  }
+                } else if (cssOutlineProp && !staticInvOutline) {
+                  if (item.focusBranch === "unfocused" && condHasVisibleOutline && classifyOutlineDecl(cssOutlineProp, composedVal).state === "invisible") {
+                    continue;
+                  }
+                  if (classifyOutlineDecl(cssOutlineProp, composedVal).state === "invisible") {
+                    const borderSupp = safeFocus.getBorderSuppression ? safeFocus.getBorderSuppression(effSel, containingBlk) : {};
+                    if (!hasVisibleFocusIndicator(containingBlk.body || "", effSel, borderSupp) && !safeFocus(effSel, containingBlk)) {
+                      findings.push({
+                        file: filePath,
+                        line: offsetToLine(cleanComments, item.offset),
+                        ruleId: "dsaf/no-outline-none-naked",
+                        tier: "floor",
+                        severity: "error",
+                        message: `Focus \`${cssOutlineProp}: ${composedVal.trim()}\` on \`${effSel}\` without visible focus ring/border replacement.`,
+                      });
+                    }
+                  }
+                }
+              }
+            }
+          } else if (!/(?<![a-zA-Z0-9_$.])(?:styled(?:\.[a-zA-Z0-9_$]+|\s*\()|css\s*(?:\(|`)|createGlobalStyle\s*(?:\(|`))/.test(rawExpr)) {
+            for (const { expr, offset } of unwrapStyledInterpolationExpr(rawExpr, meta.es + 2)) {
+              const { values } = extractJsStyleExprValues(expr, offset, null);
+              for (const item of values) {
+                if (!item.val || !item.val.includes(":")) continue;
+                const cleanLit = blankCssCustomPropDeclsPreservingLines(stripCssCommentsInTemplatePreservingLines(item.val));
+                if (/\{/.test(cleanLit)) {
+                  const subBlocks = extractCssRuleBlocks(`${WRAP_PRE}${cleanLit}}`);
+                  const subSafeFocus = createFocusSafetyChecker(
+                    [...cBlocks, ...subBlocks],
+                    Array.isArray(options.externalCssBlocks) ? options.externalCssBlocks : []
+                  );
+                  for (const sb of subBlocks) {
+                    const sbSel = sb.resolvedSelector || sb.selector;
+                    checkCssDeclsFloor(sb.body, item.offset + sb.bodyStart - WRAP_PRE.length, sbSel, sb, subSafeFocus);
+                  }
+                } else {
+                  checkCssDeclsFloor(cleanLit, item.offset, effSel, containingBlk, safeFocus);
+                }
+              }
+            }
+          }
         }
       }
 
@@ -6741,12 +8644,18 @@ export function scanUiContent(raw, filePath, options = {}) {
         }
       }
 
-      // C. JSX `style={{...}}`, Vue `:style="{...}"` / `v-bind:style="{...}"`, and Svelte `style:*={...}`
+      // C. JSX `style={{...}}`, `sx={{...}}`, `css={{...}}`, Vue `:style="{...}"` / `v-bind:style="{...}"`, and Svelte `style:*={...}`
       for (const sm of nonStyleClean.matchAll(/(?<![a-zA-Z0-9_-])style\s*=\s*\{/g)) {
         if (!isRealOpenTagAttrPos(sm.index)) continue;
         const openBrace = nonStyleClean.indexOf("{", sm.index);
         const closeBrace = findBal(nonStyleClean, openBrace, "{", "}");
         if (closeBrace !== -1) scanJsStyleObjectSpan(openBrace + 1, closeBrace);
+      }
+      for (const sm of nonStyleClean.matchAll(/(?<![a-zA-Z0-9_-])(?:sx|css)\s*=\s*\{/g)) {
+        if (!isRealOpenTagAttrPos(sm.index)) continue;
+        const openBrace = nonStyleClean.indexOf("{", sm.index);
+        const closeBrace = findBal(nonStyleClean, openBrace, "{", "}");
+        if (closeBrace !== -1) scanCssInJsCallArgs(openBrace + 1, closeBrace);
       }
       for (const vm of nonStyleClean.matchAll(/(?:^|\s)(?::|v-bind:)style\s*=\s*(?:"([^"]*)"|'([^']*)')/gi)) {
         const attrOff = vm.index + vm[0].search(/[:v]/i);
@@ -6943,7 +8852,7 @@ export function scanUiContent(raw, filePath, options = {}) {
     }
     const twSurface = buildTailwindScanSurfacePreservingLines(surface, isStyle, markupOpts, styleTagRanges);
     const twArbColorRe = new RegExp(
-      `(?<=^|[\\s"'\`:!])(${TW_ARB_COLOR_PREFIX_RE}-\\[(?:color:)?(?:#[^\\]\\s]+|(?:rgba?|hsla?|oklch|oklab|hwb|lab|lch)\\([^\\]\\s]+\\))\\]!?|\\[(?:color|background-color|background|border-color|outline-color|fill|stroke|accent-color|caret-color):(?:#[0-9a-fA-F]{3,8}|(?:rgba?|hsla?|oklch|oklab|hwb|lab|lch)\\([^\\]\\s]+\\))\\]!?)`,
+      `(?<=^|[\\s"'\`:!])(${TW_ARB_COLOR_PREFIX_RE}-\\[(?:color:)?(?:#[^\\]\\s]+|(?:rgba?|hsla?|oklch|oklab|hwb|lab|lch|color-mix|color|light-dark)\\([^\\]\\s]+\\))\\]!?|\\[(?:color|background-color|background|border-color|outline-color|fill|stroke|accent-color|caret-color):(?:#[0-9a-fA-F]{3,8}|(?:rgba?|hsla?|oklch|oklab|hwb|lab|lch|color-mix|color|light-dark)\\([^\\]\\s]+\\))\\]!?)`,
       "g"
     );
     const twArbSpaceRe =
@@ -6953,58 +8862,97 @@ export function scanUiContent(raw, filePath, options = {}) {
       maskRangePreservingLines(nonTwChars, m.index, m.index + m[0].length);
     }
     const nonTwHex = nonTwChars.join("");
-    if (isStyle) {
-      const chars = nonTwHex.split("");
-      for (const um of nonTwHex.matchAll(/\burl\(\s*(?:"(?:\\[\s\S]|[^"\\])*"|'(?:\\[\s\S]|[^'\\])*'|[^)]*)\)/gi)) {
-        if (um[0].includes("#")) maskRangePreservingLines(chars, um.index, um.index + um[0].length);
+    const maskCssUrlsAndHeaders = (cssStr, maskHeaders = true) => {
+      const chars = cssStr.split("");
+      for (const um of cssStr.matchAll(/\burl\(\s*(?:"(?:\\[\s\S]|[^"\\])*"|'(?:\\[\s\S]|[^'\\])*'|[^)]*)\)/gi)) {
+        maskRangePreservingLines(chars, um.index, um.index + um[0].length);
       }
-      let hStart = 0;
-      let q = null;
-      let interpDepth = 0;
-      for (let i = 0; i < nonTwHex.length; i++) {
-        const c = nonTwHex[i];
-        if (q) {
-          if (c === "\\" && i + 1 < nonTwHex.length) {
+      if (maskHeaders) {
+        let hStart = 0;
+        let q = null;
+        let interpDepth = 0;
+        for (let i = 0; i < cssStr.length; i++) {
+          const c = cssStr[i];
+          if (q) {
+            if (c === "\\" && i + 1 < cssStr.length) {
+              i++;
+              continue;
+            }
+            if (c === q || c === "\n") q = null;
+            continue;
+          }
+          if (c === "\\" && i + 1 < cssStr.length) {
             i++;
             continue;
           }
-          if (c === q || c === "\n") q = null;
-          continue;
-        }
-        if (c === "\\" && i + 1 < nonTwHex.length) {
-          i++;
-          continue;
-        }
-        if (c === '"' || c === "'") {
-          q = c;
-          continue;
-        }
-        if (c === "{") {
-          if (interpDepth > 0 || (i > 0 && nonTwHex[i - 1] === "#")) {
-            interpDepth++;
-          } else {
-            const hdr = nonTwHex.slice(hStart, i);
-            if (hdr.includes("#")) maskRangePreservingLines(chars, hStart, i);
-            hStart = i + 1;
+          if (c === '"' || c === "'") {
+            q = c;
+            continue;
           }
-        } else if (c === ";") {
-          if (interpDepth === 0) hStart = i + 1;
-        } else if (c === "}") {
-          if (interpDepth > 0) interpDepth--;
-          else hStart = i + 1;
+          if (c === "{") {
+            if (interpDepth > 0 || (i > 0 && cssStr[i - 1] === "#")) {
+              interpDepth++;
+            } else {
+              const hdr = cssStr.slice(hStart, i);
+              if (hdr.includes("#")) maskRangePreservingLines(chars, hStart, i);
+              hStart = i + 1;
+            }
+          } else if (c === ";") {
+            if (interpDepth === 0) hStart = i + 1;
+          } else if (c === "}") {
+            if (interpDepth > 0) interpDepth--;
+            else hStart = i + 1;
+          }
         }
       }
-      const declHexSurface = maskCssQuotedStringsPreservingLines(chars.join(""));
-      for (const m of declHexSurface.matchAll(/(?<=^|[:,\s("'=/])#(?:[0-9a-fA-F]{8}|[0-9a-fA-F]{6}|[0-9a-fA-F]{4}|[0-9a-fA-F]{3})(?![0-9a-fA-F_-])/g)) {
-        findings.push({
-          file: filePath,
-          line: offsetToLine(declHexSurface, m.index),
-          ruleId: "dsaf/hardcoded-color",
-          tier: "reflex",
-          severity: "warning",
-          message: `Hardcoded color \`${m[0]}\` outside token block; bind to \`var(--*)\`.`,
-        });
+      return chars.join("");
+    };
+    let declColorSurface = "";
+    if (isStyle) {
+      declColorSurface = maskCssQuotedStringsPreservingLines(maskCssUrlsAndHeaders(nonTwHex, true));
+    } else {
+      const nonTwCtx = scanMarkupContexts(nonTwHex, markupOpts || {});
+      const impStyleOnly = extractImportantStyleSurfacePreservingLines(nonTwHex, false, { ...(markupOpts || {}), markupCtx: nonTwCtx });
+      const impChars = maskCssUrlsAndHeaders(impStyleOnly, false).split("");
+      for (const sb of extractRealStyleBlocks(nonTwHex, nonTwCtx, markupOpts || {})) {
+        const maskedHdrSlice = maskCssUrlsAndHeaders(impStyleOnly.slice(sb.bodyStart, sb.bodyEnd), true);
+        for (let k = 0; k < maskedHdrSlice.length && sb.bodyStart + k < sb.bodyEnd; k++) {
+          impChars[sb.bodyStart + k] = maskedHdrSlice[k];
+        }
       }
+      for (const tr of findCssInJsTemplateRanges(nonTwHex, nonTwCtx)) {
+        const maskedTplHdr = maskCssUrlsAndHeaders(impStyleOnly.slice(tr.contentStart, tr.contentEnd), true);
+        for (let k = 0; k < maskedTplHdr.length && tr.contentStart + k < tr.contentEnd; k++) {
+          impChars[tr.contentStart + k] = maskedTplHdr[k];
+        }
+      }
+      declColorSurface = impChars.join("");
+    }
+    const hexSpansInFile = [];
+    for (const m of declColorSurface.matchAll(/(?<=^|[:,\s("'=/])#(?:[0-9a-fA-F]{8}|[0-9a-fA-F]{6}|[0-9a-fA-F]{4}|[0-9a-fA-F]{3})(?![0-9a-fA-F_-])/g)) {
+      hexSpansInFile.push([m.index, m.index + m[0].length]);
+      findings.push({
+        file: filePath,
+        line: offsetToLine(declColorSurface, m.index),
+        ruleId: "dsaf/hardcoded-color",
+        tier: "reflex",
+        severity: "warning",
+        message: `Hardcoded color \`${m[0]}\` outside token block; bind to \`var(--*)\`.`,
+      });
+    }
+    for (const m of findHardcodedColorFunctions(declColorSurface)) {
+      if (isTokenizedColorFn(m.text)) continue;
+      if (/^color-mix\(/i.test(m.text) && hexSpansInFile.some(([hs, he]) => hs >= m.index && he <= m.index + m.text.length)) {
+        continue;
+      }
+      findings.push({
+        file: filePath,
+        line: offsetToLine(declColorSurface, m.index),
+        ruleId: "dsaf/hardcoded-color",
+        tier: "reflex",
+        severity: "warning",
+        message: `Hardcoded functional color \`${m.text}\` outside token block; bind to \`var(--*)\`.`,
+      });
     }
     const impSurface = extractImportantStyleSurfacePreservingLines(nonVars, isStyle, markupOpts || {});
     for (const m of impSurface.matchAll(/!\s*important\b/gi)) {
@@ -7050,7 +8998,7 @@ export function scanUiContent(raw, filePath, options = {}) {
           "dsaf/no-hidden-at-rest",
         ]
       : []),
-    ...(includeReflex ? [...(isStyle ? ["dsaf/hardcoded-color"] : []), "dsaf/important-override", "dsaf/tailwind-arbitrary"] : []),
+    ...(includeReflex ? ["dsaf/hardcoded-color", "dsaf/important-override", "dsaf/tailwind-arbitrary"] : []),
   ];
   const applied = applyIgnores(findings, raw, filePath, {
     reportUnusedIgnores: Boolean(options.reportUnusedIgnores),
@@ -7075,29 +9023,42 @@ export function checkFile(filePath, options = {}) {
   return scanUiContent(raw, rel, { ...options, externalCssBlocks });
 }
 
-export function collectUiFiles(targetPath) {
+export function collectUiFiles(targetPath, options = {}) {
   const abs = resolve(targetPath);
   if (!existsSync(abs)) throw new Error(`Target not found: ${abs}`);
   const st = statSync(abs);
   if (st.isFile()) return [{ full: abs, rel: targetPath.replace(/\\/g, "/") }];
+  const includeDemos = Boolean(options.includeDemos);
 
   const out = [];
+  const ciFs = process.platform === "darwin" || process.platform === "win32";
+  const safeReal = (p) => {
+    try {
+      return (realpathSync.native || realpathSync)(p);
+    } catch {
+      return null;
+    }
+  };
+  const rootReal = safeReal(abs) || abs;
+  const isInsideRoot = (candidateReal) => {
+    if (!candidateReal) return false;
+    const relPath = relative(ciFs ? rootReal.toLowerCase() : rootReal, ciFs ? candidateReal.toLowerCase() : candidateReal);
+    return relPath === "" || (!(relPath === ".." || relPath.startsWith(`..${sep}`)) && !isAbsolute(relPath));
+  };
   const visitedDirs = new Set();
   function walk(dir) {
-    let realDir = dir;
-    try {
-      realDir = realpathSync(dir);
-    } catch {
-      return;
-    }
-    if (visitedDirs.has(realDir)) return;
-    visitedDirs.add(realDir);
+    const realDir = safeReal(dir);
+    if (!isInsideRoot(realDir)) return;
+    const visitKey = ciFs ? realDir.toLowerCase() : realDir;
+    if (visitedDirs.has(visitKey)) return;
+    visitedDirs.add(visitKey);
     for (const e of readdirSync(dir, { withFileTypes: true })) {
       if (SKIP_DIRS.has(e.name)) continue;
       const full = join(dir, e.name);
       let isDir = e.isDirectory();
       let isFile = e.isFile();
       if (e.isSymbolicLink()) {
+        if (!isInsideRoot(safeReal(full))) continue;
         try {
           const fst = statSync(full);
           isDir = fst.isDirectory();
@@ -7113,11 +9074,12 @@ export function collectUiFiles(targetPath) {
       if (!isFile) continue;
       if (UI_EXTS.has(extname(e.name).toLowerCase())) {
         const rel = relative(abs, full).replace(/\\/g, "/");
-        if (
-          !/(\.test\.|\.spec\.|__tests__\/|(^|\/)(?:tests?|fixtures|__fixtures__|storybook-static|_audit|_vendor|demos?|demo\d+|examples?|samples?|ios\/App\/App\/public|android\/app\/src\/main\/assets\/public|src-tauri\/target)\/|\.min\.(css|js)$|\.bundle\.(css|js|mjs)$)/i.test(
-            rel
-          )
-        ) {
+        const skipDemoDirs = includeDemos ? "" : "|demos?|demo\\d+|examples?|samples?";
+        const skipRe = new RegExp(
+          `(\\.test\\.|\\.spec\\.|__tests__\\/|(?:^|\\/)(?:tests?|fixtures|__fixtures__|storybook-static|_audit|_vendor${skipDemoDirs}|ios\\/App\\/App\\/public|android\\/app\\/src\\/main\\/assets\\/public|src-tauri\\/target)\\/|\\.min\\.(?:css|js)$|\\.bundle\\.(?:css|js|mjs)$)`,
+          "i"
+        );
+        if (!skipRe.test(rel)) {
           out.push({ full, rel });
         }
       }
@@ -7918,7 +9880,8 @@ function runSelfTest() {
     assert.equal(analyzeTailwindOutline("focus-within:ring-2 *:focus-visible:outline-none").naked, false);
     assert.equal(analyzeTailwindOutline("has-[button:focus-visible]:ring-2 [&_button]:focus-visible:outline-none").naked, false);
     assert.equal(analyzeTailwindOutline("outline-none focus-visible:outline-[2px_solid_var(--ring)]").naked, false);
-    assert.equal(analyzeTailwindOutline("outline-none focus-visible:ring-(--focus-ring)").naked, false);
+    assert.equal(analyzeTailwindOutline("outline-none focus-visible:ring-(--focus-ring)").naked, true);
+    assert.equal(analyzeTailwindOutline("outline-none focus-visible:ring-2 focus-visible:ring-(--focus-ring)").naked, false);
     assert.equal(analyzeTailwindOutline("[&:nth-child(2n+1)]:outline-none focus-visible:ring-2").naked, false);
     assert.equal(analyzeTailwindOutline("outline-none focus-visible:ring-[transparent]").naked, true);
     assert.equal(analyzeTailwindOutline("outline-none focus-visible:border-[transparent]").naked, true);
@@ -8585,7 +10548,7 @@ function runSelfTest() {
     );
     assert.equal(
       scanUiContent('const H = styled.div`--custom: "${y ? \'a"\' : \'c\'}"; color: #ff00aa !important;`;', "r21m3b.tsx", { tier: "reflex" }).counts.reflex,
-      1
+      2
     );
 
     // Round 22 regressions (R22-A2-H1, R22-A2-H2, R22-A2-M1, R22-A2-M2, R22-A2-M3, R22-A2-M5):
@@ -8610,7 +10573,7 @@ function runSelfTest() {
     // M2: JSX prose comma/semicolon before "--fake-x": must not swallow later real !important
     assert.equal(
       scanUiContent('export const P = () => <p>Syntax; "--fake-b": <span style={{ color: "#112233 !important" }} /></p>;', "r22m2.tsx", { tier: "reflex" }).counts.reflex,
-      1
+      2
     );
 
     // M3: Trailing TS 'as' / 'satisfies' type assertions must unwrap cleanly
@@ -8792,7 +10755,8 @@ function runSelfTest() {
       "r27h3b.tsx",
       { tier: "all" }
     );
-    assert.equal(r27WaiverCssInJs.active.length, 0);
+    assert.equal(r27WaiverCssInJs.active.length, 1);
+    assert.equal(r27WaiverCssInJs.active[0].ruleId, "dsaf/hardcoded-color");
     assert.equal(r27WaiverCssInJs.waived.length, 1);
 
     const r27HookSymProj = join(scratch, "r27-hook-sym-proj");
@@ -9459,6 +11423,499 @@ function runSelfTest() {
       "R40 A2-M5: important md:!ring-0 must still override focus-visible:ring-2"
     );
 
+    // Round 41 (R40-A2-H1 outline alpha-0 utilities, R40-A2-H2 external DS :focus-visible/:focus cascade, R40-A2-L1 $& in nested parent):
+    assert.equal(analyzeTailwindOutline("outline-blue-500/0").naked, true, "R41 A2-H1: outline-blue-500/0 must fail naked outline check");
+    assert.equal(analyzeTailwindOutline("focus:outline-red-500/0%").naked, true, "R41 A2-H1: focus:outline-red-500/0% must fail");
+    assert.equal(analyzeTailwindOutline("outline-[#000]/0").naked, true, "R41 A2-H1: outline-[#000]/0 must fail");
+    assert.equal(analyzeTailwindOutline("outline-opacity-0").naked, true, "R41 A2-H1: outline-opacity-0 must fail");
+    assert.equal(analyzeTailwindOutline("outline-blue-500/0 focus-visible:ring-2").naked, false, "R41 A2-H1: outline-blue-500/0 with focus-visible:ring-2 must pass");
+    assert.equal(analyzeTailwindOutline("outline-offset-0").naked, false, "R41 A2-H1: outline-offset-0 must not false-positive");
+
+    const r41ExtDir = join(scratch, "r41-ext-fv");
+    mkdirSync(r41ExtDir, { recursive: true });
+    writeFileSync(
+      join(r41ExtDir, "ds.css"),
+      ".btn:focus-visible { outline: 2px solid #1d4ed8; }\n.imp:focus-visible { outline: 2px solid #1d4ed8 !important; }\n"
+    );
+    writeFileSync(join(r41ExtDir, "base.css"), ".btn { outline: none; }\n");
+    writeFileSync(join(r41ExtDir, "focus-conflict.css"), ".btn:focus { outline: none; }\n");
+    writeFileSync(join(r41ExtDir, "imp-ok.css"), ".imp:focus { outline: none; }\n");
+    assert.equal(checkTarget(join(r41ExtDir, "base.css"), { dsCss: [join(r41ExtDir, "ds.css")] }).counts.floor, 0, "R41 A2-H2: external :focus-visible must satisfy unlayered base outline: none");
+    assert.equal(checkTarget(join(r41ExtDir, "focus-conflict.css"), { dsCss: [join(r41ExtDir, "ds.css")] }).counts.floor, 1, "R41 A2-H2: non-important external :focus-visible must NOT override later local :focus { outline: none }");
+    assert.equal(checkTarget(join(r41ExtDir, "imp-ok.css"), { dsCss: [join(r41ExtDir, "ds.css")] }).counts.floor, 0, "R41 A2-H2: !important external :focus-visible must satisfy local :focus { outline: none }");
+
+    const r41DollarNest = extractCssRuleBlocks('[data-price="$&"] { &:focus { outline: none; } }');
+    assert.ok(
+      r41DollarNest.some((b) => b.resolvedSelector === '[data-price="$&"]:focus'),
+      "R41 A2-L1: literal $& in parent selector must not expand replace pattern"
+    );
+
+    // Round 42 (R41-A2-M1 :focus + :not(:focus-visible) border suppression, R41-A2-M2 comma-branch specificity, R41-A2-M3 external partial @layer topo order):
+    assert.equal(
+      scanUiContent(
+        ".btn:focus { outline: none; box-shadow: 0 0 0 2px #1d4ed8; }\n.btn:focus:not(:focus-visible) { box-shadow: none; }\n",
+        "r42-focus-not-fv.css",
+        { surfaceMode: "operate" }
+      ).counts.floor,
+      0,
+      "R42 A2-M1: :focus:not(:focus-visible) { box-shadow: none } must not suppress :focus keyboard ring"
+    );
+    assert.equal(
+      scanUiContent(
+        "#app .other:focus, .btn:focus { outline: none; box-shadow: 0 0 0 2px #1d4ed8; }\n.btn.primary:focus { box-shadow: none; outline: 2px solid #000000; }\n",
+        "r42-branch-spec.css",
+        { surfaceMode: "operate" }
+      ).counts.floor,
+      0,
+      "R42 A2-M2: comma-grouped refBlk must compare matching branch .btn:focus [0,2,0], not summed list specificity"
+    );
+    const r42ExtLayerDir = join(scratch, "r42-ext-layer-topo");
+    mkdirSync(r42ExtLayerDir, { recursive: true });
+    writeFileSync(join(r42ExtLayerDir, "ds.css"), "@layer components { .btn:focus-visible { outline: 2px solid #1d4ed8; } }\n");
+    writeFileSync(join(r42ExtLayerDir, "app.css"), "@layer base, components;\n@layer base { .btn:focus { outline: none; } }\n");
+    assert.equal(
+      checkTarget(join(r42ExtLayerDir, "app.css"), { dsCss: [join(r42ExtLayerDir, "ds.css")] }).counts.floor,
+      0,
+      "R42 A2-M3: app @layer base, components must outrank external @layer components even when DS omits base"
+    );
+
+    // Round 43 (R42-A2-H3 compareCascadeLayerOrder, R42-A2-M9 broader base border suppression, R42-A2-H4 @apply CSS box-shadow suppression, R42-A3-M12 includeDemos):
+    assert.equal(
+      scanUiContent(
+        "@layer a, b, c;\n@layer c { .x:focus-visible { box-shadow: 0 0 0 2px #1d4ed8; } }\n@layer b { .x:focus-visible { box-shadow: none; } }\n@layer a { .x:focus-visible { outline: none; box-shadow: 0 0 0 2px #000000; } }\n",
+        "r43-multi-layer.css",
+        { surfaceMode: "operate" }
+      ).counts.floor,
+      0,
+      "R43 A2-H3: @layer c must beat @layer b even when @layer c precedes @layer b in source order"
+    );
+    assert.equal(
+      scanUiContent(
+        "@layer a, b, c;\n@layer c { .x:focus-visible { box-shadow: none; } }\n@layer b { .x:focus-visible { box-shadow: 0 0 0 2px #1d4ed8; } }\n@layer a { .x:focus-visible { outline: none; box-shadow: 0 0 0 2px #000000; } }\n",
+        "r43-multi-layer-kill.css",
+        { surfaceMode: "operate" }
+      ).counts.floor,
+      1,
+      "R43 A2-H3: @layer c killer must beat @layer b restoration even when @layer c appears earlier"
+    );
+    assert.equal(
+      scanUiContent(
+        ".btn { border: 0 !important; }\nbutton.btn:focus-visible { outline: none; border: 2px solid #1d4ed8; }\n",
+        "r43-broad-border-imp.css",
+        { surfaceMode: "operate" }
+      ).counts.floor,
+      1,
+      "R43 A2-M9: broader base .btn { border: 0 !important } must suppress button.btn:focus-visible border"
+    );
+    assert.equal(
+      scanUiContent(
+        ".btn { border: 0; }\nbutton.btn:focus-visible { outline: none; border: 2px solid #1d4ed8; }\n",
+        "r43-broad-border-norm.css",
+        { surfaceMode: "operate" }
+      ).counts.floor,
+      0,
+      "R43 A2-M9: higher-specificity button.btn:focus-visible border must override non-important broader .btn { border: 0 }"
+    );
+    assert.equal(
+      scanUiContent(
+        ".btn { @apply outline-none focus-visible:ring-2; box-shadow: none !important; }\n",
+        "r43-apply-box-sup.css",
+        { surfaceMode: "operate" }
+      ).counts.floor,
+      1,
+      "R43 A2-H4: non-naked @apply ring suppressed by CSS box-shadow: none !important must fail Floor"
+    );
+    const r43DemoDir = join(scratch, "r43-demo-flag");
+    mkdirSync(join(r43DemoDir, "demos"), { recursive: true });
+    writeFileSync(join(r43DemoDir, "demos/card.css"), ".card:focus { outline: none; }\n");
+    assert.equal(checkTarget(r43DemoDir).counts.floor, 0, "R43 A3-M12: default checkTarget must skip demos/");
+    assert.equal(checkTarget(r43DemoDir, { includeDemos: true }).counts.floor, 1, "R43 A3-M12: includeDemos: true must scan demos/");
+
+    // Round 44 (R43-A2-H5 shadow vs ring, R43-A2-H6 @apply border/shadow suppression, R43-A2-H7 [outline:...], R43-A2-M8 focus-visible:[border:...]):
+    assert.equal(analyzeTailwindOutline("shadow-none outline-none focus-visible:ring-2").naked, false, "R44 A2-H5: base shadow-none overridden by focus-visible:ring-2 must remain valid");
+    assert.equal(analyzeTailwindOutline("!shadow-none outline-none focus-visible:ring-2").naked, true, "R44 A2-H5: !shadow-none cancels focus-visible:ring-2");
+    assert.equal(analyzeTailwindOutline("[box-shadow:none]! outline-none focus-visible:ring-2").naked, true, "R44 A2-H5: [box-shadow:none]! cancels focus-visible:ring-2");
+    assert.equal(analyzeTailwindOutline("outline-none focus-visible:ring-2 focus-visible:shadow-none").naked, true, "R44 A2-H5: focus-visible:shadow-none cancels focus-visible:ring-2");
+    assert.equal(analyzeTailwindOutline("outline-none focus-visible:ring-2 focus-visible:[box-shadow:none]").naked, true, "R44 A2-H5: focus-visible:[box-shadow:none] cancels focus-visible:ring-2");
+    assert.equal(analyzeTailwindOutline("outline-none focus-visible:ring-2 dark:focus-visible:[box-shadow:none]").naked, true, "R44 A2-H5: dark:focus-visible:[box-shadow:none] cancels focus-visible:ring-2 in dark mode");
+    assert.equal(analyzeTailwindOutline("!shadow-none outline-none !focus-visible:ring-2").naked, false, "R44 A2-H5: !focus-visible:ring-2 beats !shadow-none");
+
+    assert.equal(
+      scanUiContent(
+        ".btn { @apply border-0 !important; }\n.btn:focus-visible { outline: none; border: 2px solid #1d4ed8; }\n",
+        "r44-apply-border0.css",
+        { surfaceMode: "operate" }
+      ).counts.floor,
+      1,
+      "R44 A2-H6: base @apply border-0 !important must suppress focus-visible border"
+    );
+    assert.equal(
+      scanUiContent(
+        ".btn:focus-visible { outline: none; @apply border-none !important; border: 2px solid #1d4ed8; }\n",
+        "r44-apply-bordernone-self.css",
+        { surfaceMode: "operate" }
+      ).counts.floor,
+      1,
+      "R44 A2-H6: same-rule @apply border-none !important must block CSS border indicator"
+    );
+    assert.equal(
+      scanUiContent(
+        ".btn { @apply shadow-none !important; }\n.btn:focus-visible { @apply outline-none focus-visible:ring-2; }\n",
+        "r44-apply-shadownone.css",
+        { surfaceMode: "operate" }
+      ).counts.floor,
+      1,
+      "R44 A2-H6: base @apply shadow-none !important must suppress focus-visible:ring-2"
+    );
+    const r44ArbOutlineUnrecovRes = scanUiContent(
+      ".btn { @apply outline-none focus-visible:[outline:2px_solid_#1d4ed8]; outline: none !important; }\n",
+      "r44-apply-arb-outline-unrecov.css",
+      { surfaceMode: "operate" }
+    );
+    assert.equal(
+      r44ArbOutlineUnrecovRes.counts.floor,
+      2,
+      "R44 A2-H7: @apply focus-visible:[outline:...] must fail alongside unrecoverable CSS outline: none !important"
+    );
+    assert.ok(r44ArbOutlineUnrecovRes.active.some((f) => /@apply outline-none/i.test(f.message)));
+    assert.ok(r44ArbOutlineUnrecovRes.active.some((f) => /outline: none !important/i.test(f.message)));
+    assert.equal(
+      scanUiContent(
+        ".btn { @apply outline-none focus-visible:[outline-color:#1d4ed8]; }\n",
+        "r44-apply-arb-outline-coloronly.css",
+        { surfaceMode: "operate" }
+      ).counts.floor,
+      1,
+      "R44 A2-H7: @apply focus-visible:[outline-color:#1d4ed8] alone must not count as full outline"
+    );
+    assert.equal(
+      scanUiContent(
+        '<button className="outline-none focus-visible:[border:2px_solid_#1d4ed8]">Go</button>\n',
+        "r44-tw-arb-border-vis.tsx",
+        { surfaceMode: "operate" }
+      ).counts.floor,
+      0,
+      "R44 A2-M8: focus-visible:[border:2px_solid_#1d4ed8] must be accepted as visible border replacement"
+    );
+    assert.equal(
+      scanUiContent(
+        '<button className="outline-none focus-visible:[border:2px_solid_transparent]">Go</button>\n',
+        "r44-tw-arb-border-trans.tsx",
+        { surfaceMode: "operate" }
+      ).counts.floor,
+      1,
+      "R44 A2-M8: focus-visible:[border:2px_solid_transparent] must still fail Floor"
+    );
+
+    // Round 45 (TW v4 untyped (--var) color classification + statement-level @apply ... !important + base-rule @apply outline-none):
+    for (const [label, twSnippet] of [
+      ["outline-(--brand)", '<button className="outline-none focus-visible:outline-(--brand)">Go</button>\n'],
+      ["ring-0 + ring-(--brand)", '<button className="outline-none focus-visible:ring-0 focus-visible:ring-(--brand)">Go</button>\n'],
+      ["border-0 + border-(--brand)", '<button className="outline-none focus-visible:border-0 focus-visible:border-(--brand)">Go</button>\n'],
+    ]) {
+      assert.equal(
+        scanUiContent(twSnippet, "r45-twv4-bad.tsx", { tier: "floor" }).counts.floor,
+        1,
+        `R45 A2-H1: untyped TW v4 color utility ${label} must not satisfy width/style`
+      );
+    }
+    for (const [label, twSnippet] of [
+      ["outline-2 outline-solid outline-(--brand)", '<button className="outline-none outline-transparent focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-(--brand)">Go</button>\n'],
+      ["ring-2 ring-(--brand)", '<button className="outline-none ring-transparent focus-visible:ring-2 focus-visible:ring-(--brand)">Go</button>\n'],
+      ["outline-(length:--w)", '<button className="outline-none focus-visible:outline-(length:--focus-width)">Go</button>\n'],
+    ]) {
+      assert.equal(
+        scanUiContent(twSnippet, "r45-twv4-ok.tsx", { tier: "floor" }).counts.floor,
+        0,
+        `R45 A2-H1: explicit width+style + TW v4 ${label} must pass Floor`
+      );
+    }
+    for (const [label, cssSnippet] of [
+      ["same-rule !outline-none + outline", ".btn { @apply !outline-none; outline: 2px solid #1d4ed8; }\n"],
+      ["same-rule @apply outline-none !important + outline", ".btn { @apply outline-none !important; outline: 2px solid #1d4ed8; }\n"],
+      ["base @apply outline-none !important + :focus-visible outline", ".btn { @apply outline-none !important; }\n.btn:focus-visible { outline: 2px solid #1d4ed8; }\n"],
+      ["@apply outline-none !important + second non-imp @apply", ".btn { @apply outline-none !important;\n  @apply focus-visible:outline-2; }\n"],
+    ]) {
+      assert.equal(
+        scanUiContent(cssSnippet, "r45-apply-imp-bad.css", { tier: "floor" }).counts.floor,
+        1,
+        `R45 A2-H2: ${label} must fail Floor`
+      );
+    }
+    assert.equal(
+      scanUiContent(".btn { @apply outline-none; outline: 2px solid #1d4ed8; }\n", "r45-apply-nonimp-ok.css", { tier: "floor" }).counts.floor,
+      0,
+      "R45 A2-H2: non-important base @apply outline-none followed by CSS outline must pass Floor"
+    );
+    assert.equal(
+      scanUiContent(".btn { @apply outline-none focus-visible:outline-2 !important; }\n", "r45-apply-same-stmt-imp-ok.css", { tier: "floor" }).counts.floor,
+      0,
+      "R45 A2-H2: statement-level !important applying to both outline-none and focus-visible:outline-2 must pass Floor"
+    );
+
+    // Round 46 (A2-H1 color-mix/light-dark zero-alpha focus ring + A2-M3 TW arbitrary color/color-mix/light-dark):
+    for (const [label, fname, snippet, expFloor] of [
+      ["color-mix 0% transparent outline", "r46-cm-outline.css", ".b:focus { outline: none; }\n.b:focus-visible { outline: 2px solid color-mix(in srgb, red 0%, transparent); }\n", 2],
+      ["color-mix transparent transparent box-shadow", "r46-cm-shadow.css", ".b:focus { outline: none; }\n.b:focus-visible { box-shadow: 0 0 0 2px color-mix(in oklch, transparent, transparent); }\n", 1],
+      ["light-dark(transparent, #1d4ed8) outline", "r46-ld-outline.css", ".b:focus { outline: none; }\n.b:focus-visible { outline: 2px solid light-dark(transparent, #1d4ed8); }\n", 2],
+      ["TW arb outline color-mix zero", "r46-tw-cm.tsx", '<button className="outline-none focus-visible:outline-[2px_solid_color-mix(in_srgb,red_0%,transparent)]">Go</button>\n', 1],
+      ["TW arb shadow light-dark transparent", "r46-tw-ld.tsx", '<button className="outline-none focus-visible:shadow-[0_0_0_2px_light-dark(transparent,transparent)]">Go</button>\n', 1],
+    ]) {
+      assert.equal(scanUiContent(snippet, fname, { tier: "floor" }).counts.floor, expFloor, `R46 A2-H1: ${label} must fail Floor`);
+    }
+    for (const [label, fname, snippet] of [
+      ["visible color-mix outline", "r46-cm-ok.css", ".b:focus { outline: none; }\n.b:focus-visible { outline: 2px solid color-mix(in srgb, #1d4ed8 80%, transparent); }\n"],
+      ["visible light-dark outline", "r46-ld-ok.css", ".b:focus { outline: none; }\n.b:focus-visible { outline: 2px solid light-dark(#1d4ed8, #93c5fd); }\n"],
+      ["visible color-mix(var) outline", "r46-cm-var-ok.css", ".b:focus { outline: none; }\n.b:focus-visible { outline: 2px solid color-mix(in srgb, var(--ring) 80%, transparent); }\n"],
+    ]) {
+      assert.equal(scanUiContent(snippet, fname, { tier: "floor" }).counts.floor, 0, `R46 A2-H1: ${label} must pass Floor`);
+    }
+    const r46TwArbRes = scanUiContent(
+      '<div className="bg-[color(display-p3_1_0.2_0.1)] bg-[color-mix(in_srgb,#ef4444_50%,#1d4ed8)] bg-[color-mix(in_srgb,red_50%,blue)] bg-[light-dark(red,blue)]" />\n',
+      "r46-tw-arb.tsx",
+      { tier: "all" }
+    );
+    assert.equal(r46TwArbRes.counts.reflex, 4, "R46 A2-M3: color()/color-mix()/light-dark() TW arbitrary utils must emit 4 findings");
+    assert.ok(r46TwArbRes.active.every((f) => f.ruleId === "dsaf/tailwind-arbitrary"));
+
+    // Round 47 (A2-H1 @apply focus suppression, A2-H2 arbitrary TW focus variants, A2-H3 inset-ring, A2-M5 sibling base @apply / :where coverage):
+    for (const [label, fname, snippet, expFloor] of [
+      ["@apply focus-visible:border-2 suppressed by :focus border:0 !important", "r47-h1-border.css", ".btn { @apply outline-none focus-visible:border-2 focus-visible:border-blue-500; }\n.btn:focus { border: 0 !important; }\n", 1],
+      ["@apply focus-visible:ring-2 suppressed by :focus-visible box-shadow:none !important", "r47-h1-ring.css", ".btn { @apply outline-none focus-visible:ring-2 focus-visible:ring-blue-500; }\n.btn:focus-visible { box-shadow: none !important; }\n", 1],
+      ["TW [&:hover:focus-visible]:ring-2 conditional only", "r47-h2-hover.tsx", '<button className="outline-none [&:hover:focus-visible]:ring-2 [&:hover:focus-visible]:ring-blue-500">Go</button>\n', 1],
+      ["TW [&:focus:not(:focus-visible)]:ring-2 not keyboard safe", "r47-h2-notfv.tsx", '<button className="outline-none [&:focus:not(:focus-visible)]:ring-2">Go</button>\n', 1],
+      ["TW inset-ring-blue-500 color only without width", "r47-h3-col.tsx", '<button className="outline-none focus-visible:inset-ring-blue-500">Go</button>\n', 1],
+      ["TW inset-ring-2 killed by inset-ring-0", "r47-h3-kill.tsx", '<button className="outline-none focus-visible:inset-ring-2 focus-visible:inset-ring-0">Go</button>\n', 1],
+      ["TW inset-ring-2 killed by shadow-none", "r47-h3-shadow.tsx", '<button className="outline-none focus-visible:inset-ring-2 focus-visible:shadow-none">Go</button>\n', 1],
+      ["CSS .btn static outline does NOT cover .btn:focus", "r47-m5-static.css", ".btn:focus { outline: none; }\n.btn { outline: 2px solid #1d4ed8; }\n", 1],
+      ["CSS lower-specificity .btn:focus-visible does NOT cover a.btn:focus", "r47-m5-lowspec.css", "a.btn:focus { outline: none; }\n.btn:focus-visible { outline: 2px solid #1d4ed8; }\n", 1],
+      ["CSS .btn:focus-visible does NOT cover :where(.btn, .link):focus", "r47-m5-multi.css", ":where(.btn, .link):focus { outline: none; }\n.btn:focus-visible { outline: 2px solid #1d4ed8; }\n", 1],
+    ]) {
+      assert.equal(scanUiContent(snippet, fname, { tier: "floor" }).counts.floor, expFloor, `R47: ${label} must fail Floor`);
+    }
+    for (const [label, fname, snippet] of [
+      ["TW [&:focus-visible]:ring-2", "r47-h2-ok1.tsx", '<button className="outline-none [&:focus-visible]:ring-2 [&:focus-visible]:ring-blue-500">Go</button>\n'],
+      ["TW [&:focus]:outline-2", "r47-h2-ok2.tsx", '<button className="outline-none [&:focus]:outline-2 [&:focus]:outline-blue-600">Go</button>\n'],
+      ["TW [&_input]:outline-none [&:focus-within]:ring-2", "r47-h2-ok3.tsx", '<div className="[&_input]:outline-none [&:focus-within]:ring-2 [&:focus-within]:ring-blue-500"><input /></div>\n'],
+      ["TW [&_button]:outline-none [&_button:focus-visible]:ring-2", "r47-h2-ok4.tsx", '<div className="[&_button]:outline-none [&_button:focus-visible]:ring-2"><button>Go</button></div>\n'],
+      ["TW [&:focus:not(:focus-visible)]:outline-none", "r47-h2-ok5.tsx", '<button className="[&:focus:not(:focus-visible)]:outline-none">Go</button>\n'],
+      ["TW focus-visible:inset-ring-2 focus-visible:inset-ring-blue-500", "r47-h3-ok1.tsx", '<button className="outline-none focus-visible:inset-ring-2 focus-visible:inset-ring-blue-500">Go</button>\n'],
+      ["TW focus-visible:inset-ring", "r47-h3-ok2.tsx", '<button className="outline-none focus-visible:inset-ring">Go</button>\n'],
+      ["TW focus-visible:inset-ring-2 unaffected by ring-0", "r47-h3-ok3.tsx", '<button className="outline-none focus-visible:inset-ring-2 focus-visible:ring-0">Go</button>\n'],
+      ["CSS .btn:focus covered by .btn { @apply focus-visible:ring-2 }", "r47-m5-ok1.css", ".btn:focus { outline: none; }\n.btn { @apply focus-visible:ring-2 focus-visible:ring-blue-500; }\n"],
+      ["CSS :where(.btn):focus covered by .btn:focus-visible", "r47-m5-ok2.css", ":where(.btn):focus { outline: none; }\n.btn:focus-visible { outline: 2px solid #1d4ed8; }\n"],
+      ["CSS .btn:focus-visible earlier higher-spec covers :where(.btn):focus", "r47-m5-ok3.css", ".btn:focus-visible { outline: 2px solid #1d4ed8; }\n:where(.btn):focus { outline: none; }\n"],
+    ]) {
+      assert.equal(scanUiContent(snippet, fname, { tier: "floor" }).counts.floor, 0, `R47: ${label} must pass Floor`);
+    }
+
+    // Round 48 regressions (A1-M1, A2-H1..H5, A2-M1..M2):
+    const r48Tmp = mkdtempSync(join(tmpdir(), "dsaf-r48-hook-"));
+    try {
+      // A1-M1: escaping file/dir symlinks skipped in directory walk, explicit file symlink still allowed
+      const r48Out = join(r48Tmp, "outside");
+      const r48Repo = join(r48Tmp, "repo");
+      mkdirSync(join(r48Out, "sub"), { recursive: true });
+      mkdirSync(join(r48Repo, "src"), { recursive: true });
+      writeFileSync(join(r48Out, "leak.css"), ".bad:focus { outline: none; color: #ff00aa; }\n");
+      writeFileSync(join(r48Out, "sub/dir-leak.css"), ".dir-bad:focus { outline: none; }\n");
+      writeFileSync(join(r48Repo, "src/ok.css"), ".ok:focus-visible { outline: 2px solid var(--focus); }\n");
+      symlinkSync(join(r48Out, "leak.css"), join(r48Repo, "src/leak-link.css"));
+      symlinkSync(join(r48Out, "sub"), join(r48Repo, "src/ext-dir"));
+      assert.equal(collectUiFiles(r48Repo).length, 1, "R48 A1-M1: collectUiFiles must ignore symlinks escaping target root");
+      const r48DirRes = checkTarget(r48Repo, { tier: "all" });
+      assert.equal(r48DirRes.filesScanned, 1);
+      assert.equal(r48DirRes.passed, true);
+      const r48FileRes = checkTarget(join(r48Repo, "src/leak-link.css"), { tier: "all" });
+      assert.equal(r48FileRes.filesScanned, 1);
+      assert.equal(r48FileRes.counts.floor, 1);
+      assert.equal(r48FileRes.counts.reflex, 1);
+
+      // A2-H1: external --ds-css suppressions propagate to local Floor focus checks
+      const r48ExtDir = join(r48Tmp, "ext-ds");
+      mkdirSync(r48ExtDir, { recursive: true });
+      const extCssPath = join(r48ExtDir, "ext.css");
+      writeFileSync(extCssPath, ".ext-btn { border: 0 !important; }\n.ext-btn2:focus-visible { outline: none !important; }\n.ext-btn3 { outline: none !important; }\n");
+      const localBtnCss = join(r48ExtDir, "btn.css");
+      writeFileSync(localBtnCss, ".ext-btn:focus { outline: none; }\n.ext-btn:focus-visible { border: 2px solid var(--ring); }\n");
+      assert.equal(checkTarget(localBtnCss, { tier: "floor", dsCss: [extCssPath] }).counts.floor, 1, "R48 A2-H1: external border:0 !important must defeat local focus-visible border");
+      const localBtn2Css = join(r48ExtDir, "btn2.css");
+      writeFileSync(localBtn2Css, ".ext-btn2:focus { outline: none; }\n.ext-btn2:focus-visible { outline: 2px solid var(--ring); }\n");
+      assert.equal(checkTarget(localBtn2Css, { tier: "floor", dsCss: [extCssPath] }).counts.floor, 1, "R48 A2-H1: external outline:none !important must defeat local focus-visible outline");
+      const localBtn2ImpCss = join(r48ExtDir, "btn2-imp.css");
+      writeFileSync(localBtn2ImpCss, ".ext-btn2:focus { outline: none; }\n.ext-btn2:focus-visible { outline: 2px solid var(--ring) !important; }\n");
+      assert.equal(checkTarget(localBtn2ImpCss, { tier: "floor", dsCss: [extCssPath] }).counts.floor, 0, "R48 A2-H1: local !important focus-visible outline recovers over earlier external outline:none !important");
+      const localBtn3Css = join(r48ExtDir, "btn3.css");
+      writeFileSync(localBtn3Css, ".ext-btn3:focus { outline: none; }\n.ext-btn3:focus-visible { outline: 2px solid var(--ring); }\n");
+      assert.equal(checkTarget(localBtn3Css, { tier: "floor", dsCss: [extCssPath] }).counts.floor, 1, "R48 A2-H1: external base outline:none !important must defeat local non-important focus-visible outline");
+    } finally {
+      rmSync(r48Tmp, { recursive: true, force: true });
+    }
+
+    // A2-H2: @apply ring/inset-ring family isolation & directional/4-side border suppression
+    assert.equal(scanUiContent(".a:focus { outline: none; }\n.a:focus-visible { @apply ring-2 ring-blue-500; }\n.a { @apply ring-0 !important; }\n", "r48h2a.css").counts.floor, 1);
+    assert.equal(scanUiContent(".a:focus { outline: none; }\n.a:focus-visible { @apply inset-ring-2 inset-ring-blue-500; }\n.a { @apply ring-0 !important; }\n", "r48h2b.css").counts.floor, 0);
+    assert.equal(scanUiContent(".a:focus { outline: none; }\n.a:focus-visible { @apply inset-ring-2 inset-ring-blue-500; }\n.a { @apply inset-ring-0 !important; }\n", "r48h2c.css").counts.floor, 1);
+    assert.equal(scanUiContent(".a:focus { outline: none; }\n.a:focus-visible { @apply inset-ring-2 inset-ring-blue-500; }\n.a { box-shadow: none !important; }\n", "r48h2d.css").counts.floor, 1);
+    assert.equal(scanUiContent(".a:focus { outline: none; }\n.a:focus-visible { border-top: 2px solid var(--ring); }\n.a { border-top: 0 !important; }\n", "r48h2e.css").counts.floor, 1);
+    assert.equal(scanUiContent(".a:focus { outline: none; }\n.a:focus-visible { border-top: 2px solid var(--ring); }\n.a { border-bottom: 0 !important; }\n", "r48h2f.css").counts.floor, 0);
+    assert.equal(scanUiContent(".a:focus { outline: none; }\n.a:focus-visible { @apply border-2 border-blue-500; }\n.a { @apply border-x-0 border-y-0 !important; }\n", "r48h2g.css").counts.floor, 1);
+
+    // A2-H3: @apply focus-visible:outline-* works even when plain outline on base selector wouldn't count
+    assert.equal(scanUiContent(".btn:focus { outline: none; }\n.btn { @apply focus-visible:outline-2 focus-visible:outline-offset-2; }\n", "r48h3a.css").counts.floor, 0);
+    assert.equal(scanUiContent(".btn:focus { outline: none; }\n.btn { outline: 2px solid #1d4ed8; }\n", "r48h3b.css").counts.floor, 1);
+
+    // A2-H4: styled.div interpolations (arrow fn, block return, whole-decl, focus-conditional outline)
+    assert.equal(scanUiContent('const A = styled.div`transition: ${(p) => (p.fast ? "all 150ms" : "opacity 150ms")};`;', "r48h4a.tsx").counts.floor >= 1, true);
+    assert.equal(scanUiContent('const B = styled.div`width: ${(p) => { return "100vw"; }};`;', "r48h4b.tsx").counts.floor >= 1, true);
+    assert.equal(scanUiContent('const C = styled.div`${(p) => (p.flat ? "outline: none;" : "")}`;', "r48h4c.tsx").counts.floor >= 1, true);
+    assert.equal(scanUiContent('const D = styled.div`outline: ${(p) => (p.isFocused ? "2px solid blue" : "none")};`;', "r48h4d.tsx").counts.floor, 0);
+
+    // A2-H5: Tailwind :is()/:where()/has-(...)/[&:has(...)] focus-visible variants
+    for (const [label, cls] of [
+      ["[&:is(:focus-visible)]", "outline-none [&:is(:focus-visible)]:ring-2"],
+      ["[&:where(:focus-visible)]", "outline-none [&:where(:focus-visible)]:ring-2"],
+    ]) {
+      assert.equal(scanUiContent(`<button className="${cls}">Go</button>`, "r48h5.tsx").counts.floor, 0, `R48 A2-H5: ${label} must pass Floor`);
+    }
+    assert.equal(scanUiContent('<div className="[&>input]:outline-none has-(>input:focus-visible):ring-2"><input /></div>', "r48h5-has1.tsx").counts.floor, 0, "R48 A2-H5: has-(>input:focus-visible) wrapper covers child removal");
+    assert.equal(scanUiContent('<div className="[&_button]:outline-none [&:has(button:focus-visible)]:ring-2"><button>Go</button></div>', "r48h5-has2.tsx").counts.floor, 0, "R48 A2-H5: [&:has(button:focus-visible)] wrapper covers child removal");
+    assert.equal(scanUiContent('<button className="outline-none has-(>input:focus-visible):ring-2">Go</button>', "r48h5-neg.tsx").counts.floor, 1, "R48 A2-H5: has-focus must NOT cover own outline-none");
+
+    // A2-M1: combinator & non-focus :not(...) strictness
+    assert.equal(scanUiContent(".nav > .btn:focus { outline: none; }\n.nav + .btn:focus-visible { outline: 2px solid var(--ring); }\n", "r48m1a.css").counts.floor, 1);
+    assert.equal(scanUiContent(".btn:focus { outline: none; }\n.btn:not(.primary):focus-visible { outline: 2px solid var(--ring); }\n", "r48m1b.css").counts.floor, 1);
+    assert.equal(scanUiContent(".btn:not(.disabled):focus { outline: none; }\n.btn:focus-visible { outline: 2px solid var(--ring); }\n", "r48m1c-neg.css").counts.floor, 1);
+    assert.equal(scanUiContent(".btn:not(.disabled):focus { outline: none; }\n.btn:focus-visible { outline: 2px solid var(--ring) !important; }\n", "r48m1c-ok.css").counts.floor, 0);
+    assert.equal(scanUiContent(".nav > .btn:focus { outline: none; }\n.nav .btn:focus-visible { outline: 2px solid var(--ring); }\n", "r48m1d-ok.css").counts.floor, 0);
+
+    // A2-M2: Reflex dsaf/hardcoded-color on functional colors & UI files + waivers
+    assert.equal(scanUiContent(".a { color: rgb(10, 20, 30); border-color: oklch(0.6 0.2 250); background: color-mix(in oklch, red 50%, transparent); }\n", "r48m2a.css", { tier: "all" }).counts.reflex, 3);
+    assert.equal(scanUiContent(".a { background: color-mix(in oklch, #ff00aa 50%, transparent); }\n", "r48m2b.css", { tier: "all" }).counts.reflex, 1);
+    assert.equal(scanUiContent(".a { color: oklch(from var(--brand) l c h); background: color-mix(in oklch, var(--bg) 80%, transparent); }\n", "r48m2c.css", { tier: "all" }).counts.reflex, 0);
+    assert.equal(scanUiContent('<div style={{ color: "#ff00aa", background: "rgb(10, 20, 30)" }} />', "r48m2d.tsx", { tier: "all" }).counts.reflex, 2);
+    assert.equal(scanUiContent('const C = styled.div`color: oklch(0.6 0.2 250);`;', "r48m2e.tsx", { tier: "all" }).counts.reflex, 1);
+    assert.equal(scanUiContent("<style>.x { color: #112233; }</style>\n<div>ok</div>\n", "r48m2f.svelte", { tier: "all" }).counts.reflex, 1);
+    const r48WaivedColor = scanUiContent(
+      '/* dsaf-ignore dsaf/hardcoded-color -- approved brand showcase swatch */\nconst Sw = () => <div style={{ color: "#ff00aa" }} />;\n',
+      "r48m2g.tsx",
+      { tier: "all", reportUnusedIgnores: true }
+    );
+    assert.equal(r48WaivedColor.counts.reflex, 0);
+    assert.equal(r48WaivedColor.unusedIgnores.length, 0);
+
+    // Round 49 regressions (R49-A2-H2, R49-A2-M1, R49-A2-M2):
+    const r49Tmp = mkdtempSync(join(tmpdir(), "dsaf-r49-hook-"));
+    try {
+      // R49-A2-H2: sequential external --ds-css rules cancel earlier external focus-visible indicator
+      const extSeqCss = join(r49Tmp, "seq-ds.css");
+      writeFileSync(extSeqCss, ".btn:focus-visible { outline: 2px solid #005fcc; }\n.btn:focus-visible { outline: none; }\n.card:focus-visible { box-shadow: 0 0 0 2px #005fcc; }\n.card:focus-visible { box-shadow: none; }\n");
+      const localSeqCss = join(r49Tmp, "local.css");
+      writeFileSync(localSeqCss, ".btn { outline: none; }\n.card { outline: none; }\n");
+      assert.equal(checkTarget(localSeqCss, { tier: "floor", dsCss: [extSeqCss] }).counts.floor, 2, "R49 A2-H2: sequential external suppressions must defeat earlier external focus-visible");
+      const inMemExt = [
+        { selector: ".btn:focus-visible", resolvedSelector: ".btn:focus-visible", body: "outline: 2px solid #005fcc;", conditions: [], source: "mem.css" },
+        { selector: ".btn:focus-visible", resolvedSelector: ".btn:focus-visible", body: "outline: none;", conditions: [], source: "mem.css" },
+      ];
+      assert.equal(scanUiContent(".btn { outline: none; }\n", "mem-local.css", { externalCssBlocks: inMemExt }).counts.floor, 1, "R49 A2-H2: in-memory external blocks without bodyStart must preserve array order");
+    } finally {
+      rmSync(r49Tmp, { recursive: true, force: true });
+    }
+
+    // R49-A2-M1: :is(:focus-visible), :where(:focus-visible), :is(:focus, :focus-visible), :is(:where(:focus-visible))
+    for (const [label, src, fname] of [
+      [":is(:focus-visible)", ".btn:focus { outline: none; }\n.btn:is(:focus-visible) { outline: 2px solid #005fcc; }\n", "r49m1a.css"],
+      [":where(:focus-visible)", ".btn:focus { outline: none; }\n.btn:where(:focus-visible) { box-shadow: 0 0 0 2px #005fcc; }\n", "r49m1b.css"],
+      [":is(:focus,:focus-visible)", ".btn:focus { outline: none; }\n.btn:is(:focus, :focus-visible) { outline: 2px solid #005fcc; }\n", "r49m1c.css"],
+      [":is(:where(:focus-visible))", ".btn:focus { outline: none; }\n.btn:is(:where(:focus-visible)) { box-shadow: 0 0 0 2px #005fcc; }\n", "r49m1d.css"],
+      ["nested scss :is(:focus-visible)", ".btn { &:focus { outline: none; } &:is(:focus-visible) { outline: 2px solid #005fcc; } }\n", "r49m1e.scss"],
+      ["styled-components &:is(:focus-visible)", "const B = styled.button`&:focus { outline: none; } &:is(:focus-visible) { outline: 2px solid blue; }`;", "r49m1f.tsx"],
+    ]) {
+      assert.equal(scanUiContent(src, fname, { tier: "all" }).counts.floor, 0, `R49 A2-M1: ${label} must pass Floor`);
+    }
+    assert.equal(scanUiContent(".btn:focus { outline: none; }\n.btn:is(.primary:focus-visible) { outline: 2px solid #005fcc; }\n", "r49m1-neg.css").counts.floor, 1, "R49 A2-M1: :is(.primary:focus-visible) must NOT falsely cover unclassed .btn");
+
+    // R49-A2-M2: Tailwind v4 has-focus-visible / has-focus / has-focus-within shorthands
+    for (const [label, cls] of [
+      ["has-focus-visible", "*:focus:outline-none has-focus-visible:ring-2"],
+      ["has-focus", "*:focus:outline-none has-focus:ring-2"],
+      ["has-focus-within", "*:focus:outline-none has-focus-within:ring-2"],
+    ]) {
+      assert.equal(scanUiContent(`<div className="${cls}"><input /></div>`, "r49m2.tsx").counts.floor, 0, `R49 A2-M2: ${label} must pass Floor`);
+    }
+    assert.equal(scanUiContent('<button className="outline-none has-focus-visible:ring-2">Go</button>', "r49m2-neg.tsx").counts.floor, 1, "R49 A2-M2: has-focus-visible must NOT cover self outline-none");
+
+    // Round 50 regressions (R50-A2-M3 cumulative :is/:where split-branch coverage + R50-A2-M4 sx={{}} / css={{}} Floor & Reflex):
+    for (const [label, src] of [
+      ["same-rule split", ":is(button, a):focus { outline: none; }\nbutton:focus-visible, a:focus-visible { outline: 2px solid var(--ring); }\n"],
+      ["separate rules", ":is(button, a):focus { outline: none; }\nbutton:focus-visible { outline: 2px solid var(--ring); }\na:focus-visible { outline: 2px solid var(--ring); }\n"],
+      ["inner :focus list", ":is(.a:focus, .b:focus) { outline: none; }\n.a:focus-visible { outline: 2px solid var(--ring); }\n.b:focus-visible { outline: 2px solid var(--ring); }\n"],
+      [":where zero-spec", ":where(#cta, a):focus { outline: none; }\n#cta:focus-visible { outline: 2px solid var(--ring); }\na:focus-visible { outline: 2px solid var(--ring); }\n"],
+    ]) {
+      assert.equal(scanUiContent(src, "r50m3.css").counts.floor, 0, `R50 A2-M3: ${label} must pass Floor`);
+    }
+    assert.equal(
+      scanUiContent(":is(button, a):focus { outline: none; }\nbutton:focus-visible { outline: 2px solid var(--ring); }\n", "r50m3-neg1.css").counts.floor,
+      1,
+      "R50 A2-M3: partial split coverage must still fail"
+    );
+    assert.equal(
+      scanUiContent(":is(#cta, a):focus { outline: none; }\n#cta:focus-visible { outline: 2px solid var(--ring); }\na:focus-visible { outline: 2px solid var(--ring); }\n", "r50m3-neg2.css").counts.floor,
+      1,
+      "R50 A2-M3: :is(#cta, a):focus specificity (1,1,0) must beat a:focus-visible (0,1,1)"
+    );
+    assert.equal(
+      scanUiContent("button:focus-visible, a:focus-visible { outline: 2px solid var(--ring); }\n:is(button, a):focus { outline: none; }\n", "r50m3-neg3.css").counts.floor,
+      1,
+      "R50 A2-M3: earlier equal-specificity split focus-visible rules must still lose"
+    );
+
+    const r50SxAll = scanUiContent(
+      'export const B = () => <Button sx={{ "&:focus": { outline: "none" }, width: "100vw", color: "#ff00aa !important" }} />;\n',
+      "r50m4a.tsx",
+      { tier: "all" }
+    );
+    assert.deepEqual(
+      r50SxAll.active.map((f) => f.ruleId).sort(),
+      ["dsaf/hardcoded-color", "dsaf/important-override", "dsaf/no-100vw", "dsaf/no-outline-none-naked"],
+      "R50 A2-M4: sx={{}} must enforce Floor and Reflex rules"
+    );
+    assert.equal(
+      scanUiContent('export const B = () => <Button sx={{ "&:focus": { outline: "none" }, "&:focus-visible": { outline: "2px solid var(--ring)" } }} />;\n', "r50m4b.tsx").counts.floor,
+      0,
+      "R50 A2-M4: sx={{}} with sibling &:focus-visible ring must pass Floor"
+    );
+    assert.equal(
+      scanUiContent('export const B = () => <Button sx={[baseSx, { "&:focus": { outline: "none" } }]} />;\n', "r50m4c.tsx").counts.floor,
+      1,
+      "R50 A2-M4: sx={[...]} array form must flag naked focus outline: none"
+    );
+    assert.equal(
+      scanUiContent('export const B = () => <Button sx={(t: any) => ({ "&:focus": { outline: "none" } })} />;\n', "r50m4d.tsx").counts.floor,
+      1,
+      "R50 A2-M4: sx={(t) => ({...})} callback form must flag naked focus outline: none"
+    );
+    const r50CssAll = scanUiContent(
+      'export const D = () => <div css={{ "&:focus": { outline: 0 }, transition: "all 0.2s", background: "#112233" }} />;\n',
+      "r50m4e.tsx",
+      { tier: "all" }
+    );
+    assert.deepEqual(
+      r50CssAll.active.map((f) => f.ruleId).sort(),
+      ["dsaf/hardcoded-color", "dsaf/no-outline-none-naked", "dsaf/no-transition-all"],
+      "R50 A2-M4: css={{}} must enforce Floor and Reflex rules"
+    );
+    assert.equal(
+      scanUiContent('export const D = () => <div css={css({ "&:focus": { outline: "none" } })} />;\n', "r50m4f.tsx").counts.floor,
+      1,
+      "R50 A2-M4: css={css({...})} must not double-report Floor violations"
+    );
+    assert.equal(
+      scanUiContent('export const D = () => <Box sx={{ "& #ace": { color: "var(--ink)" } }} />;\n', "r50m4g.tsx", { tier: "all" }).counts.reflex,
+      0,
+      "R50 A2-M4: #ace selector key inside sx={{}} must not trigger dsaf/hardcoded-color"
+    );
+
     console.log("DSAF_HOOK_SELF_TEST_PASSED (Floor/Reflex rules + waiver rejection + stdin hook + idempotent install)");
     return 0;
   } finally {
@@ -9546,7 +12003,7 @@ export function checkTarget(target, options = {}) {
   const startDir = existsSync(absTarget) && statSync(absTarget).isFile() ? dirname(absTarget) : absTarget;
   const externalCssBlocks =
     options.dsCss === false ? [] : discoverExternalDsCss(startDir, options.dsCss ?? []);
-  const files = collectUiFiles(target);
+  const files = collectUiFiles(target, { includeDemos: Boolean(options.includeDemos) });
   const allActive = [];
   const allWaived = [];
   const allUnused = [];

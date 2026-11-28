@@ -537,8 +537,15 @@ function planAndValidateApply({ absTarget, home, before }) {
     }
   }
   for (const s of before.skills) {
-    if (s.status === "outdated" && s.scope === "project") {
-      assertWritableTargetType(s.path, true, s.path, absTarget);
+    if (s.status === "outdated") {
+      assertWritableTargetType(s.path, true, s.displayPath || s.path, s.scope === "project" ? absTarget : null);
+      installSkills({
+        agent: s.agent,
+        scope: s.scope,
+        cwd: absTarget,
+        home,
+        dryRun: true,
+      });
     }
   }
   for (const wf of before.workflows) {
@@ -741,7 +748,10 @@ function renderUpdateText(res) {
   if (res.mcpConfigs.length > 0) {
     lines.push(`MCP Configs: ${res.mcpConfigs.map((m) => `${m.displayPath} (${m.packageSpec}:${m.status})`).join(", ")}`);
   }
-  if (res.updated.length > 0) lines.push(`Updated (${res.updated.length}): ${res.updated.join("; ")}`);
+  if (res.updated.length > 0) {
+    const verb = res.mode === "dry-run" ? "Would update" : "Updated";
+    lines.push(`${verb} (${res.updated.length}): ${res.updated.join("; ")}`);
+  }
   if (res.preserved.length > 0) lines.push(`Preserved: ${res.preserved.join(", ")}`);
   lines.push(`Outdated items detected: ${res.outdatedCount}`);
   return lines.join("\n") + "\n";
@@ -798,6 +808,9 @@ async function runSelfTest() {
     const dry = await runUpdate(repo, { dryRun: true, home: fakeHome, cachePath, fetchImpl: mockFetch });
     assert.ok(dry.updated.length >= 5);
     assert.match(readFileSync(join(repo, ".github/workflows/dsaf-pin.yml"), "utf8"), /v0\.9\.1/);
+    const dryText = renderUpdateText(dry);
+    assert.match(dryText, /Would update \(\d+\): /, "R43 A1-L1: dry-run text must say 'Would update'");
+    assert.doesNotMatch(dryText, /\nUpdated \(\d+\): /, "R43 A1-L1: dry-run text must not claim files were 'Updated'");
 
     // 3. Apply updates safely & preserve custom personas & @v0 floating pin
     const applied = await runUpdate(repo, { home: fakeHome, cachePath, fetchImpl: mockFetch });
@@ -1111,6 +1124,28 @@ async function runSelfTest() {
         `R33 A1-M3: runUpdate must reject symlink in ${r33Dir}`
       );
     }
+
+    // Round 43 (R42-A1-M2): outdated symlinked user-scope skill must fail in pre-flight BEFORE mutating outdated project skill
+    const r43Proj = makeR33SymRepo("r43-user-skill-sym", (d) => {
+      mkdirSync(join(d, ".claude/skills/dsaf"), { recursive: true });
+      writeFileSync(join(d, ".claude/skills/dsaf/SKILL.md"), "---\nname: dsaf\nversion: 0.1.0\n---\n");
+    });
+    const r43Home = join(scratch, "r43-home");
+    const r43ExtSkill = join(scratch, "r43-ext-skill");
+    mkdirSync(join(r43Home, ".cursor/skills"), { recursive: true });
+    mkdirSync(r43ExtSkill, { recursive: true });
+    writeFileSync(join(r43ExtSkill, "SKILL.md"), "---\nname: dsaf\nversion: 0.1.0\n---\n");
+    symlinkSync(r43ExtSkill, join(r43Home, ".cursor/skills/dsaf"));
+    await assert.rejects(
+      () => runUpdate(r43Proj, { offline: true, allAgents: true, home: r43Home }),
+      /symlink/i,
+      "R43 A1-M2: symlinked user-scope outdated skill must fail upfront"
+    );
+    assert.match(
+      readFileSync(join(r43Proj, ".claude/skills/dsaf/SKILL.md"), "utf8"),
+      /version:\s*0\.1\.0/,
+      "R43 A1-M2: project-scope skill must stay untouched when user-scope preflight fails"
+    );
 
     console.log("DSAF_UPDATE_SELF_TEST_PASSED (CLI check + skills + personas preserve + guardrails + workflows + MCP)");
     return 0;

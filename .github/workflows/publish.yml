@@ -6,9 +6,7 @@ on:
       - 'v*.*.*'
   workflow_dispatch:
 
-permissions:
-  id-token: write
-  contents: write
+permissions: {}
 
 concurrency:
   group: publish-npm
@@ -17,30 +15,63 @@ concurrency:
 jobs:
   publish:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      major: ${{ steps.release_meta.outputs.major }}
+      should_update_floating: ${{ steps.release_meta.outputs.should_update_floating }}
+      skip_reason: ${{ steps.release_meta.outputs.skip_reason }}
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: 24
           registry-url: 'https://registry.npmjs.org'
       - name: Run full verification & isolation suite
         run: npm test
+      - name: Fetch git tags for release verification
+        run: git fetch --tags --force origin
       - name: Verify tag matches package.json version & tarball excludes repo-only paths
         run: |
           node -e '
             const fs = require("fs");
+            const { execFileSync } = require("child_process");
             const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
-            if (process.env.GITHUB_REF_TYPE === "tag" && process.env.GITHUB_REF_NAME !== "v" + pkg.version) {
-              console.error("Tag", process.env.GITHUB_REF_NAME, "does not match package.json v" + pkg.version);
-              process.exit(1);
+            const expectedTag = "v" + pkg.version;
+            const headSha = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+            if (process.env.GITHUB_REF_TYPE === "tag") {
+              if (process.env.GITHUB_REF_NAME !== expectedTag) {
+                console.error("Tag", process.env.GITHUB_REF_NAME, "does not match package.json", expectedTag);
+                process.exit(1);
+              }
+            } else {
+              const tagSha = execFileSync("git", ["rev-parse", "--verify", `refs/tags/${expectedTag}^{commit}`], { encoding: "utf8" }).trim();
+              if (tagSha !== headSha) {
+                console.error(`workflow_dispatch requires existing tag ${expectedTag} on HEAD (${headSha}), found ${tagSha}`);
+                process.exit(1);
+              }
             }
           '
-          if npm pack --dry-run 2>&1 | grep -E '(^|[[:space:]])(docs|fixtures|scripts|examples|\.?evolve)/'; then
-            echo "ERROR: non-publishable repo directory leaked into npm tarball!"
-            exit 1
-          fi
-      - name: Fetch git tags for dist-tag & floating tag checks
-        run: git fetch --tags --force origin
+          node --input-type=module -e '
+            import { execFileSync } from "node:child_process";
+            const raw = execFileSync("npm", ["pack", "--dry-run", "--json"], { encoding: "utf8" });
+            const arr = JSON.parse(raw);
+            const files = Array.isArray(arr) && arr[0] && Array.isArray(arr[0].files) ? arr[0].files.map((f) => String(f.path || "")) : [];
+            if (files.length === 0) {
+              console.error("ERROR: npm pack --dry-run --json produced an empty file list.");
+              process.exit(1);
+            }
+            const forbiddenRe = /^(?:docs|fixtures|scripts|examples|\.github)(?:\/|$)|^action\.yml$|(^|\/)(?:\.?evolve(?:\/|$)|\.DS_Store$)/i;
+            const leaked = files.filter((p) => forbiddenRe.test(p));
+            if (leaked.length > 0) {
+              console.error("ERROR: non-publishable repo path(s) leaked into npm tarball:", leaked);
+              process.exit(1);
+            }
+            console.log(`Tarball check passed: ${files.length} files, 0 forbidden paths.`);
+          '
       - name: Determine npm dist-tag & floating major tag policy
         id: release_meta
         run: |
@@ -108,24 +139,39 @@ jobs:
             }
             console.log(`Release policy: version=${pkgTag} npm_tag=${npmTag} major=${major} should_update_floating=${shouldUpdate}`);
           '
-      - name: Upgrade npm CLI for OIDC Trusted Publishing
-        run: npm install -g npm@latest
+      - name: Verify bundled npm supports OIDC Trusted Publishing (>= 11.5.1)
+        run: |
+          node --input-type=module -e '
+            import { execFileSync } from "node:child_process";
+            import { parseSemver, compareSemver } from "./skill/scripts/update-check.mjs";
+            const ver = execFileSync("npm", ["--version"], { encoding: "utf8" }).trim();
+            if (!parseSemver(ver) || compareSemver(ver, "11.5.1") < 0) {
+              console.error(`ERROR: npm >= 11.5.1 required for OIDC Trusted Publishing (found ${ver}).`);
+              process.exit(1);
+            }
+            console.log(`Bundled npm v${ver} satisfies >= 11.5.1 OIDC Trusted Publishing requirement.`);
+          '
       - name: Publish @zintaen/dsaf with provenance
         env:
           NPM_TAG: ${{ steps.release_meta.outputs.npm_tag }}
         run: npm publish --provenance --access public --tag "$NPM_TAG"
-      - name: Update floating major tag (v0)
-        if: github.ref_type == 'tag'
+
+  update-floating-tag:
+    needs: publish
+    if: github.ref_type == 'tag' && needs.publish.outputs.should_update_floating == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+      - name: Update floating major tag (${{ needs.publish.outputs.major }})
         env:
-          MAJOR: ${{ steps.release_meta.outputs.major }}
-          SHOULD_UPDATE: ${{ steps.release_meta.outputs.should_update_floating }}
-          SKIP_REASON: ${{ steps.release_meta.outputs.skip_reason }}
+          MAJOR: ${{ needs.publish.outputs.major }}
+          TARGET_SHA: ${{ github.sha }}
         run: |
-          if [ "$SHOULD_UPDATE" != "true" ]; then
-            echo "Skipping floating tag ${MAJOR}: ${GITHUB_REF_NAME} ${SKIP_REASON}."
-            exit 0
-          fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git tag -f "$MAJOR"
+          git tag -f "$MAJOR" "$TARGET_SHA"
           git push origin "refs/tags/$MAJOR" --force

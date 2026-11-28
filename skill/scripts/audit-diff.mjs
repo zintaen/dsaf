@@ -13,6 +13,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { assertWritableOutputFile, escMdCell, formatMdCodeSpan, isDirectCliEntry } from "./ci-report.mjs";
+import { compute } from "./compute-scorecard.mjs";
 
 export const DIFF_VERSION = "0.9.3";
 
@@ -39,7 +40,8 @@ export function diffScorecards(baseline, current, currentPhase = "before") {
   if (!isPlainObject(current) || current.schema !== "dsaf-scores/2") {
     throw new Error("Invalid current scorecard: expected dsaf-scores/2 object.");
   }
-  const baseTotal = baseline.phases.before.total;
+  const normZero = (v) => (typeof v === "number" && v === 0 ? 0 : v);
+  const baseTotal = normZero(baseline.phases.before.total);
   if (baseTotal !== undefined && baseTotal !== null && (typeof baseTotal !== "number" || !Number.isFinite(baseTotal))) {
     throw new Error("Invalid baseline phase total: expected finite number or null.");
   }
@@ -52,7 +54,7 @@ export function diffScorecards(baseline, current, currentPhase = "before") {
   if (!isPlainObject(curPhaseObj) || !isPlainObject(curCriteria)) {
     throw new Error(`Phase '${currentPhase}' does not exist in current scorecard.`);
   }
-  const curTotal = curPhaseObj.total;
+  const curTotal = normZero(curPhaseObj.total);
   if (curTotal !== undefined && curTotal !== null && (typeof curTotal !== "number" || !Number.isFinite(curTotal))) {
     throw new Error("Invalid current phase total: expected finite number or null.");
   }
@@ -137,16 +139,18 @@ export function diffScorecards(baseline, current, currentPhase = "before") {
     }
     const baseVol = normVol(baseEntry.volatility, "baseline", cid);
     if (baseEntry.score === "N/A") continue;
-    const hasCurVol = curEntry.volatility !== undefined && curEntry.volatility !== null;
+    const baseScore = normZero(baseEntry.score);
+    const hasCurVol = typeof curEntry.volatility === "string" ? curEntry.volatility.trim().length > 0 : curEntry.volatility !== undefined && curEntry.volatility !== null;
     const volatility = baseVol === "FIXED" ? "FIXED" : normVol(hasCurVol ? curEntry.volatility : baseVol, "current", cid);
     if (curEntry.score === "N/A") {
-      const naDelta = baseEntry.score === 0 ? 0 : -baseEntry.score;
-      regressions.push({ id: cid, volatility, pre: baseEntry.score, post: "N/A", delta: naDelta, reason: "Converted numeric score to N/A" });
+      const naDelta = baseScore === 0 ? 0 : -baseScore;
+      regressions.push({ id: cid, volatility, pre: baseScore, post: "N/A", delta: naDelta, reason: "Converted numeric score to N/A" });
       continue;
     }
-    const delta = curEntry.score - baseEntry.score;
-    if (delta > 0) improvements.push({ id: cid, pre: baseEntry.score, post: curEntry.score, delta });
-    else if (delta < 0) regressions.push({ id: cid, volatility, pre: baseEntry.score, post: curEntry.score, delta });
+    const curScore = normZero(curEntry.score);
+    const delta = curScore - baseScore;
+    if (delta > 0) improvements.push({ id: cid, pre: baseScore, post: curScore, delta });
+    else if (delta < 0) regressions.push({ id: cid, volatility, pre: baseScore, post: curScore, delta });
   }
   for (const [cid, baseEntry] of Object.entries(baseCriteria)) {
     if (!isPlainObject(baseEntry)) {
@@ -157,11 +161,12 @@ export function diffScorecards(baseline, current, currentPhase = "before") {
     }
     const baseVol = normVol(baseEntry.volatility, "baseline", cid);
     if (baseEntry.score !== "N/A" && !Object.prototype.hasOwnProperty.call(curCriteria, cid)) {
-      const omitDelta = baseEntry.score === 0 ? 0 : -baseEntry.score;
+      const baseScore = normZero(baseEntry.score);
+      const omitDelta = baseScore === 0 ? 0 : -baseScore;
       regressions.push({
         id: cid,
         volatility: baseVol,
-        pre: baseEntry.score,
+        pre: baseScore,
         post: "missing",
         delta: omitDelta,
         reason: "Criterion omitted in current scorecard",
@@ -187,12 +192,28 @@ export function diffScorecards(baseline, current, currentPhase = "before") {
       reason: `Newly introduced Hard Floor blocker: ${nb}`,
     });
   }
+  const baseCapped = Boolean(baseline.phases.before.prose_only_capped);
+  const curCapped = Boolean(curPhaseObj.prose_only_capped);
+  if (!baseCapped && curCapped) {
+    const capDelta =
+      baseTotal != null && curTotal != null
+        ? normZero(Number((curTotal - baseTotal).toFixed(2)))
+        : -1;
+    regressions.push({
+      id: "CAP:prose-only",
+      volatility: "FIXED",
+      pre: baseTotal != null ? `${baseTotal} (${baseline.phases.before.grade})` : baseline.phases.before.grade,
+      post: curTotal != null ? `${curTotal} (${curPhaseObj.grade})` : curPhaseObj.grade,
+      delta: capDelta < 0 ? capDelta : -1,
+      reason: "System audit regressed to prose-only evidence (capped at 39.9 / L1; zero artifact and verification bands).",
+    });
+  }
 
   return {
     engine_version: DIFF_VERSION,
     type: current.type,
     baselineTotal: baseTotal,
-    currentTotal: curPhaseObj.total,
+    currentTotal: curTotal,
     baselineGrade: baseline.phases.before.grade,
     currentGrade: curPhaseObj.grade,
     majorMismatch,
@@ -508,6 +529,66 @@ function runSelfTest() {
   assert.ok(r40RegRow && r40RegRow.includes("```DS``02\\\\\\|y row```"), `Regression ID must use 3-backtick fence and escaped \\\\|: ${r40RegRow}`);
   const r40GradeRow = r40Md.split("\n").find((l) => l.startsWith("| Grade / Maturity |"));
   assert.ok(r40GradeRow && r40GradeRow.includes("A\\\\\\|B Next") && r40GradeRow.includes("C\\\\\\|D Row"), `Grade row must escape \\| and CR: ${r40GradeRow}`);
+
+  // Round 41 (R40-A4-L3 -0 normalization + R40-A4-L4 whitespace current volatility inherits baseline DYNAMIC):
+  const r41NegDiff = diffScorecards(
+    { ...makeDoc({ DS01: { score: -0 }, DS02: { score: 2 }, DS03: { score: 1, volatility: "DYNAMIC" } }, DIFF_VERSION, []), phases: { before: { total: -0, grade: "L1", hard_floor_blockers: [] } } },
+    { ...makeDoc({ DS01: { score: "N/A" }, DS02: { score: -0 }, DS03: { score: 0, volatility: "   " } }, DIFF_VERSION, []), phases: { before: { total: -0, grade: "L1", hard_floor_blockers: [] } } },
+    "before"
+  );
+  assert.ok(Object.is(r41NegDiff.baselineTotal, 0) && Object.is(r41NegDiff.currentTotal, 0), "R41 A4-L3: -0 phase totals must normalize to +0");
+  assert.ok(Object.is(r41NegDiff.regressions.find((r) => r.id === "DS01").pre, 0), "R41 A4-L3: -0 pre score must normalize to +0");
+  assert.ok(Object.is(r41NegDiff.regressions.find((r) => r.id === "DS02").post, 0), "R41 A4-L3: -0 post score must normalize to +0");
+  assert.equal(r41NegDiff.regressions.find((r) => r.id === "DS03").volatility, "DYNAMIC", "R41 A4-L4: whitespace current volatility must inherit baseline DYNAMIC");
+
+  // Round 46 (R45 A4-H1 prose_only_capped regression across phase totals/grades):
+  const dsIds = Array.from({ length: 12 }, (_, idx) => `DS${String(idx + 1).padStart(2, "0")}`);
+  const r46BaseSys = compute({
+    type: "system",
+    before: Object.fromEntries(
+      dsIds.map((c) => [c, { score: 1, findings: ["F-01"], bands: { prose: 20, artifacts: 20, verification: 5 } }])
+    ),
+  });
+  const r46CapSys = compute({
+    type: "system",
+    before: Object.fromEntries(
+      dsIds.map((c) => [c, { score: 1, findings: ["F-01"], bands: { prose: 40, artifacts: 0, verification: 0 } }])
+    ),
+  });
+  const r46CapDiff = diffScorecards(r46BaseSys, r46CapSys, "before");
+  assert.equal(r46CapDiff.regressions.length, 1, "R46 A4-H1: regression to prose_only_capped must record regression");
+  assert.equal(r46CapDiff.regressions[0].id, "CAP:prose-only");
+  assert.equal(r46CapDiff.regressions[0].delta, -10.1);
+
+  const r46Tmp = mkdtempSync(join(tmpdir(), "dsaf-diff-r46-"));
+  try {
+    const baseFile = join(r46Tmp, "base.json");
+    const capFile = join(r46Tmp, "cap.json");
+    writeFileSync(baseFile, JSON.stringify(r46BaseSys));
+    writeFileSync(capFile, JSON.stringify(r46CapSys));
+    const scriptPath = fileURLToPath(import.meta.url);
+    assert.equal(
+      spawnSync(process.execPath, [scriptPath, "--baseline", baseFile, "--current", capFile], { encoding: "utf8" }).status,
+      1,
+      "R46 A4-H1: CLI must exit 1 on prose-only cap regression without --allow-regressions"
+    );
+    assert.equal(
+      spawnSync(process.execPath, [scriptPath, "--baseline", baseFile, "--current", capFile, "--allow-regressions"], { encoding: "utf8" }).status,
+      0,
+      "R46 A4-H1: CLI with --allow-regressions must exit 0"
+    );
+  } finally {
+    rmSync(r46Tmp, { recursive: true, force: true });
+  }
+
+  // Round 47 (A4-L4 handle undefined total without emitting 'undefined (<grade>)'):
+  const r47UndefBase = structuredClone(r46BaseSys);
+  delete r47UndefBase.phases.before.total;
+  const r47UndefDiff = diffScorecards(r47UndefBase, r46CapSys, "before");
+  const r47CapRow = r47UndefDiff.regressions.find((r) => r.id === "CAP:prose-only");
+  assert.ok(r47CapRow, "R47 A4-L4: CAP:prose-only row must exist");
+  assert.ok(!String(r47CapRow.pre).includes("undefined"), "R47 A4-L4: pre must not emit literal 'undefined'");
+  assert.equal(r47CapRow.delta, -1, "R47 A4-L4: undefined baseTotal must yield delta -1");
 
   console.log("AUDIT_DIFF_SELF_TEST_PASSED (improvements + regression lock + override log)");
   return 0;

@@ -16,8 +16,8 @@ jobs:
       matrix:
         node-version: [20, 22, 24]
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: ${{ matrix.node-version }}
       - run: npm test
@@ -49,14 +49,14 @@ jobs:
   runtime-playwright:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: 22
       - name: Install Playwright & axe-core into isolated temp dir
         run: |
           mkdir -p /tmp/dsaf-pw
-          npm install --prefix /tmp/dsaf-pw --no-save playwright axe-core
+          npm install --prefix /tmp/dsaf-pw --no-save playwright@1.65.1 axe-core@4.14.1
           /tmp/dsaf-pw/node_modules/.bin/playwright install chromium --with-deps
       - name: Verify Canonical Preview Shell, Live Report, Storybook Static, Product App & Defect Detection
         env:
@@ -78,8 +78,8 @@ jobs:
     runs-on: ubuntu-latest
     needs: verify
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: 22
       - name: Run local composite GitHub Action against docs/

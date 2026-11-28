@@ -148,21 +148,22 @@ export function mapFindingToPersonas(finding, personas = []) {
   for (const p of personas) {
     const text = `${p.axis || ""} ${p.name || ""} ${(Array.isArray(p.expectations) ? p.expectations : []).join(" ")} ${(Array.isArray(p.failureModes) ? p.failureModes : []).join(" ")} ${p.source || ""}`.toLowerCase();
     let hit = false;
-    if (/(outline-none|positive-tabindex|unnamed-control|runtime-check)/.test(rule)) {
-      hit = /keyboard|focus|screen reader|aria|navigation|onboarding/.test(text);
+    if (/runtime-check/.test(rule)) {
+      hit = /keyboard|focus|screen reader|aria|navigation|onboarding|conformance|mobile|390|responsive|contrast|low-vision|dark|motion/.test(text);
+    } else if (/regression-detected/.test(rule)) {
+      hit = /maintainer|governance|conformance|consumer|visual|keyboard/.test(text);
+    } else if (/(outline-none|positive-tabindex|unnamed-control|floor-waiver-rejected)/.test(rule)) {
+      hit = /keyboard|focus|screen reader|aria|navigation|onboarding|conformance/.test(text);
     } else if (/no-100vw/.test(rule)) {
       hit = /mobile|390|responsive|table|overflow|hybrid/.test(text);
     } else if (/(hardcoded-color|dtcg-contrast|dark)/.test(rule)) {
       hit = /contrast|dark|token|conformance|low-vision|theme/.test(text);
-    } else if (/(important|off-grid|dtcg-)/.test(rule)) {
-      hit = /token|conformance|drift|consumer|visual/.test(text);
+    } else if (/(important|off-grid|dtcg-|tailwind-arbitrary|semantic-orphan-var|waiver-reason-weak|unused-ignore)/.test(rule)) {
+      hit = /token|conformance|drift|consumer|visual|maintainer|governance/.test(text);
     } else if (/(transition|layout-transition|autoplay|hidden-at-rest|motion)/.test(rule)) {
       hit = /motion|low-vision|keyboard|visitor|resilience/.test(text);
     }
     if (hit) matchedIds.push(p.id);
-  }
-  if (matchedIds.length === 0 && personas.length > 0) {
-    matchedIds.push(personas[0].id);
   }
   return matchedIds;
 }
@@ -362,9 +363,12 @@ export function runAuditPipeline(opts = {}) {
   const trimmedUrl = opts.url ? String(opts.url).trim() : null;
   const trimmedStorybook = opts.storybook ? String(opts.storybook).trim() : null;
   const trimmedCdp = opts.cdp ? String(opts.cdp).trim() : null;
+  if (trimmedCdp && (trimmedUrl || trimmedStorybook)) {
+    throw new Error("Cannot combine '--cdp' with '--url' or '--storybook'.");
+  }
   if (opts.routes !== undefined && opts.routes !== null) {
-    if (!trimmedUrl && !trimmedStorybook) {
-      throw new Error("Parameter '--routes' requires either '--url' or '--storybook'.");
+    if (!trimmedUrl || !/^https?:\/\//i.test(trimmedUrl)) {
+      throw new Error("Parameter '--routes' requires an http(s):// '--url' target.");
     }
     if (String(opts.routes).split(",").some((s) => !s.trim())) {
       throw new Error(`Parameter '--routes' must contain non-empty comma-separated route paths (got '${opts.routes}').`);
@@ -400,7 +404,7 @@ export function runAuditPipeline(opts = {}) {
       if ((u.protocol !== "http:" && u.protocol !== "https:") || !u.hostname) {
         throw new Error(`Invalid runtime --url (hostname required): ${opts.url}`);
       }
-    } else if (/^[a-z][a-z0-9+.-]*:/i.test(trimmedUrl)) {
+    } else if (/^[a-z][a-z0-9+.-]*:/i.test(trimmedUrl) && !/^[a-z]:[\\/]/i.test(trimmedUrl)) {
       throw new Error(`Unsupported runtime --url scheme: ${opts.url}`);
     } else {
       const absUrl = resolve(trimmedUrl);
@@ -437,6 +441,7 @@ export function runAuditPipeline(opts = {}) {
     }
   }
   if (trimmedStorybook) {
+    let localSbCandidate = null;
     if (/^https?:/i.test(trimmedStorybook)) {
       if (!/^https?:\/\//i.test(trimmedStorybook)) {
         throw new Error(`Invalid --storybook URL (must start with http:// or https://): ${opts.storybook}`);
@@ -450,10 +455,21 @@ export function runAuditPipeline(opts = {}) {
       if ((su.protocol !== "http:" && su.protocol !== "https:") || !su.hostname) {
         throw new Error(`Invalid --storybook URL (hostname required): ${opts.storybook}`);
       }
-    } else if (/^[a-z][a-z0-9+.-]*:/i.test(trimmedStorybook)) {
+    } else if (/^file:/i.test(trimmedStorybook)) {
+      try {
+        const su = new URL(trimmedStorybook);
+        if (su.protocol !== "file:") throw new Error("not file");
+        localSbCandidate = fileURLToPath(su);
+      } catch {
+        throw new Error(`Invalid file:// URL for --storybook: ${opts.storybook}`);
+      }
+    } else if (/^[a-z][a-z0-9+.-]*:/i.test(trimmedStorybook) && !/^[a-z]:[\\/]/i.test(trimmedStorybook)) {
       throw new Error(`Unsupported --storybook URL scheme: ${opts.storybook}`);
     } else {
-      const absSb = resolve(trimmedStorybook);
+      localSbCandidate = trimmedStorybook;
+    }
+    if (localSbCandidate !== null) {
+      const absSb = resolve(localSbCandidate);
       let sbLst = null;
       try {
         sbLst = lstatSync(absSb);
@@ -537,7 +553,7 @@ export function runAuditPipeline(opts = {}) {
 
   try {
     // 1. Step 0 Read-Only Recon (in-memory first so failed persona validation never writes partial artifacts)
-    const reconRes = runSubScript("recon.mjs", [target]);
+    const reconRes = runSubScript("recon.mjs", [scopedDir]);
     if (reconRes.error || reconRes.status !== 0) {
       throw new Error(`recon failed: ${reconRes.error?.message || reconRes.stderr || reconRes.stdout || "unknown recon error"}`);
     }
@@ -618,8 +634,15 @@ export function runAuditPipeline(opts = {}) {
         diffArgs.push("--out", diffOutPath);
       }
       const diffRes = runSubScript("audit-diff.mjs", diffArgs);
+      if (diffRes.error) {
+        throw new Error(`audit-diff failed: ${diffRes.error.message}`);
+      }
+      if (diffRes.status !== 0 && diffRes.status !== 1) {
+        const errDetail = String(diffRes.stderr || diffRes.stdout || `exit code ${diffRes.status ?? "null"}`).trim();
+        throw new Error(`audit-diff failed fatally: ${errDetail}`);
+      }
       regressionPassed = diffRes.status === 0;
-      const diffOutput = [diffRes.stdout, diffRes.stderr, diffRes.error?.message]
+      const diffOutput = [diffRes.stdout, diffRes.stderr]
         .map((s) => String(s || "").trim())
         .filter(Boolean)
         .join("\n");
@@ -635,6 +658,7 @@ export function runAuditPipeline(opts = {}) {
     const hookRes = checkTarget(hookTarget, {
       tier: "all",
       dsCss: normalizedDsCss,
+      includeDemos: Boolean(opts.includeDemos),
       reportUnusedIgnores: reportUnused,
     });
     const relScopedFile = (f) => {
@@ -694,11 +718,17 @@ export function runAuditPipeline(opts = {}) {
     if (runtime && !runtime.allPassed) {
       for (const rf of runtime.files || []) {
         if (rf.passed) continue;
+        let rtFile = rf.file || "runtime";
+        if (rf.sourcePath) {
+          const relSrc = relative(target, rf.sourcePath).replace(/\\/g, "/");
+          if (relSrc === "") rtFile = ".";
+          else if (relSrc !== ".." && !relSrc.startsWith("../") && !isAbsolute(relSrc)) rtFile = relSrc;
+        }
         rawFindings.push({
           ruleId: "dsaf/runtime-check-failed",
           tier: "floor",
           severity: "error",
-          file: rf.file || "runtime",
+          file: rtFile,
           line: 1,
           message: `Runtime verification failed (${rf.pageErrors?.length || 0} pageErrors, checks failed)`,
         });
@@ -713,6 +743,27 @@ export function runAuditPipeline(opts = {}) {
           message: "Runtime wiring or screenshot diff check failed",
         });
       }
+    }
+    if (regressionDiff && !regressionPassed) {
+      const regMsg = String(regressionDiff.output || "")
+        .split(/\r?\n/)
+        .map((l) => l.trim())
+        .find(Boolean);
+      let regFile = "audit-diff.md";
+      if (regressionDiff.reportFile) {
+        const relReg = relative(target, regressionDiff.reportFile).replace(/\\/g, "/");
+        if (relReg && relReg !== ".." && !relReg.startsWith("../") && !isAbsolute(relReg)) {
+          regFile = relReg;
+        }
+      }
+      rawFindings.push({
+        ruleId: "dsaf/regression-detected",
+        tier: "floor",
+        severity: "error",
+        file: regFile,
+        line: 1,
+        message: regMsg ? regMsg.slice(0, 240) : "Scorecard regression detected against baseline.",
+      });
     }
 
     const ciFindingsList = [...rawFindings].sort((a, b) => {
@@ -1553,6 +1604,155 @@ function runSelfTest() {
         "R36 A1-L1: mismatched pillar weights must fail upfront with exit 2"
       );
       assert.equal(existsSync(r37AbortOut), false, "R36 A1-L1: mismatched weights must not create --out");
+
+      // Round 42 (R41-A3-M4 mapFindingToPersonas coverage for guardrail & waiver rules):
+      const r42Personas = [
+        { id: "P01", name: "Checkout Flow Visitor", axis: "layout", expectations: ["responsive layout"] },
+        { id: "P02", name: "Design System Conformance Maintainer", axis: "conformance", expectations: ["token governance", "aria keyboard focus"] },
+      ];
+      for (const rId of [
+        "dsaf/tailwind-arbitrary",
+        "dsaf/semantic-orphan-var",
+        "dsaf/floor-waiver-rejected",
+        "dsaf/waiver-reason-weak",
+        "dsaf/unused-ignore",
+      ]) {
+        assert.deepEqual(
+          mapFindingToPersonas({ ruleId: rId }, r42Personas),
+          ["P02"],
+          `R42 A3-M4: ${rId} must map to conformance/governance persona rather than unrelated personas[0]`
+        );
+      }
+
+      // Round 43 (R42-A3-H11 regression finding + SARIF, R42-A3-M12 scope recon & includeDemos, R42-A3-M13 mapFindingToPersonas, R42-A3-M14 routes/cdp validation):
+      assert.throws(
+        () => runAuditPipeline({ target: r23App, url: "index.html", routes: "/about" }),
+        /--routes.*http/,
+        "R43 A3-M14: --routes with non-http URL must reject upfront"
+      );
+      assert.throws(
+        () => runAuditPipeline({ target: r23App, cdp: "9222", url: "https://example.com" }),
+        /Cannot combine '--cdp'/,
+        "R43 A3-M14: --cdp + --url must reject upfront"
+      );
+      assert.throws(
+        () => runAuditPipeline({ target: r23App, cdp: "9222", storybook: "https://example.com/index.json" }),
+        /Cannot combine '--cdp'/,
+        "R43 A3-M14: --cdp + --storybook must reject upfront"
+      );
+
+      assert.deepEqual(
+        mapFindingToPersonas({ ruleId: "dsaf/no-100vw" }, [{ id: "PX", name: "OnlyContrast", axis: "contrast", expectations: [] }]),
+        [],
+        "R43 A3-M13: unmatched custom persona list must return [] rather than personas[0]"
+      );
+      assert.deepEqual(
+        mapFindingToPersonas({ ruleId: "dsaf/runtime-check-failed" }, [
+          { id: "P_LOW", name: "Low Vision Reader", axis: "contrast", expectations: ["high contrast"] },
+        ]),
+        ["P_LOW"],
+        "R43 A3-M13: runtime-check-failed must map to contrast/mobile/motion personas"
+      );
+      assert.deepEqual(
+        mapFindingToPersonas({ ruleId: "dsaf/regression-detected" }, r42Personas),
+        ["P02"],
+        "R43 A3-M13: regression-detected must map to conformance/maintainer personas"
+      );
+
+      const r43PipeDir = join(scratch, "r43-pipe");
+      mkdirSync(join(r43PipeDir, "src"), { recursive: true });
+      mkdirSync(join(r43PipeDir, "demos"), { recursive: true });
+      writeFileSync(join(r43PipeDir, "src/ok.css"), ".ok { color: var(--brand, #1d4ed8); }\n");
+      writeFileSync(join(r43PipeDir, "demos/bad.css"), ".bad:focus { outline: none; }\n");
+      const r43NoDemo = runAuditPipeline({ target: r43PipeDir });
+      assert.equal(r43NoDemo.ciGate.floor, 0, "R43 A3-M12: default pipeline skips demos/");
+      const r43WithDemo = runAuditPipeline({ target: r43PipeDir, includeDemos: true });
+      assert.equal(r43WithDemo.ciGate.floor, 1, "R43 A3-M12: includeDemos reaches checkTarget and scans demos/");
+      const r43ScopedRes = runAuditPipeline({ target: r43PipeDir, scope: "src" });
+      assert.ok(r43ScopedRes.recon.filesScanned <= 2, "R43 A3-M12: recon runs within --scope");
+
+      const r43RegBase = join(scratch, "r43-reg-base.json");
+      const r43RegCur = join(scratch, "r43-reg-cur.json");
+      const r43RegSarif = join(scratch, "r43-reg.sarif.json");
+      const r43RegHtml = join(scratch, "r43-reg.html");
+      const mkSc = (s) => ({
+        schema: "dsaf-scores/2",
+        type: "visual",
+        criteria: { before: Object.fromEntries(Array.from({ length: 14 }, (_, k) => [`V${String(k + 1).padStart(2, "0")}`, { score: s, findings: s < 2 ? ["F-1"] : [] }])) },
+        phases: { before: { total: s === 2 ? 100 : 0 } },
+      });
+      writeFileSync(r43RegBase, JSON.stringify(mkSc(2)));
+      writeFileSync(r43RegCur, JSON.stringify(mkSc(0)));
+      const r43RegPipe = runAuditPipeline({
+        target: r43PipeDir,
+        baselinePath: r43RegBase,
+        currentPath: r43RegCur,
+        sarifPath: r43RegSarif,
+        htmlPath: r43RegHtml,
+      });
+      assert.equal(r43RegPipe.passed, false);
+      assert.ok(r43RegPipe.ciGate.floor >= 1, "R43 A3-H11: regression must increment ciGate.floor");
+      assert.ok(r43RegPipe.ciFindings.some((f) => f.ruleId === "dsaf/regression-detected" && f.tier === "floor"));
+      const r43SarifDoc = JSON.parse(readFileSync(r43RegSarif, "utf8"));
+      assert.ok(r43SarifDoc.runs[0].results.some((r) => r.ruleId === "dsaf/regression-detected"));
+      assert.match(readFileSync(r43RegHtml, "utf8"), /Regression Diff/);
+
+      // Round 44 (R43-A3-M7 external --out SARIF URI, R43-A3-L8 diff operational error, R43-A3-L9 Windows drive paths, R43-A3-L10 stdout flag conflicts):
+      const r44ExtOut = join(scratch, "r44-external-out");
+      const r44ExtSarif = join(scratch, "r44-ext-reg.sarif.json");
+      const r44ExtPipe = runAuditPipeline({
+        target: r43PipeDir,
+        outDir: r44ExtOut,
+        baselinePath: r43RegBase,
+        currentPath: r43RegCur,
+        sarifPath: r44ExtSarif,
+      });
+      const r44RegFinding = r44ExtPipe.ciFindings.find((f) => f.ruleId === "dsaf/regression-detected");
+      assert.equal(r44RegFinding?.file, "audit-diff.md", "R44 A3-M7: regression finding must not emit escaping '../' URI when --out is outside target");
+      const r44ExtSarifDoc = JSON.parse(readFileSync(r44ExtSarif, "utf8"));
+      const r44SarifUri = r44ExtSarifDoc.runs[0].results.find((r) => r.ruleId === "dsaf/regression-detected")?.locations?.[0]?.physicalLocation?.artifactLocation?.uri;
+      assert.ok(r44SarifUri && !r44SarifUri.startsWith(".."), "R44 A3-M7: SARIF URI must not escape target root");
+
+      const r44BadJson = join(scratch, "r44-bad-base.json");
+      writeFileSync(r44BadJson, "{ invalid-json");
+      assert.throws(
+        () => runAuditPipeline({ target: r43PipeDir, baselinePath: r44BadJson, currentPath: r43RegCur }),
+        /invalid JSON/i,
+        "R44 A3-L8: malformed baseline JSON must throw fatal error rather than logging dsaf/regression-detected"
+      );
+      const r44MismatchBase = join(scratch, "r44-mismatch-base.json");
+      writeFileSync(r44MismatchBase, JSON.stringify({ ...mkSc(2), type: "usability" }));
+      assert.throws(
+        () => runAuditPipeline({ target: r43PipeDir, baselinePath: r44MismatchBase, currentPath: r43RegCur }),
+        /differing audit types/i,
+        "R44 A3-L8: mismatched scorecard audit type must throw fatal error rather than logging dsaf/regression-detected"
+      );
+
+      assert.throws(
+        () => runAuditPipeline({ target: r43PipeDir, url: "C:\\missing-r44\\index.html" }),
+        /not found/i,
+        "R44 A3-L9: Windows drive-letter --url must not fail as unsupported URL scheme"
+      );
+      assert.throws(
+        () => runAuditPipeline({ target: r43PipeDir, storybook: "D:/missing-r44/index.json" }),
+        /not found/i,
+        "R44 A3-L9: Windows drive-letter --storybook must not fail as unsupported URL scheme"
+      );
+      assert.throws(
+        () => runAuditPipeline({ target: r43PipeDir, storybook: pathToFileURL(join(scratch, "missing-r45-sb/index.json")).href }),
+        /not found/i,
+        "R45 A3-M4: file:// URL for --storybook must resolve to path check rather than unsupported scheme"
+      );
+
+      const pipeSelfPath = fileURLToPath(import.meta.url);
+      for (const badFlags of [
+        ["--format", "sarif", "--json"],
+        ["--github", "--compact"],
+        ["--format", "json", "--github"],
+      ]) {
+        const resConflict = spawnSync(process.execPath, [pipeSelfPath, r43PipeDir, ...badFlags], { encoding: "utf8" });
+        assert.equal(resConflict.status, 2, `R44 A3-L10: conflicting flags (${badFlags.join(" ")}) must exit 2`);
+      }
     }
 
     console.log("AUDIT_PIPELINE_SELF_TEST_PASSED (recon + scoped tokens + personas + html + figma-diff + SARIF)");
@@ -1592,7 +1792,7 @@ function main() {
       "preview-href": { type: "string" },
       compact: { type: "boolean", default: false },
       json: { type: "boolean", default: false },
-      format: { type: "string", default: "markdown" },
+      format: { type: "string" },
       "self-test": { type: "boolean", default: false },
       help: { type: "boolean", short: "h", default: false },
     },
@@ -1606,7 +1806,16 @@ function main() {
   }
   if (values["self-test"]) process.exit(runSelfTest());
 
-  const cleanFormat = String(values.format || "").toLowerCase();
+  const selectedOutputs = [];
+  if (values.format !== undefined) selectedOutputs.push(`--format=${values.format}`);
+  if (values.json) selectedOutputs.push("--json");
+  if (values.github) selectedOutputs.push("--github");
+  if (values.compact) selectedOutputs.push("--compact");
+  if (selectedOutputs.length > 1) {
+    console.error(`Error: conflicting output format flags (${selectedOutputs.join(", ")}). Choose only one stdout format.`);
+    process.exit(2);
+  }
+  const cleanFormat = String(values.format ?? "markdown").toLowerCase();
   if (!["markdown", "json", "sarif"].includes(cleanFormat)) {
     console.error(`Unsupported --format '${values.format}'. Expected markdown|json|sarif.`);
     process.exit(2);

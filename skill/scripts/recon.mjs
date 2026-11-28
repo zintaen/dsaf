@@ -10,7 +10,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, relative, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { assertWritableOutputFile, isDirectCliEntry, stripCommentsPreservingLines } from "./ci-report.mjs";
@@ -137,10 +137,18 @@ export function hasDesignTokenEvidence(raw) {
 function collectFiles(rootDir, maxFiles = 3500) {
   const files = [];
   const queue = [rootDir];
-  const visitedDirs = new Set();
+  const ciFs = process.platform === "darwin" || process.platform === "win32";
+  const safeReal = (p) => (realpathSync.native || realpathSync)(p);
+  let rootReal = resolve(rootDir);
   try {
-    visitedDirs.add(realpathSync(rootDir));
+    rootReal = safeReal(rootDir);
   } catch {}
+  const normCmp = (p) => (ciFs ? p.toLowerCase() : p);
+  const isWithinRoot = (candReal) => {
+    const r = relative(normCmp(rootReal), normCmp(candReal));
+    return r === "" || (r !== ".." && !r.startsWith(`..${sep}`) && !isAbsolute(r));
+  };
+  const visitedDirs = new Set([normCmp(rootReal)]);
   while (queue.length > 0 && files.length < maxFiles) {
     const dir = queue.shift();
     let entries;
@@ -156,8 +164,11 @@ function collectFiles(rootDir, maxFiles = 3500) {
       const full = join(dir, entry.name);
       let isFile = entry.isFile();
       let isDir = entry.isDirectory();
+      let symReal = null;
       if (entry.isSymbolicLink()) {
         try {
+          symReal = safeReal(full);
+          if (!isWithinRoot(symReal)) continue;
           const st = statSync(full);
           isFile = st.isFile();
           isDir = st.isDirectory();
@@ -172,9 +183,11 @@ function collectFiles(rootDir, maxFiles = 3500) {
         files.push(full);
       } else if (isDir) {
         try {
-          const real = realpathSync(full);
-          if (visitedDirs.has(real)) continue;
-          visitedDirs.add(real);
+          const real = symReal || safeReal(full);
+          if (!isWithinRoot(real)) continue;
+          const realKey = normCmp(real);
+          if (visitedDirs.has(realKey)) continue;
+          visitedDirs.add(realKey);
         } catch {
           continue;
         }
@@ -1012,7 +1025,7 @@ function runSelfTest() {
     assert.equal(analyzeDirectory(r14QVar).counts.cssCustomPropDefsSampled, 0, "Quoted CSS content '--fake: 1' must not inflate cssCustomPropDefsSampled");
 
     const r14SymApp = join(scratch, "r14-sym-app");
-    const r14Shared = join(scratch, "r14-shared-ds");
+    const r14Shared = join(r14SymApp, ".pnpm-store", "shared-ds");
     mkdirSync(join(r14SymApp, "packages"), { recursive: true });
     mkdirSync(join(r14Shared, "components"), { recursive: true });
     writeFileSync(join(r14SymApp, "package.json"), JSON.stringify({ name: "mono-ds", private: true, exports: "./dist/index.js" }));
@@ -1174,6 +1187,20 @@ function runSelfTest() {
     assert.deepEqual(r32WsRes.stack.frameworks, ["react"]);
     assert.deepEqual(r32WsRes.stack.designSystemPackages, []);
     assert.equal(r32WsRes.t2MockRequired, false);
+
+    // Round 43 (R42-A1-M1): symlinks escaping rootDir must be ignored by collectFiles / analyzeDirectory
+    const r43Ext = join(scratch, "r43-ext");
+    const r43Repo = join(scratch, "r43-repo");
+    mkdirSync(r43Ext, { recursive: true });
+    mkdirSync(r43Repo, { recursive: true });
+    writeFileSync(join(r43Ext, ".env.local"), "SUPABASE_URL=https://x.supabase.co\n");
+    writeFileSync(join(r43Ext, "package.json"), JSON.stringify({ dependencies: { "@mui/material": "^5.0.0" } }));
+    writeFileSync(join(r43Repo, "index.html"), "<main><h1>Clean</h1></main>\n");
+    symlinkSync(join(r43Ext, ".env.local"), join(r43Repo, ".env.local"));
+    symlinkSync(r43Ext, join(r43Repo, "ext-dir"));
+    const r43Res = analyzeDirectory(r43Repo);
+    assert.deepEqual(r43Res.cloudEnvKeysDetected, [], "R43 A1-M1: external symlinked .env.local must not leak keys");
+    assert.equal(r43Res.counts.packages, 0, "R43 A1-M1: external symlinked dir must not traverse external package.json");
 
     console.log("RECON_SELF_TEST_PASSED (Mode S/C/P + Surface Modes + @theme + auth/hidden-dir exclusion + URL safety)");
     return 0;

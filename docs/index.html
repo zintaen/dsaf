@@ -66,10 +66,10 @@
           </div>
         </div>
 
-        <aside class="terminal-card" aria-label="One-command quick start">
+        <section class="terminal-card" aria-label="One-command quick start">
           <div class="code-head">
             <span class="badge badge--mono">Quick Start</span>
-            <button type="button" class="copy-btn" data-copy-target="hero-cmd">Copy</button>
+            <button type="button" class="copy-btn" data-copy-target="hero-cmd" aria-label="Copy quick start commands">Copy</button>
           </div>
           <pre tabindex="0" role="region" aria-label="Quick start commands"><code id="hero-cmd"># 1. Scan any project directory
 npx @zintaen/dsaf check .
@@ -80,7 +80,7 @@ npx @zintaen/dsaf setup --agent claude
 # 3. Export an interactive HTML report
 npx @zintaen/dsaf audit . --html report.html</code></pre>
           <p class="terminal-note">Works on Node &ge; 20 with zero runtime dependencies. Playwright checks are optional for live browser audits.</p>
-        </aside>
+        </section>
       </div>
     </section>
 
@@ -123,21 +123,21 @@ npx @zintaen/dsaf audit . --html report.html</code></pre>
         </div>
 
         <div role="tablist" class="tab-list" focusgroup="tablist nomemory" aria-label="DSAF workflows">
-          <button type="button" role="tab" id="tab-check" aria-selected="true" focusgroupstart>Quick Check</button>
-          <button type="button" role="tab" id="tab-agent" aria-selected="false">AI Agents &amp; MCP</button>
-          <button type="button" role="tab" id="tab-ci" aria-selected="false">GitHub CI Gate</button>
-          <button type="button" role="tab" id="tab-fix" aria-selected="false">Fix &amp; Auto-Update</button>
+          <button type="button" role="tab" id="tab-check" aria-selected="true" aria-controls="panel-check" tabindex="0" focusgroupstart>Quick Check</button>
+          <button type="button" role="tab" id="tab-agent" aria-selected="false" aria-controls="panel-agent" tabindex="-1">AI Agents &amp; MCP</button>
+          <button type="button" role="tab" id="tab-ci" aria-selected="false" aria-controls="panel-ci" tabindex="-1">GitHub CI Gate</button>
+          <button type="button" role="tab" id="tab-fix" aria-selected="false" aria-controls="panel-fix" tabindex="-1">Fix &amp; Auto-Update</button>
         </div>
 
         <div class="panels-stack">
-          <div role="tabpanel" aria-labelledby="tab-check">
+          <div role="tabpanel" id="panel-check" aria-labelledby="tab-check">
             <div class="panel-card">
               <h3>Audit any folder in one command</h3>
               <p>Shows Floor blockers, Reflex warnings, token compliance %, and impacted user personas — or renders a shareable offline HTML file.</p>
               <div class="code-block">
                 <div class="code-head">
                   <span class="badge badge--mono">Terminal</span>
-                  <button type="button" class="copy-btn" data-copy-target="cmd-check">Copy</button>
+                  <button type="button" class="copy-btn" data-copy-target="cmd-check" aria-label="Copy quick check commands">Copy</button>
                 </div>
                 <pre tabindex="0" role="region" aria-label="Quick check CLI commands"><code id="cmd-check">npx @zintaen/dsaf check .
 npx @zintaen/dsaf audit . --html audit-report.html --out ./audit-output
@@ -147,14 +147,14 @@ npx @zintaen/dsaf runtime https://your-site.example.com --live</code></pre>
             </div>
           </div>
 
-          <div role="tabpanel" aria-labelledby="tab-agent" hidden="until-found">
+          <div role="tabpanel" id="panel-agent" aria-labelledby="tab-agent" hidden="until-found">
             <div class="panel-card">
               <h3>One command for Skill + MCP integration</h3>
-              <p><code>dsaf setup</code> copies the portable audit skill and registers the 8-tool read-only MCP server without overwriting your existing config.</p>
+              <p><code>dsaf setup</code> copies the portable audit skill and registers the 8-tool MCP server (read-only on project files unless <code>dsaf_audit</code> receives <code>outDir</code>; <code>dsaf_doctor</code> updates <code>~/.dsaf/update-check.json</code> unless offline) without overwriting your existing config.</p>
               <div class="code-block">
                 <div class="code-head">
                   <span class="badge badge--mono">Setup &amp; MCP</span>
-                  <button type="button" class="copy-btn" data-copy-target="cmd-agent">Copy</button>
+                  <button type="button" class="copy-btn" data-copy-target="cmd-agent" aria-label="Copy agent setup and MCP commands">Copy</button>
                 </div>
                 <pre tabindex="0" role="region" aria-label="Agent skill and MCP setup commands"><code id="cmd-agent"># Claude, Cursor, Codex, Antigravity, or all at once
 npx @zintaen/dsaf setup --agent all --scope user
@@ -165,14 +165,14 @@ npx @zintaen/dsaf mcp install --agent cursor --scope project</code></pre>
             </div>
           </div>
 
-          <div role="tabpanel" aria-labelledby="tab-ci" hidden="until-found">
+          <div role="tabpanel" id="panel-ci" aria-labelledby="tab-ci" hidden="until-found">
             <div class="panel-card">
               <h3>Block accessibility &amp; CSS regressions on PRs</h3>
               <p>Uploads SARIF 2.1.0 alerts to GitHub Code Scanning and posts a sticky persona-impact summary comment on every pull request.</p>
               <div class="code-block">
                 <div class="code-head">
                   <span class="badge badge--mono">.github/workflows/dsaf-gate.yml</span>
-                  <button type="button" class="copy-btn" data-copy-target="cmd-ci">Copy</button>
+                  <button type="button" class="copy-btn" data-copy-target="cmd-ci" aria-label="Copy GitHub Actions DSAF workflow">Copy</button>
                 </div>
                 <pre tabindex="0" role="region" aria-label="GitHub Actions DSAF workflow"><code id="cmd-ci">name: DSAF Gate
 on: [pull_request]
@@ -195,14 +195,14 @@ jobs:
             </div>
           </div>
 
-          <div role="tabpanel" aria-labelledby="tab-fix" hidden="until-found">
+          <div role="tabpanel" id="panel-fix" aria-labelledby="tab-fix" hidden="until-found">
             <div class="panel-card">
               <h3>Safe fixes, CI guardrails &amp; automatic updates</h3>
-              <p>Preview safe CSS fixes with <code>dsaf fix --dry-run</code>, wire edit-time hooks and GitHub workflows with <code>dsaf setup</code>, or keep external repos synced weekly via <code>dsaf update</code>.</p>
+              <p>Preview safe CSS fixes with <code>dsaf fix src --dry-run</code>, wire edit-time hooks and GitHub workflows with <code>dsaf setup</code>, or keep external repos synced weekly via <code>dsaf update</code>.</p>
               <div class="code-block">
                 <div class="code-head">
                   <span class="badge badge--mono">Fix, Setup &amp; Update</span>
-                  <button type="button" class="copy-btn" data-copy-target="cmd-fix">Copy</button>
+                  <button type="button" class="copy-btn" data-copy-target="cmd-fix" aria-label="Copy fix, setup, and update commands">Copy</button>
                 </div>
                 <pre tabindex="0" role="region" aria-label="Fix, setup, and update CLI commands"><code id="cmd-fix">npx @zintaen/dsaf fix src --dry-run
 npx @zintaen/dsaf fix src --apply --backup
@@ -280,6 +280,7 @@ npx @zintaen/dsaf update .</code></pre>
         </div>
       </div>
     </section>
+    <div id="copy-status" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
   </main>
 
   <footer class="site-footer">

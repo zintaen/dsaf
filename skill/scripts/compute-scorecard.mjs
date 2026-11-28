@@ -125,8 +125,9 @@ function resolveWeights(pillars, presets, profile, customWeights) {
   const trimmedProfile = typeof profile === "string" ? profile.trim() : "";
   const name = hasCustom ? trimmedProfile || "custom" : trimmedProfile || "balanced";
   const hasPreset = !customWeights && Object.prototype.hasOwnProperty.call(presets, name);
+  const normZero = (v) => (typeof v === "number" && v === 0 ? 0 : v);
   const weights = customWeights
-    ? Object.fromEntries(Object.entries(customWeights).map(([k, v]) => [k, v]))
+    ? Object.fromEntries(Object.entries(customWeights).map(([k, v]) => [k, normZero(v)]))
     : hasPreset
     ? { ...presets[name] }
     : {};
@@ -179,7 +180,8 @@ function validateBands(phaseName, cid, bands, score) {
   if (score === 2 && rawArt === 0 && rawVer === 0) {
     throw new ScorecardError(`${phaseName}.${cid} has score 2 from prose alone (artifacts=0, verification=0). 3-band cap restricts prose-only evidence to <= 1.`);
   }
-  return { prose: rawProse, artifacts: rawArt, verification: rawVer };
+  const normZero = (v) => (typeof v === "number" && v === 0 ? 0 : v);
+  return { prose: normZero(rawProse), artifacts: normZero(rawArt), verification: normZero(rawVer) };
 }
 
 function validatePhaseScores(auditType, phaseName, scores, validIds, findingSeverities, requireAll) {
@@ -196,7 +198,7 @@ function validatePhaseScores(auditType, phaseName, scores, validIds, findingSeve
 
   const normalized = {};
   for (const [cid, entry] of Object.entries(scores)) {
-    if (!entry || typeof entry !== "object" || !("score" in entry)) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry) || !("score" in entry)) {
       throw new ScorecardError(`${phaseName}.${cid} must be an object with 'score'.`);
     }
     const raw = entry.score;
@@ -296,6 +298,31 @@ function validatePhaseScores(auditType, phaseName, scores, validIds, findingSeve
   return normalized;
 }
 
+function validateMergedSystemBands(auditType, phaseName, scores, { requireAllPositiveIfBands = false } = {}) {
+  if (auditType !== "system") return;
+  const entries = Object.entries(scores);
+  const anyBands = entries.some(([, e]) => e && e.bands !== null);
+  if (!anyBands) return;
+  const missingPassBands = entries
+    .filter(([, e]) => e && e.score === 2 && e.bands === null)
+    .map(([cid]) => cid);
+  if (missingPassBands.length > 0) {
+    throw new ScorecardError(
+      `Phase '${phaseName}' has score 2 without 3-band 'bands' evidence on system criterion(s): ${missingPassBands.join(", ")}.`
+    );
+  }
+  if (requireAllPositiveIfBands) {
+    const missingPosBands = entries
+      .filter(([, e]) => e && e.score !== "N/A" && e.score > 0 && e.bands === null)
+      .map(([cid]) => cid);
+    if (missingPosBands.length > 0) {
+      throw new ScorecardError(
+        `Phase '${phaseName}' introduces 3-band 'bands' on an audit whose 'before' phase had no bands, leaving positive criterion(s) without bands: ${missingPosBands.join(", ")}.`
+      );
+    }
+  }
+}
+
 function validateCrossPhaseConsistency(phaseName, beforeScores, afterScores, allowedNewFindings) {
   const beforeFids = new Set(Object.values(beforeScores).flatMap((e) => e.findings));
   const afterFids = new Set(Object.values(afterScores).flatMap((e) => e.findings));
@@ -333,17 +360,18 @@ function gradeFor(auditType, total, blockers) {
 }
 
 function evaluatePhase(auditType, pillars, weights, scores, blockers) {
+  const normZero = (v) => (typeof v === "number" && v === 0 ? 0 : v);
   const pillarResults = [];
   let scoredWeightSum = 0;
   let weightedPointsSum = 0;
 
   for (const [pid, name, cids] of pillars) {
-    const w = weights[pid];
+    const w = normZero(weights[pid]);
     const numeric = cids.map((cid) => scores[cid].score).filter((s) => s !== "N/A");
     const maxRaw = 2 * numeric.length;
     const rawSum = numeric.reduce((a, b) => a + b, 0);
-    const pct = maxRaw > 0 ? Number(((rawSum / maxRaw) * 100).toFixed(2)) : null;
-    const contrib = maxRaw > 0 ? Number(((rawSum / maxRaw) * w).toFixed(2)) : null;
+    const pct = maxRaw > 0 ? normZero(Number(((rawSum / maxRaw) * 100).toFixed(2))) : null;
+    const contrib = maxRaw > 0 ? normZero(Number(((rawSum / maxRaw) * w).toFixed(2))) : null;
     if (maxRaw > 0) {
       scoredWeightSum += w;
       weightedPointsSum += (rawSum / maxRaw) * w;
@@ -356,24 +384,32 @@ function evaluatePhase(auditType, pillars, weights, scores, blockers) {
   for (let i = 0; i < pillars.length; i++) {
     const [, , cids] = pillars[i];
     const p = pillarResults[i];
-    const exactStep = p.max_raw > 0 ? (p.weight / p.max_raw) * normFactor : null;
-    const ptsPerStep = exactStep != null ? Number(exactStep.toFixed(2)) : null;
+    const rawExactStep = p.max_raw > 0 ? (p.weight / p.max_raw) * normFactor : null;
+    const exactStep = normZero(rawExactStep);
+    const ptsPerStep = exactStep != null ? normZero(Number(exactStep.toFixed(2))) : null;
     p.pts_per_step = ptsPerStep;
     for (const cid of cids) {
-      criterionUnitPoints[cid] = scores[cid].score === "N/A" ? { exact_step: null, pts_per_step: null, max_pts: null } : { exact_step: exactStep, pts_per_step: ptsPerStep, max_pts: Number((2 * exactStep).toFixed(2)) };
+      criterionUnitPoints[cid] =
+        scores[cid].score === "N/A"
+          ? { exact_step: null, pts_per_step: null, max_pts: null }
+          : { exact_step: exactStep, pts_per_step: ptsPerStep, max_pts: normZero(Number((2 * exactStep).toFixed(2))) };
     }
   }
 
-  let total = scoredWeightSum > 0 ? Number((weightedPointsSum * normFactor).toFixed(2)) : null;
+  let total = scoredWeightSum > 0 ? normZero(Number((weightedPointsSum * normFactor).toFixed(2))) : null;
   let proseOnlyCapped = false;
   if (auditType === "system" && total !== null) {
     const positiveEntries = Object.values(scores).filter((e) => e && e.score !== "N/A" && e.score > 0);
+    const hasAnyBands = Object.values(scores).some((e) => e && e.bands !== null);
     const hasProseCapTrigger =
+      hasAnyBands &&
       positiveEntries.length > 0 &&
-      positiveEntries.every((e) => e.bands !== null && e.bands.artifacts === 0 && e.bands.verification === 0);
+      positiveEntries.every((e) => e.bands === null || (e.bands.artifacts === 0 && e.bands.verification === 0));
     if (hasProseCapTrigger) {
-      proseOnlyCapped = true;
-      if (total > 39.9) total = 39.9;
+      if (total > 39.9) {
+        proseOnlyCapped = true;
+        total = 39.9;
+      }
     }
   }
   return {
@@ -527,6 +563,8 @@ export function compute(payload) {
   if (!payload.before) throw new ScorecardError("Input JSON must include 'before'.");
 
   const beforeScores = validatePhaseScores(auditType, "before", payload.before, validIds, findingSeverities, true);
+  validateMergedSystemBands(auditType, "before", beforeScores);
+  const beforeHasBands = Object.values(beforeScores).some((e) => e && e.bands !== null);
   const blockersMap = parseHardFloorBlockers(payload.hard_floor_blockers);
   const getBlockers = (k) => blockersMap[k] || [];
   const beforeBlockers = deriveHardFloorBlockers(auditType, beforeScores, findingSeverities, getBlockers("before"));
@@ -544,6 +582,7 @@ export function compute(payload) {
       if (Object.keys(phaseVal).length > 0) {
       const overrides = validatePhaseScores(auditType, key, payload[key], validIds, findingSeverities, false);
       const merged = { ...beforeScores, ...overrides };
+      validateMergedSystemBands(auditType, key, merged, { requireAllPositiveIfBands: !beforeHasBands });
       const beforeBlockerSet = new Set(beforeBlockers);
       const hardFloorSet = new Set(HARD_FLOOR_CRITERIA[auditType] || []);
       for (const cid of validIds) {
@@ -1235,6 +1274,135 @@ function runSelfTest() {
   }
   const r40NzRes = compute({ type: "visual", before: r40NegZero });
   assert.ok(Object.is(r40NzRes.criteria.before.V01.score, 0), "R40 A4-L2: normalized score must be +0 rather than -0");
+
+  // Round 41 (R40-A4-L1 custom_weights & bands -0 normalization; R40-A4-L2 array entry rejection):
+  const r41WeightRes = compute({
+    type: "visual",
+    custom_weights: { P1: 20, P2: 20, P3: 20, P4: 20, P5: 20, P6: -0 },
+    before: cleanVisualBefore,
+  });
+  assert.ok(Object.is(r41WeightRes.weights.P6, 0), "R41 A4-L1: -0 in custom_weights must normalize to +0");
+  assert.ok(Object.is(r41WeightRes.phases.before.pillars.find((p) => p.id === "P6").weight, 0));
+  const r41ArrEntry = Object.assign([], { score: 1, findings: ["F-01"] });
+  assert.throws(
+    () => compute({ type: "visual", before: { ...cleanVisualBefore, V01: r41ArrEntry } }),
+    /must be an object with 'score'/i,
+    "R41 A4-L2: Array criterion entry with .score must be rejected"
+  );
+  const r41BandsZero = compute({
+    type: "system",
+    before: Object.fromEntries(
+      Object.keys(sysBase).map((c) => [c, { score: 1, findings: ["F-01"], bands: { prose: -0, artifacts: 20, verification: -0 } }])
+    ),
+  });
+  assert.ok(Object.is(r41BandsZero.criteria.before.DS01.bands.prose, 0), "R41 A4-L1: bands.prose -0 must normalize to +0");
+  assert.ok(Object.is(r41BandsZero.criteria.before.DS01.bands.verification, 0), "R41 A4-L1: bands.verification -0 must normalize to +0");
+
+  // Round 43 (R42-A4-L6 proseOnlyCapped only when score exceeds 39.9):
+  const r43LowProse = compute({
+    type: "system",
+    before: Object.fromEntries(
+      Object.keys(sysBase).map((c, idx) => [
+        c,
+        idx === 0
+          ? { score: 1, findings: ["F-01"], bands: { prose: 20, artifacts: 0, verification: 0 } }
+          : { score: 0, findings: ["F-01"], bands: { prose: 0, artifacts: 0, verification: 0 } },
+      ])
+    ),
+  });
+  assert.ok(r43LowProse.phases.before.total <= 39.9);
+  assert.equal(r43LowProse.phases.before.prose_only_capped, undefined, "R43 A4-L6: score <= 39.9 must not be flagged prose_only_capped");
+
+  // Round 46 (R45 A4-M2 partial omitted bands must not bypass 3-band validation / prose_only_capped):
+  assert.throws(
+    () =>
+      compute({
+        type: "system",
+        before: Object.fromEntries(
+          sIds.map((c, idx) => [
+            c,
+            idx < 11
+              ? { score: 1, findings: ["F-PROSE"], bands: { prose: 40, artifacts: 0, verification: 0 } }
+              : { score: 2, findings: [] },
+          ])
+        ),
+      }),
+    /score 2 without 3-band 'bands'/i,
+    "R46 A4-M2: omitting bands on score=2 DS12 while siblings supply bands must throw"
+  );
+  const r46PartialOmitProse = compute({
+    type: "system",
+    before: Object.fromEntries(
+      sIds.map((c, idx) => [
+        c,
+        idx < 11
+          ? { score: 1, findings: ["F-PROSE"], bands: { prose: 40, artifacts: 0, verification: 0 } }
+          : { score: 1, findings: ["F-PROSE"] },
+      ])
+    ),
+  });
+  assert.equal(r46PartialOmitProse.phases.before.prose_only_capped, true, "R46 A4-M2: omitting bands on score=1 DS12 must not disarm prose cap");
+  assert.equal(r46PartialOmitProse.phases.before.total, 39.9);
+  assert.match(r46PartialOmitProse.phases.before.grade, /^L1\b/);
+  const r46ZeroOmitBands = compute({
+    type: "system",
+    before: Object.fromEntries(
+      sIds.map((c, idx) => [
+        c,
+        idx < 11
+          ? { score: 1, findings: ["F-PROSE"], bands: { prose: 40, artifacts: 0, verification: 0 } }
+          : { score: 0, findings: ["F-PROSE"] },
+      ])
+    ),
+  });
+  assert.equal(r46ZeroOmitBands.phases.before.prose_only_capped, true, "R46 A4-M2: score=0 omitting bands stays allowed and prose cap triggers");
+
+  // Round 47 (A4-H1 validate 3-band evidence AFTER merging after_track_a / after_track_b overrides):
+  assert.throws(
+    () =>
+      compute({
+        type: "system",
+        before: Object.fromEntries(
+          sIds.map((c, idx) => [
+            c,
+            idx === 0
+              ? { score: 0, findings: ["F-01"] }
+              : { score: 2, findings: [], bands: { prose: 20, artifacts: 30, verification: 15 } },
+          ])
+        ),
+        after_track_a: {
+          DS01: { score: 2, findings: [] },
+        },
+      }),
+    /score 2 without 3-band 'bands'/i,
+    "R47 A4-H1: after_track_a upgrade to score=2 without bands when merged must throw"
+  );
+  assert.throws(
+    () =>
+      compute({
+        type: "system",
+        before: Object.fromEntries(sIds.map((c) => [c, { score: 1, findings: ["F-01"] }])),
+        after_track_a: {
+          DS01: { score: 1, findings: ["F-01"], bands: { prose: 20, artifacts: 0, verification: 0 } },
+        },
+      }),
+    /introduces 3-band 'bands'/i,
+    "R47 A4-H1: after_track_a adding bands on one criterion when before had no bands must throw instead of falsely capping"
+  );
+  assert.throws(
+    () =>
+      compute({
+        type: "system",
+        before: Object.fromEntries(
+          sIds.map((c, idx) => [c, idx === 0 ? { score: 1, findings: ["F-01"] } : { score: 2, findings: [] }])
+        ),
+        after_track_b: {
+          DS01: { score: 1, findings: ["F-01"], bands: { prose: 20, artifacts: 0, verification: 0 } },
+        },
+      }),
+    /score 2 without 3-band 'bands'/i,
+    "R47 A4-H1: after_track_b introducing bands while merged score=2 lacks bands must throw"
+  );
 
   console.log("COMPUTE_SCORECARD_SELF_TEST_PASSED (usability + visual + system 3-band cap + blocker + cross-phase + waivers)");
   return 0;

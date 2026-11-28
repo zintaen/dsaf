@@ -59,6 +59,9 @@ function listAllFiles(dir) {
   for (const e of readdirSync(dir, { withFileTypes: true })) {
     if (e.name === ".DS_Store" || e.name === "node_modules") continue;
     const full = join(dir, e.name);
+    if (e.isSymbolicLink()) {
+      throw new Error(`Symlinks are not permitted inside Tier 1 skill/ payload: ${relative(SKILL_DIR, full)}`);
+    }
     if (e.isDirectory()) out.push(...listAllFiles(full));
     else out.push(full);
   }
@@ -125,7 +128,13 @@ function main() {
   }
 
   console.log("==> [2/4] Checking markdown links & Canonical Preview Shell contract...");
-  const files = listAllFiles(SKILL_DIR);
+  let files;
+  try {
+    files = listAllFiles(SKILL_DIR);
+  } catch (err) {
+    console.error(`ERROR: ${err instanceof Error ? err.message : String(err)}`);
+    process.exit(1);
+  }
   const mdFiles = files.filter((f) => f.endsWith(".md"));
   const linkErrors = checkLinks(mdFiles);
   if (linkErrors.length > 0) {

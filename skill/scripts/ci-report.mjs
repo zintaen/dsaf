@@ -94,6 +94,13 @@ export const RULE_CATALOG = {
     shortDescription: "Live runtime accessibility, layout, or contrast check failed.",
     help: "Inspect Playwright runtime output (APCA/WCAG, overflow, hit areas, axe-core) and fix Floor failures.",
   },
+  "dsaf/regression-detected": {
+    id: "dsaf/regression-detected",
+    tier: "floor",
+    defaultLevel: "error",
+    shortDescription: "Audit scorecard regressed against baseline.",
+    help: "Resolve scorecard or floor regressions reported in audit-diff before merging.",
+  },
 
   // Reflex tier — waivable on the record with concrete reason >= 12 chars
   "dsaf/hardcoded-color": {
@@ -403,55 +410,8 @@ export function findSvgBlockRanges(src, options = {}) {
   if (!/<svg(?=[\s/>])/i.test(s)) return [];
   const BT = "`";
   const ranges = [];
-  const findBraceEnd = (openIdx) => {
-    let d = 1;
-    let i = openIdx + 1;
-    let q = null;
-    let lastSig = "{";
-    const parenStack = [];
-    while (i < s.length) {
-      const c = s[i];
-      if (q) {
-        if (c === "\\" && i + 1 < s.length) i += 2;
-        else {
-          if (q === BT && c === "$" && s[i + 1] === "{") {
-            const sub = findBraceEnd(i + 1);
-            if (sub !== -1) { i = sub + 1; lastSig = "}"; continue; }
-          }
-          if (c === q) {
-            q = null;
-            lastSig = c;
-          }
-          i++;
-        }
-        continue;
-      }
-      const reEnd = skipJsRegexInExpr(s, i, lastSig, openIdx + 1);
-      if (reEnd !== -1) {
-        i = reEnd;
-        lastSig = "/";
-        continue;
-      }
-      if (c === '"' || c === "'" || c === BT) q = c;
-      else if (c === "(") {
-        parenStack.push(/(?:^|[^\w$])(?:if|while|for|with)\s*$/.test(s.slice(Math.max(openIdx + 1, i - 16), i)));
-        lastSig = "(";
-      } else if (c === ")") {
-        lastSig = parenStack.length > 0 && parenStack.pop() ? "control)" : ")";
-      } else if (c === "{") {
-        d++;
-        lastSig = "{";
-      } else if (c === "}") {
-        d--;
-        if (d === 0) return i;
-        lastSig = "}";
-      } else if (!/\s/.test(c)) {
-        lastSig = c;
-      }
-      i++;
-    }
-    return -1;
-  };
+  const allowSvgJsx = !options?.isMarkupSfc || Boolean(options?.braceExprs);
+  const findBraceEnd = (openIdx) => findBalancedDelimEndSimple(s, openIdx, "{", "}", allowSvgJsx);
   const scanOpenSvgEnd = (openStart) => {
     let i = openStart + 4;
     let q = null;
@@ -928,7 +888,7 @@ function inspectIncompleteOpenTagPrefix(s, ltIdx = 0, allowGenerics = true) {
       continue;
     }
     if (c === "{") {
-      const be = findBalancedDelimEndSimple(s, j, "{", "}");
+      const be = findBalancedDelimEndSimple(s, j, "{", "}", allowGenerics);
       if (be === -1) {
         return { incomplete: true, exprStart: inSfcBracket ? -1 : j + 1 };
       }
@@ -2450,20 +2410,168 @@ export function blankCssCustomPropDeclsPreservingLines(cssSlice, opts = {}) {
   return chars.join("");
 }
 
-function findBalancedDelimEndSimple(s, openIdx, openCh, closeCh) {
+export function findHardcodedColorFunctions(src) {
+  const s = String(src || "");
+  const out = [];
+  const headRe = /\b(rgba?|hsla?|hwb|lch|oklch|lab|oklab|color-mix|color)\(/gi;
+  let cursor = 0;
+  let m;
+  while ((m = headRe.exec(s)) !== null) {
+    if (m.index < cursor) continue;
+    const prev = m.index > 0 ? s[m.index - 1] : "";
+    if (prev === "." || prev === "$" || prev === "-") continue;
+    const fnName = m[1].toLowerCase();
+    const openIdx = m.index + m[0].length - 1;
+    let depth = 1;
+    let q = null;
+    let i = openIdx + 1;
+    let aborted = false;
+    const hardStop = Math.min(s.length, openIdx + 512);
+    while (i < hardStop && depth > 0) {
+      const ch = s[i];
+      if (q) {
+        if (ch === "\\" && i + 1 < hardStop) {
+          i += 2;
+          continue;
+        }
+        if (ch === q || ch === "\n") q = null;
+        i++;
+        continue;
+      }
+      if (ch === '"' || ch === "'") {
+        q = ch;
+        i++;
+        continue;
+      }
+      if (ch === ";" || ch === "{" || ch === "}" || ch === "<" || ch === ">") {
+        aborted = true;
+        break;
+      }
+      if (ch === "(") depth++;
+      else if (ch === ")") depth--;
+      i++;
+    }
+    if (aborted || depth !== 0) {
+      cursor = openIdx + 1;
+      headRe.lastIndex = cursor;
+      continue;
+    }
+    const full = s.slice(m.index, i);
+    const inner = s.slice(openIdx + 1, i - 1).trim();
+    cursor = i;
+    headRe.lastIndex = cursor;
+    if (!inner || /^["']/.test(inner)) continue;
+    if (fnName === "color") {
+      if (!/^(?:srgb|srgb-linear|display-p3(?:-linear)?|a98-rgb|prophoto-rgb|rec2020|xyz(?:-d50|-d65)?|--[a-z0-9_-]+)\s+(?=[\d.+-]|none\b|(?:calc|min|max|clamp|var)\()/i.test(inner)) {
+        continue;
+      }
+    } else if (fnName === "color-mix") {
+      if (!/^in\s+[a-z0-9-]+\b/i.test(inner) || !inner.includes(",")) {
+        continue;
+      }
+    } else if (!/(?:\d|from\s+|none\b|calc\(|var\()/i.test(inner)) {
+      continue;
+    }
+    out.push({ index: m.index, text: full });
+  }
+  return out;
+}
+
+export function isTokenizedColorFn(fnText) {
+  return /\bvar\(\s*--/i.test(fnText);
+}
+
+function isJsxStartAllowedAt(src, ltIdx, lastSig, minStart = 0) {
+  if (lastSig === "" || lastSig === "control)") return true;
+  const pre96 = src.slice(Math.max(minStart, ltIdx - 96), ltIdx);
+  if (lastSig === ">") {
+    return /(?:=>|\/>|<\/[A-Za-z0-9_.:-]*\s*>)\s*$/.test(pre96);
+  }
+  if (lastSig === "+" || lastSig === "-") {
+    const preTrim = pre96.trimEnd();
+    if (preTrim.endsWith("++") || preTrim.endsWith("--")) return false;
+    return lastSig === "+";
+  }
+  if (lastSig === "!") {
+    const beforeBang = pre96.trimEnd().replace(/!+\s*$/, "").trimEnd();
+    if (
+      beforeBang &&
+      /[A-Za-z0-9_$\])'"`]$/.test(beforeBang) &&
+      !/(?:^|[^\w$.])(?:return|case|throw|else|default|yield|await|void|typeof|in|of|instanceof|new|delete)$/.test(beforeBang)
+    ) {
+      return false;
+    }
+    return true;
+  }
+  if (/[=([,:;?&|{}]/.test(lastSig)) return true;
+  return /(?:^|[^\w$.])(?:return|case|throw|else|default|yield|await|void)\s*$|=>\s*$/.test(
+    src.slice(Math.max(minStart, ltIdx - 24), ltIdx)
+  );
+}
+
+function findBalancedDelimEndSimple(s, openIdx, openCh, closeCh, allowJsx = false) {
   let depth = 1;
   let quote = null;
   let lastSig = openCh;
   const parenStack = [];
+  const jsxStack = [];
   for (let i = openIdx + 1; i < s.length; i++) {
     const ch = s[i];
+    if (jsxStack.length > 0) {
+      if (ch === "{") {
+        const sub = findBalancedDelimEndSimple(s, i, "{", "}", true);
+        if (sub === -1) return -1;
+        i = sub;
+        lastSig = "}";
+        continue;
+      }
+      if (ch === "<" && s[i + 1] === "/") {
+        const closeM = /^<\/([A-Za-z][A-Za-z0-9_.:-]*)?\s*>/.exec(s.slice(i, Math.min(s.length, i + 80)));
+        if (closeM) {
+          const cTag = (closeM[1] || "").toLowerCase();
+          if (!cTag) jsxStack.pop();
+          else {
+            for (let k = jsxStack.length - 1; k >= 0; k--) {
+              if (jsxStack[k] === cTag) {
+                jsxStack.length = k;
+                break;
+              }
+            }
+          }
+          i += closeM[0].length - 1;
+          if (jsxStack.length === 0) lastSig = ">";
+          continue;
+        }
+      }
+      if (ch === "<" && s.startsWith("<!--", i)) {
+        const ce = s.indexOf("-->", i + 4);
+        if (ce === -1) return -1;
+        i = ce + 2;
+        continue;
+      }
+      if (ch === "<") {
+        if (s.startsWith("<>", i)) {
+          jsxStack.push("");
+          i += 1;
+          continue;
+        }
+        const tagObj = parseMarkupOpenTagCore(s, i, true);
+        if (tagObj) {
+          const isVoidHtml = /^[a-z]/.test(s[i + 1] || "") && VOID_HTML_TAGS.has(tagObj.tag);
+          if (!tagObj.selfClosing && !isVoidHtml) jsxStack.push(tagObj.tag);
+          i = tagObj.end - 1;
+          continue;
+        }
+      }
+      continue;
+    }
     if (quote) {
       if (ch === "\\" && i + 1 < s.length) {
         i++;
         continue;
       }
       if (quote === "`" && ch === "$" && s[i + 1] === "{") {
-        const subEnd = findBalancedDelimEndSimple(s, i + 1, "{", "}");
+        const subEnd = findBalancedDelimEndSimple(s, i + 1, "{", "}", allowJsx);
         if (subEnd === -1) return -1;
         i = subEnd;
         lastSig = "}";
@@ -2475,11 +2583,38 @@ function findBalancedDelimEndSimple(s, openIdx, openCh, closeCh) {
       }
       continue;
     }
+    if (ch === "/" && s[i + 1] === "*") {
+      const ce = s.indexOf("*/", i + 2);
+      if (ce === -1) return -1;
+      i = ce + 1;
+      continue;
+    }
+    if (ch === "/" && s[i + 1] === "/") {
+      const nl = s.indexOf("\n", i + 2);
+      if (nl === -1) return -1;
+      i = nl;
+      continue;
+    }
     const reEnd = skipJsRegexInExpr(s, i, lastSig, openIdx + 1);
     if (reEnd !== -1) {
       i = reEnd - 1;
       lastSig = "/";
       continue;
+    }
+    if (allowJsx && ch === "<" && isJsxStartAllowedAt(s, i, lastSig, openIdx + 1)) {
+      if (s.startsWith("<>", i)) {
+        jsxStack.push("");
+        i += 1;
+        continue;
+      }
+      const tagObj = parseMarkupOpenTagCore(s, i, true);
+      if (tagObj) {
+        const isVoidHtml = /^[a-z]/.test(s[i + 1] || "") && VOID_HTML_TAGS.has(tagObj.tag);
+        if (!tagObj.selfClosing && !isVoidHtml) jsxStack.push(tagObj.tag);
+        else lastSig = ">";
+        i = tagObj.end - 1;
+        continue;
+      }
     }
     if (ch === '"' || ch === "'" || ch === "`") quote = ch;
     else if (ch === "(") {
@@ -2566,6 +2701,7 @@ function copyStringLiteralsPreservingLines(s, start, end, copySpan) {
   let i = start;
   let quote = null;
   let skipQuote = false;
+  let isObjKeyQuote = false;
   let segStart = start;
   let lastSig = "{";
   const parenStack = [];
@@ -2577,6 +2713,7 @@ function copyStringLiteralsPreservingLines(s, start, end, copySpan) {
   while (i < end) {
     const ch = s[i];
     const next = i + 1 < end ? s[i + 1] : "";
+    const topEntry = braceEntries[braceEntries.length - 1];
     if (quote) {
       if (ch === "\\" && i + 1 < end) {
         i += 2;
@@ -2589,18 +2726,36 @@ function copyStringLiteralsPreservingLines(s, start, end, copySpan) {
         braceEntries.push({ entryStart: i + 2, p: 0, b: 0 });
         quote = null;
         skipQuote = false;
+        isObjKeyQuote = false;
         lastSig = "{";
         i += 2;
         continue;
       }
       if (ch === quote || (quote !== "`" && ch === "\n")) {
         const isCompRhsCompare = ch === quote && findTrailingCompEq(i + 1);
-        if (!skipQuote && !isCompRhsCompare) copySpan(segStart, i);
+        const isObjKey =
+          ch === quote &&
+          isObjKeyQuote &&
+          (topEntry.b === 0
+            ? /^[ \t\r\n]*:(?!:)/.test(s.slice(i + 1, Math.min(end, i + 16)))
+            : /^[ \t\r\n]*\][ \t\r\n]*:(?!:)/.test(s.slice(i + 1, Math.min(end, i + 24))));
+        if (!skipQuote && !isCompRhsCompare && !isObjKey) copySpan(segStart, i);
         if (ch !== "\n") lastSig = ch;
         quote = null;
         skipQuote = false;
+        isObjKeyQuote = false;
       }
       i++;
+      continue;
+    }
+    if (ch === "/" && next === "*") {
+      const ce = s.indexOf("*/", i + 2);
+      i = ce === -1 || ce + 2 > end ? end : ce + 2;
+      continue;
+    }
+    if (ch === "/" && next === "/") {
+      const nl = s.indexOf("\n", i + 2);
+      i = nl === -1 || nl + 1 > end ? end : nl + 1;
       continue;
     }
     const reEnd = skipJsRegexInExpr(s, i, lastSig, start);
@@ -2609,7 +2764,6 @@ function copyStringLiteralsPreservingLines(s, start, end, copySpan) {
       lastSig = "/";
       continue;
     }
-    const topEntry = braceEntries[braceEntries.length - 1];
     if (ch === "`" && isCssTaggedTemplateAt(s, i, start)) {
       let tk = i + 1;
       while (tk < end) {
@@ -2640,6 +2794,9 @@ function copyStringLiteralsPreservingLines(s, start, end, copySpan) {
       const entryPfx = s.slice(topEntry.entryStart, i);
       const beforeQuote = s.slice(Math.max(start, i - 16), i).replace(/[ \t\r\n]+$/, "");
       const isCompLhsCompare = /(?:===?|!==?)$/.test(beforeQuote);
+      isObjKeyQuote =
+        (topEntry.p === 0 && topEntry.b === 0 && /^\s*$/.test(entryPfx)) ||
+        (topEntry.p === 0 && topEntry.b === 1 && /^\s*\[\s*$/.test(entryPfx));
       skipQuote =
         tplSkips.some(Boolean) ||
         /^\s*(?:["']content["']|content)\s*:/i.test(entryPfx) ||
@@ -2673,6 +2830,7 @@ function copyStringLiteralsPreservingLines(s, start, end, copySpan) {
       if (braceEntries.length > 1) braceEntries.pop();
       tplBraces.pop();
       skipQuote = Boolean(tplSkips.pop());
+      isObjKeyQuote = false;
       quote = "`";
       segStart = i + 1;
       i++;
@@ -2852,7 +3010,72 @@ export function findStyleCloseRaw(src, bodyStart, isScss) {
       i = ce + 2;
       continue;
     }
+    if (isScss && (ch === "u" || ch === "U") && (i === bodyStart || !/[a-zA-Z0-9_-]/.test(s[i - 1]))) {
+      const um = /^url\s*\(/i.exec(s.slice(i, i + 16));
+      if (um) {
+        let uj = i + um[0].length;
+        while (uj < s.length && /\s/.test(s[uj])) uj++;
+        if (uj < s.length && s[uj] !== '"' && s[uj] !== "'") {
+          let validUrl = true;
+          while (uj < s.length && s[uj] !== ")") {
+            if (s[uj] === "\\" && uj + 1 < s.length) {
+              uj += 2;
+              continue;
+            }
+            if (s[uj] === "#" && s[uj + 1] === "{") {
+              let ib = 1;
+              let iq = null;
+              let ip = uj + 2;
+              while (ip < s.length && ib > 0) {
+                const uc = s[ip];
+                if (iq) {
+                  if (uc === "\\" && ip + 1 < s.length) ip += 2;
+                  else {
+                    if (uc === iq || uc === "\n") iq = null;
+                    ip++;
+                  }
+                  continue;
+                }
+                if (uc === '"' || uc === "'") iq = uc;
+                else if (uc === "{") ib++;
+                else if (uc === "}") ib--;
+                ip++;
+              }
+              if (ib !== 0) {
+                validUrl = false;
+                break;
+              }
+              uj = ip;
+              continue;
+            }
+            if (s[uj] === "\n" || s[uj] === "{" || s[uj] === "}" || s.startsWith("/*", uj)) {
+              validUrl = false;
+              break;
+            }
+            uj++;
+          }
+          if (validUrl && uj < s.length && s[uj] === ")") {
+            i = uj + 1;
+            continue;
+          }
+        }
+      }
+    }
     if (isScss && ch === "/" && next === "/") {
+      const prev = i === bodyStart ? "\n" : s[i - 1];
+      const beforeColon = s.slice(Math.max(bodyStart, i - 32), i);
+      const isSchemeUrl =
+        prev === ":" &&
+        /(?:^|[^a-zA-Z0-9_$-])(?:https?|ftp|sftp|ftps|file|ws|wss|mailto|data|blob|chrome(?:-extension)?|moz-extension|edge|safari|about|app|vscode|capacitor|tauri|ionic|s3|gs|postgres(?:ql)?|mysql|mariadb|mongodb(?:\+srv)?|rediss?|amqps?|ssh|git|npm|yarn|pnpm|docker|oci|ircs?|ldaps?):$/i.test(
+          beforeColon
+        ) &&
+        i + 2 < s.length &&
+        /[A-Za-z0-9/[._~-]/.test(s[i + 2]);
+      const isProtoUrlAfterEq = prev === "=" && /^\/\/[A-Za-z0-9._-]+\//.test(s.slice(i, i + 64));
+      if (isSchemeUrl || isProtoUrlAfterEq) {
+        i += 2;
+        continue;
+      }
       const eol = s.indexOf("\n", i + 2);
       if (eol === -1) return null;
       i = eol + 1;
@@ -2906,13 +3129,13 @@ export function extractImportantStyleSurfacePreservingLines(surface, isStyle, op
   if (isStyle) return maskCssQuotedStringsPreservingLines(s);
   const sForCtx = options.markupCtx ? s : stripCommentsPreservingLines(s);
   const ctx = options.markupCtx || scanMarkupContexts(sForCtx, options);
-  const chars = s.split("").map((c) => (c === "\n" ? "\n" : " "));
+  const chars = sForCtx.split("").map((c) => (c === "\n" ? "\n" : " "));
   const copySpan = (start, end) => {
-    for (let k = start; k < end && k < s.length; k++) chars[k] = s[k];
+    for (let k = start; k < end && k < sForCtx.length; k++) chars[k] = sForCtx[k];
   };
   const copyCssSpanMasked = (start, end) => {
     const masked = maskCssQuotedStringsPreservingLines(sForCtx.slice(start, end));
-    for (let k = 0; k < masked.length && start + k < s.length; k++) chars[start + k] = masked[k];
+    for (let k = 0; k < masked.length && start + k < sForCtx.length; k++) chars[start + k] = masked[k];
   };
   const inSpans = (idx, spans) => spans.some(([a, b]) => idx >= a && idx < b);
   const inAttrValueSpan = (idx) =>
@@ -2938,7 +3161,7 @@ export function extractImportantStyleSurfacePreservingLines(surface, isStyle, op
     const rep = "!important";
     for (let i = 0; i < rep.length; i++) chars[abs + i] = rep[i];
   };
-  for (const m of sForCtx.matchAll(/(?<![a-zA-Z0-9_-])style(?::(?:--)?[a-z][a-z0-9-]*(?<imp>\|important)?)?\s*=\s*(?:"([^"]*)"|'([^']*)')/gi)) {
+  for (const m of sForCtx.matchAll(/(?<![a-zA-Z0-9_-])style(?::(?:--[a-zA-Z0-9_-]+|[a-z][a-z0-9-]*)(?<imp>\|important)?)?\s*=\s*(?:"([^"]*)"|'([^']*)')/gi)) {
     if (!inRealTagAttrNamePos(m.index)) continue;
     copyDirectiveImportant(m);
     const val = m[2] !== undefined ? m[2] : m[3];
@@ -2947,7 +3170,7 @@ export function extractImportantStyleSurfacePreservingLines(surface, isStyle, op
     const innerEnd = innerStart + val.length;
     const isBoundStyle = m.index > 0 && sForCtx[m.index - 1] === ":";
     if (isBoundStyle) {
-      copyStringLiteralsPreservingLines(s, innerStart, innerEnd, copyCssSpanMasked);
+      copyStringLiteralsPreservingLines(sForCtx, innerStart, innerEnd, copyCssSpanMasked);
     } else if (!val.includes("{")) {
       copyCssSpanMasked(innerStart, innerEnd);
     } else {
@@ -2955,7 +3178,7 @@ export function extractImportantStyleSurfacePreservingLines(surface, isStyle, op
       let segStart = innerStart;
       let cssQuote = null;
       while (k < innerEnd) {
-        const kc = s[k];
+        const kc = sForCtx[k];
         if (cssQuote) {
           if (kc === "\\" && k + 1 < innerEnd) { k += 2; continue; }
           if (kc === cssQuote || kc === "\n") cssQuote = null;
@@ -2969,10 +3192,10 @@ export function extractImportantStyleSurfacePreservingLines(surface, isStyle, op
           continue;
         }
         if (kc === "{") {
-          const braceEnd = findBalancedDelimEndSimple(s, k, "{", "}");
+          const braceEnd = findBalancedDelimEndSimple(sForCtx, k, "{", "}");
           if (braceEnd !== -1 && braceEnd < innerEnd) {
             copyCssSpanMasked(segStart, k);
-            copyStringLiteralsPreservingLines(s, k + 1, braceEnd, copyCssSpanMasked);
+            copyStringLiteralsPreservingLines(sForCtx, k + 1, braceEnd, copyCssSpanMasked);
             k = braceEnd + 1;
             segStart = k;
             continue;
@@ -2983,25 +3206,27 @@ export function extractImportantStyleSurfacePreservingLines(surface, isStyle, op
       copyCssSpanMasked(segStart, innerEnd);
     }
   }
-  for (const m of sForCtx.matchAll(/(?<![a-zA-Z0-9_-])style(?::(?:--)?[a-z][a-z0-9-]*(?<imp>\|important)?)?\s*=\s*\{/g)) {
+  for (const m of sForCtx.matchAll(/(?<![a-zA-Z0-9_-])(?:style(?::(?:--[a-zA-Z0-9_-]+|[a-z][a-z0-9-]*)(?<imp>\|important)?)?|sx|css)\s*=\s*\{/gi)) {
+    const propHead = m[0].slice(0, m[0].search(/[\s=:]/));
+    if (/^(?:sx|css)$/i.test(propHead) && propHead !== propHead.toLowerCase()) continue;
     if (!inRealTagAttrNamePos(m.index)) continue;
     copyDirectiveImportant(m);
-    const openOuter = s.indexOf("{", m.index);
-    const closeOuter = findBalancedDelimEndSimple(s, openOuter, "{", "}");
+    const openOuter = sForCtx.indexOf("{", m.index);
+    const closeOuter = findBalancedDelimEndSimple(sForCtx, openOuter, "{", "}");
     if (closeOuter !== -1) {
-      copyStringLiteralsPreservingLines(s, openOuter + 1, closeOuter, copyCssSpanMasked);
+      copyStringLiteralsPreservingLines(sForCtx, openOuter + 1, closeOuter, copyCssSpanMasked);
     }
   }
   const skipTsGenericArgs = (startCur) => {
     let cur = startCur;
-    while (cur < s.length && /\s/.test(s[cur])) cur++;
-    if (cur >= s.length || s[cur] !== "<") return { cur, ok: true };
+    while (cur < sForCtx.length && /\s/.test(sForCtx[cur])) cur++;
+    if (cur >= sForCtx.length || sForCtx[cur] !== "<") return { cur, ok: true };
     let angle = 0;
     let brace = 0;
     let q = null;
-    const limit = Math.min(s.length, cur + 800);
+    const limit = Math.min(sForCtx.length, cur + 800);
     while (cur < limit) {
-      const c = s[cur];
+      const c = sForCtx[cur];
       if (q) {
         if (c === "\\" && cur + 1 < limit) {
           cur += 2;
@@ -3019,7 +3244,7 @@ export function extractImportantStyleSurfacePreservingLines(surface, isStyle, op
       if (c === "{") brace++;
       else if (c === "}") brace = Math.max(0, brace - 1);
       else if (c === "<" && brace === 0) angle++;
-      else if (c === ">" && s[cur - 1] !== "=" && brace === 0) {
+      else if (c === ">" && sForCtx[cur - 1] !== "=" && brace === 0) {
         angle--;
         if (angle === 0) {
           cur++;
@@ -3029,20 +3254,20 @@ export function extractImportantStyleSurfacePreservingLines(surface, isStyle, op
       cur++;
     }
     if (angle !== 0) return { cur: startCur, ok: false };
-    while (cur < s.length && /\s/.test(s[cur])) cur++;
+    while (cur < sForCtx.length && /\s/.test(sForCtx[cur])) cur++;
     return { cur, ok: true };
   };
   for (const m of sForCtx.matchAll(/(?<![a-zA-Z0-9_$.])(?:styled(?:\.[a-zA-Z0-9_$]+\b|\s*(?=\())|\bcss\b|\bcreateGlobalStyle\b)\s*/g)) {
     if (inSpans(m.index, ctx.proseSpans) || inSpans(m.index, ctx.jsStringSpans) || inAttrValueSpan(m.index)) continue;
     let cur = m.index + m[0].length;
-    if (/^styled(?:\s|$)/.test(m[0]) && s[cur] === "(") {
-      const endStyledArg = findBalancedDelimEndSimple(s, cur, "(", ")");
+    if (/^styled(?:\s|$)/.test(m[0]) && sForCtx[cur] === "(") {
+      const endStyledArg = findBalancedDelimEndSimple(sForCtx, cur, "(", ")");
       if (endStyledArg === -1) continue;
       cur = endStyledArg + 1;
-      while (cur < s.length && /\s/.test(s[cur])) cur++;
+      while (cur < sForCtx.length && /\s/.test(sForCtx[cur])) cur++;
     }
-    while (cur < s.length) {
-      const chainM = /^\s*\.(?:attrs|withConfig)\b\s*/.exec(s.slice(cur, cur + 64));
+    while (cur < sForCtx.length) {
+      const chainM = /^\s*\.(?:attrs|withConfig)\b\s*/.exec(sForCtx.slice(cur, cur + 64));
       if (!chainM) break;
       cur += chainM[0].length;
       const gRes = skipTsGenericArgs(cur);
@@ -3051,46 +3276,46 @@ export function extractImportantStyleSurfacePreservingLines(surface, isStyle, op
         break;
       }
       cur = gRes.cur;
-      if (s[cur] === "(") {
-        const endChainParen = findBalancedDelimEndSimple(s, cur, "(", ")");
+      if (sForCtx[cur] === "(") {
+        const endChainParen = findBalancedDelimEndSimple(sForCtx, cur, "(", ")");
         if (endChainParen === -1) {
           cur = -1;
           break;
         }
-        copyStringLiteralsPreservingLines(s, cur + 1, endChainParen, copyCssSpanMasked);
+        copyStringLiteralsPreservingLines(sForCtx, cur + 1, endChainParen, copyCssSpanMasked);
         cur = endChainParen + 1;
-        while (cur < s.length && /\s/.test(s[cur])) cur++;
+        while (cur < sForCtx.length && /\s/.test(sForCtx[cur])) cur++;
       }
     }
     if (cur === -1) continue;
     const gRes = skipTsGenericArgs(cur);
     if (!gRes.ok) continue;
     cur = gRes.cur;
-    if (s[cur] === "(") {
-      const endObjCall = findBalancedDelimEndSimple(s, cur, "(", ")");
+    if (sForCtx[cur] === "(") {
+      const endObjCall = findBalancedDelimEndSimple(sForCtx, cur, "(", ")");
       if (endObjCall !== -1) {
-        copyStringLiteralsPreservingLines(s, cur + 1, endObjCall, copyCssSpanMasked);
+        copyStringLiteralsPreservingLines(sForCtx, cur + 1, endObjCall, copyCssSpanMasked);
       }
       continue;
     }
-    if (s[cur] !== "`") continue;
+    if (sForCtx[cur] !== "`") continue;
     let i = cur + 1;
     let cssQuote = null;
-    while (i < s.length) {
-      const ch = s[i];
-      if (ch === "\\" && i + 1 < s.length) {
+    while (i < sForCtx.length) {
+      const ch = sForCtx[i];
+      if (ch === "\\" && i + 1 < sForCtx.length) {
         if (!cssQuote && chars[i] !== "\n") {
-          chars[i] = s[i];
-          if (chars[i + 1] !== "\n") chars[i + 1] = s[i + 1];
+          chars[i] = sForCtx[i];
+          if (chars[i + 1] !== "\n") chars[i + 1] = sForCtx[i + 1];
         }
         i += 2;
         continue;
       }
-      if (ch === "$" && s[i + 1] === "{") {
-        const endExpr = findBalancedDelimEndSimple(s, i + 1, "{", "}");
+      if (ch === "$" && sForCtx[i + 1] === "{") {
+        const endExpr = findBalancedDelimEndSimple(sForCtx, i + 1, "{", "}");
         if (endExpr === -1) break;
         if (!cssQuote) {
-          copyStringLiteralsPreservingLines(s, i + 2, endExpr, copyCssSpanMasked);
+          copyStringLiteralsPreservingLines(sForCtx, i + 2, endExpr, copyCssSpanMasked);
         }
         i = endExpr + 1;
         continue;
@@ -3098,9 +3323,9 @@ export function extractImportantStyleSurfacePreservingLines(surface, isStyle, op
       if (ch === "`") break;
       if (cssQuote) {
         if (ch === cssQuote || ch === "\n") cssQuote = null;
-      } else if (ch === "/" && s[i + 1] === "*") {
-        const endC = s.indexOf("*/", i + 2);
-        i = endC === -1 ? s.length : endC + 2;
+      } else if (ch === "/" && sForCtx[i + 1] === "*") {
+        const endC = sForCtx.indexOf("*/", i + 2);
+        i = endC === -1 ? sForCtx.length : endC + 2;
         continue;
       } else if (ch === '"' || ch === "'") {
         cssQuote = ch;
@@ -3252,15 +3477,27 @@ export function resolvePathFollowingSymlinks(startBase, rawSpec, label = String(
   let queue;
   let hops = 0;
 
-  if (startBase && !isAbsolute(spec)) {
-    root = parse(startBase).root;
-    curSegs = startBase.slice(root.length).split(/[\\/]+/).filter(Boolean);
-    queue = spec.split(/[\\/]+/).filter(Boolean);
-  } else {
-    const absSpec = resolve(spec);
-    root = parse(absSpec).root;
+  const baseInput = startBase ? String(startBase) : process.cwd();
+  if (isAbsolute(spec)) {
+    root = parse(spec).root;
     curSegs = [];
-    queue = absSpec.slice(root.length).split(/[\\/]+/).filter(Boolean);
+    queue = spec.slice(root.length).split(/[\\/]+/).filter(Boolean);
+  } else if (isAbsolute(baseInput)) {
+    root = parse(baseInput).root;
+    curSegs = [];
+    queue = [
+      ...baseInput.slice(root.length).split(/[\\/]+/).filter(Boolean),
+      ...spec.split(/[\\/]+/).filter(Boolean),
+    ];
+  } else {
+    const cwd = process.cwd();
+    root = parse(cwd).root;
+    curSegs = [];
+    queue = [
+      ...cwd.slice(root.length).split(/[\\/]+/).filter(Boolean),
+      ...baseInput.split(/[\\/]+/).filter(Boolean),
+      ...spec.split(/[\\/]+/).filter(Boolean),
+    ];
   }
 
   while (queue.length > 0) {
@@ -3305,8 +3542,8 @@ export function resolvePathFollowingSymlinks(startBase, rawSpec, label = String(
 
 export function assertPathWithinRoot(rootDir, targetPath, label = String(targetPath || ""), opts = {}) {
   const allowEqual = opts.allowEqual !== undefined ? Boolean(opts.allowEqual) : false;
-  const canonRootRaw = resolvePathFollowingSymlinks(null, resolve(rootDir), "root");
-  const canonFullRaw = resolvePathFollowingSymlinks(null, resolve(targetPath), label);
+  const canonRootRaw = resolvePathFollowingSymlinks(null, rootDir, "root");
+  const canonFullRaw = resolvePathFollowingSymlinks(null, targetPath, label);
   const ci = process.platform === "darwin" || process.platform === "win32";
   const canonRoot = ci ? canonRootRaw.toLowerCase() : canonRootRaw;
   const canonFull = ci ? canonFullRaw.toLowerCase() : canonFullRaw;
@@ -3379,7 +3616,21 @@ function assertWritableOutputTarget(targetPath, kind, label = "--out", opts = {}
       const rel = relative(normCmp(baseDir), normCmp(candPath));
       return !rel || (rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel));
     };
-    if (isLexWithin(absRoot, absOut) || isLexWithin(realRoot, absOut)) {
+    let touchesRoot = isLexWithin(absRoot, absOut) || isLexWithin(realRoot, absOut);
+    if (!touchesRoot) {
+      let cur = absOut;
+      while (true) {
+        const cp = canonPathSimple(cur);
+        if (isLexWithin(realRoot, cp) || isLexWithin(absRoot, cp)) {
+          touchesRoot = true;
+          break;
+        }
+        const par = dirname(cur);
+        if (par === cur) break;
+        cur = par;
+      }
+    }
+    if (touchesRoot) {
       assertPathWithinRoot(opts.rootDir, absOut, label, { allowEqual: kind === "dir" && Boolean(opts.allowEqualRoot) });
     }
   }
@@ -3649,7 +3900,7 @@ function parseMarkupOpenTagCore(s, ltIdx, allowGenerics = true) {
       continue;
     }
     if (c === "{") {
-      const be = findBalancedDelimEndSimple(s, j, "{", "}");
+      const be = findBalancedDelimEndSimple(s, j, "{", "}", allowGenerics);
       if (be === -1) return null;
       if (!inSfcBracket) {
         exprSpans.push({ start: j, end: be + 1, innerStart: j + 1, innerEnd: be });
@@ -3749,6 +4000,7 @@ export function scanMarkupContexts(src, options = {}) {
   const openTags = [];
   const proseSpans = [];
   const jsStringSpans = [];
+  const jsxChildBraceStarts = new Set();
 
   const scanJsRange = (startIdx, endIdx, initSig = "", allowJsx = !isMarkupSfc) => {
     const jsxStack = [];
@@ -3775,8 +4027,9 @@ export function scanMarkupContexts(src, options = {}) {
         }
         if (ch === "{") {
           flushProse(i);
-          const closeB = findBalancedDelimEndSimple(s, i, "{", "}");
+          const closeB = findBalancedDelimEndSimple(s, i, "{", "}", allowJsx);
           if (closeB !== -1 && closeB < endIdx) {
+            jsxChildBraceStarts.add(i);
             scanJsRange(i + 1, closeB, "{", allowJsx);
             i = closeB + 1;
             proseStart = i;
@@ -3874,7 +4127,7 @@ export function scanMarkupContexts(src, options = {}) {
             continue;
           }
           if (s[tk] === "$" && tk + 1 < endIdx && s[tk + 1] === "{") {
-            const be = findBalancedDelimEndSimple(s, tk + 1, "{", "}");
+            const be = findBalancedDelimEndSimple(s, tk + 1, "{", "}", allowJsx);
             if (be === -1 || be >= endIdx) {
               tk = endIdx;
               break;
@@ -4043,7 +4296,7 @@ export function scanMarkupContexts(src, options = {}) {
     let i = 0;
     let textStart = 0;
     const flushText = (endPos) => {
-      if (endPos > textStart) proseSpans.push([textStart, endPos]);
+      if (textStart !== -1 && endPos > textStart) proseSpans.push([textStart, endPos]);
       textStart = -1;
     };
     const fmOpenM = /^(?:\uFEFF)?[ \t\r\n]*---(?=[ \t]*(?:\r?\n|$))/.exec(s);
@@ -4067,9 +4320,9 @@ export function scanMarkupContexts(src, options = {}) {
         continue;
       }
       if (mustacheExprs && s.startsWith("{{", i)) {
-        flushText(i);
         const be = findBalancedDelimEndSimple(s, i, "{", "}");
         if (be !== -1) {
+          flushText(i);
           const innerEnd = s[be - 1] === "}" ? be - 1 : be;
           scanJsRange(i + 2, innerEnd, "{", false);
           i = be + 1;
@@ -4078,9 +4331,10 @@ export function scanMarkupContexts(src, options = {}) {
         }
       }
       if (braceExprs && s[i] === "{") {
-        flushText(i);
-        const be = findBalancedDelimEndSimple(s, i, "{", "}");
+        const be = findBalancedDelimEndSimple(s, i, "{", "}", true);
         if (be !== -1) {
+          flushText(i);
+          jsxChildBraceStarts.add(i);
           scanJsRange(i + 1, be, "{", true);
           i = be + 1;
           textStart = i;
@@ -4141,7 +4395,7 @@ export function scanMarkupContexts(src, options = {}) {
     scanJsRange(0, s.length, "");
   }
 
-  return { openTags, proseSpans, jsStringSpans };
+  return { openTags, proseSpans, jsStringSpans, jsxChildBraceStarts };
 }
 
 export function maskMarkupProsePreservingLines(src, options = {}) {
@@ -4161,7 +4415,8 @@ export function maskMarkupProsePreservingLines(src, options = {}) {
  */
 export function maskProseAndDocStringsPreservingLines(src, options = {}) {
   const s = String(src || "");
-  const ctx = options.markupCtx || scanMarkupContexts(s, options);
+  const sForCtx = options.markupCtx ? s : stripCommentsPreservingLines(s);
+  const ctx = options.markupCtx || scanMarkupContexts(sForCtx, options);
   const chars = s.split("");
   for (const [ps, pe] of ctx.proseSpans) {
     maskRangePreservingLines(chars, ps, pe);
@@ -4400,8 +4655,10 @@ export function isBoilerplateReason(reason) {
   return BOILERPLATE_REASON_RE.test(trimmed);
 }
 
-export function parseInlineIgnores(raw) {
+export function parseInlineIgnores(raw, options = {}) {
   const s = String(raw || "");
+  const filePathStr = String(options?.filePath || "");
+  const allowJsxBraces = !/\.(?:css|scss|sass|less|html?|vue)$/i.test(filePathStr);
   const directives = [];
   const { cleaned, tokens } = scanCommentsPreservingLines(s, true);
   const allTokens = [...(tokens || [])];
@@ -4458,12 +4715,62 @@ export function parseInlineIgnores(raw) {
     }
   }
   allTokens.sort((a, b) => a.start - b.start);
-  const cleanLines = cleanChars.join("").split(/\r?\n/);
+  const cleanStr = cleanChars.join("");
+  const jsxCleanChars = [...cleanChars];
+  const singleLineContainers = [];
+  const multiLineContainers = [];
+  const tokenToMultiContainer = new Map();
+  const multiContainerLineSet = new Set();
+  const singleContainerLineSet = new Set();
+
+  if (allowJsxBraces) {
+    const seenPairs = new Set();
+    for (const tok of allTokens) {
+      if (tok.kind !== "block" && tok.kind !== "line") continue;
+      let oPos = tok.start - 1;
+      while (oPos >= 0 && /\s/.test(cleanStr[oPos])) oPos--;
+      const endOffsetTok = typeof tok.end === "number" ? tok.end : tok.start + tok.text.length;
+      let cPos = endOffsetTok;
+      while (cPos < cleanStr.length && /\s/.test(cleanStr[cPos])) cPos++;
+      if (oPos < 0 || cPos >= cleanStr.length || cleanStr[oPos] !== "{" || cleanStr[cPos] !== "}") continue;
+      const pairKey = `${oPos}:${cPos}`;
+      if (seenPairs.has(pairKey)) continue;
+      seenPairs.add(pairKey);
+      const enclosed = allTokens.filter((t) => {
+        const tEnd = typeof t.end === "number" ? t.end : t.start + t.text.length;
+        return t.start > oPos && tEnd <= cPos;
+      });
+      if (enclosed.length === 0) continue;
+      const openLineIdx = offsetToLine(s, oPos) - 1;
+      const closeLineIdx = offsetToLine(s, cPos) - 1;
+      const container = { openPos: oPos, closePos: cPos, openLineIdx, closeLineIdx, enclosed, validJsx: false, targetIdx: -1 };
+      if (openLineIdx === closeLineIdx) {
+        if (enclosed.every((t) => t.kind === "block")) singleLineContainers.push(container);
+      } else {
+        multiLineContainers.push(container);
+      }
+    }
+    for (const c of singleLineContainers) {
+      jsxCleanChars[c.openPos] = " ";
+      jsxCleanChars[c.closePos] = " ";
+      singleContainerLineSet.add(c.openLineIdx);
+    }
+  }
+
+  const preJsxCleanLines = jsxCleanChars.join("").split(/\r?\n/);
   const blockRe = /^\/\*\s*dsaf-ignore\s+([a-z0-9/_-]+)(?:\s+--\s*([\s\S]*?))?\s*\*\/$/i;
   const htmlRe = /^<!--\s*dsaf-ignore\s+([a-z0-9/_-]+)(?:\s+--\s*([\s\S]*?))?\s*-->$/i;
   const lineRe = /^\/\/\s*dsaf-ignore\s+([a-z0-9/_-]+)(?:\s+--\s*([^\r\n]*?))?\s*$/i;
+  const anyCommentLineSet = new Set();
+  for (const tok of allTokens) {
+    const endOffset = typeof tok.end === "number" ? tok.end : tok.start + tok.text.length;
+    const ts = offsetToLine(s, tok.start) - 1;
+    const te = offsetToLine(s, Math.max(tok.start, endOffset - 1)) - 1;
+    for (let li = ts; li <= te; li++) anyCommentLineSet.add(li);
+  }
   const standaloneLineIndices = new Set();
-  const isBareConnectorLine = (ln) => String(ln || "").replace(/&&|\|\||[{}?:(]/g, "").trim().length === 0;
+  const isBareConnectorLine = (ln) => String(ln || "").replace(/&&|\|\||[{?:(]/g, "").trim().length === 0;
+  const parsedToks = [];
 
   for (const tok of allTokens) {
     const trimmed = tok.text.trim();
@@ -4472,16 +4779,124 @@ export function parseInlineIgnores(raw) {
     const startLineIdx = offsetToLine(s, tok.start) - 1;
     const endOffset = typeof tok.end === "number" ? tok.end : tok.start + tok.text.length;
     const endLineIdx = offsetToLine(s, Math.max(tok.start, endOffset - 1)) - 1;
-    const startHasCode = !isBareConnectorLine(cleanLines[startLineIdx]);
-    const endHasCode = endLineIdx !== startLineIdx && !isBareConnectorLine(cleanLines[endLineIdx]);
-    const lineIsInline = startHasCode || endHasCode;
-    let prevNonEmptyIdx = startLineIdx - 1;
-    while (prevNonEmptyIdx >= 0 && (cleanLines[prevNonEmptyIdx] || "").trim() === "") {
-      prevNonEmptyIdx--;
+    parsedToks.push({ tok, m, startLineIdx, endLineIdx });
+    const prelimStartHasCode = !isBareConnectorLine(preJsxCleanLines[startLineIdx]);
+    const prelimEndHasCode = endLineIdx !== startLineIdx && !isBareConnectorLine(preJsxCleanLines[endLineIdx]);
+    if (!prelimStartHasCode && !prelimEndHasCode) {
+      for (let li = startLineIdx; li <= endLineIdx; li++) standaloneLineIndices.add(li);
     }
-    const prevTrim = prevNonEmptyIdx >= 0 ? (cleanLines[prevNonEmptyIdx] || "").trim() : "";
-    const curHasOpenBraceBefore = (cleanLines[startLineIdx] || "").includes("{");
-    const hasJsxBraceOpen = (tok.kind === "block" || tok.kind === "line") && !lineIsInline && (curHasOpenBraceBefore || prevTrim === "{");
+  }
+
+  if (allowJsxBraces) {
+    const isCommentOnlySingleLine = (idx) => singleContainerLineSet.has(idx) && (preJsxCleanLines[idx] || "").trim() === "";
+    const jsxChildBraceStarts =
+      options?.markupCtx?.jsxChildBraceStarts ||
+      (multiLineContainers.length > 0
+        ? scanMarkupContexts(cleaned, { isMarkupSfc: /\.(?:astro|svelte)$/i.test(filePathStr), braceExprs: true }).jsxChildBraceStarts
+        : new Set());
+    const lineRanges = [];
+    let lrStart = 0;
+    for (let k = 0; k < s.length; k++) {
+      if (s[k] === "\n") {
+        const lineEnd = k > 0 && s[k - 1] === "\r" ? k - 1 : k;
+        lineRanges.push({ start: lrStart, end: lineEnd });
+        lrStart = k + 1;
+      }
+    }
+    lineRanges.push({ start: lrStart, end: s.length });
+    const liveLine = (idx) =>
+      idx >= 0 && idx < lineRanges.length ? jsxCleanChars.slice(lineRanges[idx].start, lineRanges[idx].end).join("") : "";
+    const beforeOkContainers = [];
+    multiLineContainers.sort((a, b) => a.openPos - b.openPos);
+    for (const c of multiLineContainers) {
+      if (jsxChildBraceStarts.has(c.openPos)) {
+        c.beforeOk = true;
+        beforeOkContainers.push(c);
+        continue;
+      }
+      let bPos = c.openPos - 1;
+      while (bPos >= 0) {
+        while (bPos >= 0 && /\s/.test(jsxCleanChars[bPos])) bPos--;
+        if (bPos < 0) break;
+        let skipped = false;
+        for (let ci = beforeOkContainers.length - 1; ci >= 0; ci--) {
+          const pc = beforeOkContainers[ci];
+          if (bPos >= pc.openPos && bPos <= pc.closePos) {
+            bPos = pc.openPos - 1;
+            skipped = true;
+            break;
+          }
+        }
+        if (!skipped) break;
+      }
+      if (bPos < 0) {
+        c.beforeOk = true;
+        beforeOkContainers.push(c);
+        continue;
+      }
+      const prevLineBegin = s.lastIndexOf("\n", bPos) + 1;
+      const beforeTokTrim = jsxCleanChars.slice(prevLineBegin, bPos + 1).join("").trim();
+      if (!beforeTokTrim || beforeTokTrim === "---" || /(?:&&|\|\||[>({[?:,;]|=>|\breturn)$/.test(beforeTokTrim)) {
+        c.beforeOk = true;
+        beforeOkContainers.push(c);
+      }
+    }
+    multiLineContainers.sort((a, b) => b.openPos - a.openPos);
+    for (const c of multiLineContainers) {
+      if (!c.beforeOk) continue;
+      const closeLineEnd = c.closeLineIdx < lineRanges.length ? lineRanges[c.closeLineIdx].end : s.length;
+      const afterSameLine = jsxCleanChars.slice(c.closePos + 1, closeLineEnd).join("").trim();
+      if (afterSameLine !== "") {
+        if (/^[<{]/.test(afterSameLine)) {
+          c.validJsx = true;
+          c.targetIdx = c.closeLineIdx;
+          jsxCleanChars[c.openPos] = " ";
+          jsxCleanChars[c.closePos] = " ";
+          for (let li = c.openLineIdx; li <= c.closeLineIdx; li++) {
+            if (liveLine(li).trim() === "") multiContainerLineSet.add(li);
+          }
+          for (const t of c.enclosed) tokenToMultiContainer.set(t, c);
+        }
+        continue;
+      }
+      let afterCloseIdx = c.closeLineIdx + 1;
+      while (
+        afterCloseIdx < preJsxCleanLines.length &&
+        (standaloneLineIndices.has(afterCloseIdx) ||
+          multiContainerLineSet.has(afterCloseIdx) ||
+          isCommentOnlySingleLine(afterCloseIdx) ||
+          /^\s*$/.test(liveLine(afterCloseIdx)))
+      ) {
+        afterCloseIdx++;
+      }
+      const afterCloseTrim = afterCloseIdx < lineRanges.length ? liveLine(afterCloseIdx).trim() : "";
+      if (afterCloseTrim && /^[<{]/.test(afterCloseTrim)) {
+        c.validJsx = true;
+        c.targetIdx = afterCloseIdx;
+        jsxCleanChars[c.openPos] = " ";
+        jsxCleanChars[c.closePos] = " ";
+        for (let li = c.openLineIdx; li <= c.closeLineIdx; li++) {
+          if (liveLine(li).trim() === "") multiContainerLineSet.add(li);
+        }
+        for (const t of c.enclosed) tokenToMultiContainer.set(t, c);
+      }
+    }
+  }
+
+  const finalCleanLines = jsxCleanChars.join("").split(/\r?\n/);
+  standaloneLineIndices.clear();
+  const commentOnlyLines = new Set();
+  for (let li = 0; li < finalCleanLines.length; li++) {
+    if ((anyCommentLineSet.has(li) || singleContainerLineSet.has(li) || multiContainerLineSet.has(li)) && (finalCleanLines[li] || "").trim() === "") {
+      commentOnlyLines.add(li);
+    }
+  }
+
+  for (const pt of parsedToks) {
+    const { tok, m, startLineIdx, endLineIdx } = pt;
+    const startHasCode = !isBareConnectorLine(finalCleanLines[startLineIdx]);
+    const endHasCode = endLineIdx !== startLineIdx && !isBareConnectorLine(finalCleanLines[endLineIdx]);
+    const lineIsInline = startHasCode || endHasCode;
     if (!lineIsInline) {
       for (let li = startLineIdx; li <= endLineIdx; li++) standaloneLineIndices.add(li);
     }
@@ -4495,7 +4910,7 @@ export function parseInlineIgnores(raw) {
       line: startLineIdx + 1,
       endLine: endLineIdx + 1,
       isInline: lineIsInline,
-      hasJsxBraceOpen,
+      multiContainer: tokenToMultiContainer.get(tok) || null,
       targetLine: lineIsInline ? (!startHasCode && endHasCode ? endLineIdx + 1 : startLineIdx + 1) : endLineIdx + 2,
       used: false,
       rejected: false,
@@ -4503,37 +4918,39 @@ export function parseInlineIgnores(raw) {
   }
   for (const d of directives) {
     if (d.isInline) continue;
-    let nextIdx = d.endLine;
-    while (nextIdx < cleanLines.length && standaloneLineIndices.has(nextIdx)) {
-      nextIdx++;
-    }
-    if (d.hasJsxBraceOpen) {
-      while (nextIdx < cleanLines.length && /^\s*$/.test(cleanLines[nextIdx] || "")) nextIdx++;
-      if (nextIdx < cleanLines.length && /^\s*\}\s*$/.test(cleanLines[nextIdx] || "")) {
+    if (d.multiContainer?.validJsx && d.multiContainer.targetIdx >= 0) {
+      d.targetLine = d.multiContainer.targetIdx + 1;
+    } else {
+      let nextIdx = d.endLine;
+      while (nextIdx < finalCleanLines.length && (standaloneLineIndices.has(nextIdx) || commentOnlyLines.has(nextIdx))) {
         nextIdx++;
-        while (nextIdx < cleanLines.length && standaloneLineIndices.has(nextIdx)) {
-          nextIdx++;
-        }
       }
+      d.targetLine = nextIdx + 1;
     }
-    d.targetLine = nextIdx + 1;
   }
   return directives;
 }
 
 export function applyIgnores(findings, rawContent, filePath, options = {}) {
-  const directives = parseInlineIgnores(rawContent);
-  const evaluatedRules = options.evaluatedRules ? new Set(options.evaluatedRules) : null;
+  const directives = parseInlineIgnores(rawContent, { filePath });
+  const evaluatedRules = options.evaluatedRules
+    ? new Set([...options.evaluatedRules].map((r) => String(r || "").trim().toLowerCase()))
+    : null;
   const active = [];
   const waived = [];
   const extraFindings = [];
   const rejectedDirs = new Set();
 
   for (const f of findings) {
-    const meta = RULE_CATALOG[f.ruleId];
-    const tier = f.tier || meta?.tier || "reflex";
-    const severity = f.severity || meta?.defaultLevel || (tier === "floor" ? "error" : "warning");
-    const norm = { ...f, file: f.file || filePath, tier, severity };
+    const rawRule = typeof f.ruleId === "string" ? f.ruleId.trim().toLowerCase() : "";
+    const ruleId = rawRule || "dsaf/unknown";
+    const meta = Object.prototype.hasOwnProperty.call(RULE_CATALOG, ruleId) ? RULE_CATALOG[ruleId] : null;
+    const rawTier = typeof f.tier === "string" ? f.tier.trim().toLowerCase() : "";
+    const validCallerTier = rawTier === "floor" || rawTier === "reflex" || rawTier === "finish" ? rawTier : "";
+    const tier = meta?.tier === "floor" ? "floor" : validCallerTier || meta?.tier || "reflex";
+    const rawSev = typeof f.severity === "string" ? f.severity.trim().toLowerCase() : "";
+    const severity = tier === "floor" ? "error" : rawSev || meta?.defaultLevel || "warning";
+    const norm = { ...f, ruleId, file: f.file || filePath, tier, severity };
 
     const matchingDir = directives.find((d) =>
       d.isInline
@@ -4633,13 +5050,19 @@ function normalizeSarifLevel(level) {
 
 function relativeToRepoRoot(filePath, repoRoot) {
   if (!repoRoot) return String(filePath);
+  const rawStr = String(filePath);
+  if (process.platform !== "win32" && (/^[a-zA-Z]:[\\/]/.test(rawStr) || /^\\\\[^\\]/.test(rawStr))) return rawStr;
   const rawRoot = resolve(repoRoot);
-  const rawTarget = resolve(rawRoot, filePath);
+  const rawTarget = resolve(rawRoot, rawStr);
   const isOutside = (rel) => rel === ".." || rel.startsWith(`..${sep}`) || rel.startsWith("../") || isAbsolute(rel);
   const relRaw = relative(rawRoot, rawTarget);
   if (!isOutside(relRaw)) return relRaw;
-  const realRoot = canonPathSimple(rawRoot);
-  const realTarget = canonPathSimple(rawTarget);
+  let realRoot = canonPathSimple(rawRoot);
+  let realTarget = canonPathSimple(rawTarget);
+  try {
+    realRoot = resolvePathFollowingSymlinks(null, rawRoot, "repoRoot");
+    realTarget = resolvePathFollowingSymlinks(null, rawTarget, "filePath");
+  } catch {}
   const relReal = relative(realRoot, realTarget);
   if (!isOutside(relReal)) return relReal;
   return relRaw;
@@ -4647,15 +5070,53 @@ function relativeToRepoRoot(filePath, repoRoot) {
 
 function toPosixPath(filePath, repoRoot) {
   if (!filePath) return "unknown";
-  const absOrRel = repoRoot ? relativeToRepoRoot(filePath, repoRoot) : String(filePath);
-  return String(absOrRel).replace(/\\/g, "/").replace(/^\.\//, "");
+  let raw = String(filePath);
+  if (/^(?:https?:\/\/|data:|cdp:\/\/)/i.test(raw)) return raw;
+  if (/^file:/i.test(raw)) {
+    try {
+      raw = fileURLToPath(new URL(raw));
+    } catch {}
+  }
+  const absOrRel = repoRoot ? relativeToRepoRoot(raw, repoRoot) : raw;
+  const posix = String(absOrRel).replace(/\\/g, "/").replace(/^(?:\.\/)+/, "");
+  return posix || ".";
 }
 
 function toPosixUri(filePath, repoRoot) {
   if (!filePath) return "unknown";
-  const absOrRel = repoRoot ? relativeToRepoRoot(filePath, repoRoot) : String(filePath);
-  const posix = String(absOrRel).replace(/\\/g, "/").replace(/^\.\//, "");
-  if (/^[a-zA-Z]:\//.test(posix) || posix.startsWith("/")) {
+  let raw = String(filePath);
+  if (/^https?:\/\//i.test(raw)) {
+    try { return new URL(raw).href; } catch { return raw; }
+  }
+  if (/^(?:data:|cdp:\/\/)/i.test(raw)) return raw;
+  if (/^file:/i.test(raw)) {
+    try {
+      raw = fileURLToPath(new URL(raw));
+    } catch {
+      return raw;
+    }
+  }
+  const absOrRel = repoRoot ? relativeToRepoRoot(raw, repoRoot) : raw;
+  const posix = String(absOrRel).replace(/\\/g, "/").replace(/^(?:\.\/)+/, "");
+  if (!posix) return ".";
+  if (/^[a-zA-Z]:\//.test(posix)) {
+    const drive = posix.slice(0, 2);
+    const rest = posix
+      .slice(3)
+      .split("/")
+      .map((seg) => encodeURIComponent(seg))
+      .join("/");
+    return "file:" + "///" + `${drive}/${rest}`;
+  }
+  if (posix.startsWith("//")) {
+    const uncParts = posix
+      .slice(2)
+      .split("/")
+      .filter((seg, idx) => idx === 0 || seg !== "")
+      .map((seg) => encodeURIComponent(seg));
+    return "file:" + "//" + uncParts.join("/");
+  }
+  if (posix.startsWith("/")) {
     try {
       return pathToFileURL(absOrRel).href;
     } catch {
@@ -4668,19 +5129,34 @@ function toPosixUri(filePath, repoRoot) {
     .join("/");
 }
 
+function resolveCatalogRule(rawRuleId) {
+  const trimmed = String(rawRuleId || "").trim() || "dsaf/unknown";
+  const lower = trimmed.toLowerCase();
+  const cat = Object.prototype.hasOwnProperty.call(RULE_CATALOG, trimmed)
+    ? RULE_CATALOG[trimmed]
+    : Object.prototype.hasOwnProperty.call(RULE_CATALOG, lower)
+    ? RULE_CATALOG[lower]
+    : null;
+  return { ruleId: cat ? cat.id : trimmed, cat };
+}
+
 export function formatSarif(findings, { toolVersion = CI_REPORT_VERSION, repoRoot = null } = {}) {
   const seenRules = new Map();
   for (const f of findings) {
-    if (!seenRules.has(f.ruleId)) {
-      const cat = RULE_CATALOG[f.ruleId];
+    const { ruleId, cat } = resolveCatalogRule(f.ruleId);
+    if (!seenRules.has(ruleId)) {
+      const msgHelp = String(f.message ?? "").trim() || "Resolve DSAF finding.";
+      const fallbackTier = String(f.tier || "reflex").trim().toLowerCase() || "reflex";
+      const rawSev = typeof f.severity === "string" ? f.severity.trim() : "";
+      const fallbackLevel = rawSev || (fallbackTier === "floor" ? "error" : "warning");
       seenRules.set(
-        f.ruleId,
+        ruleId,
         cat || {
-          id: f.ruleId,
-          tier: f.tier || "reflex",
-          defaultLevel: normalizeSarifLevel(f.severity),
-          shortDescription: f.ruleId,
-          help: f.message || "Resolve DSAF finding.",
+          id: ruleId,
+          tier: fallbackTier,
+          defaultLevel: normalizeSarifLevel(fallbackLevel),
+          shortDescription: ruleId,
+          help: msgHelp,
         }
       );
     }
@@ -4694,20 +5170,30 @@ export function formatSarif(findings, { toolVersion = CI_REPORT_VERSION, repoRoo
     properties: { tier: r.tier },
   }));
 
-  const results = findings.map((f) => ({
-    ruleId: f.ruleId,
-    level: normalizeSarifLevel(f.severity),
-    message: { text: String(f.message ?? f.ruleId ?? "DSAF finding") },
-    locations: [
-      {
-        physicalLocation: {
-          artifactLocation: { uri: toPosixUri(f.file, repoRoot) },
-          region: { startLine: Math.max(1, Number(f.line) || 1) },
+  const results = findings.map((f) => {
+    const rawLine = Number(f.line);
+    const line = Number.isFinite(rawLine) && rawLine >= 1 ? Math.floor(rawLine) : 1;
+    const { ruleId, cat } = resolveCatalogRule(f.ruleId);
+    const effTier =
+      cat?.tier === "floor" ? "floor" : String(f.tier || cat?.tier || "reflex").trim().toLowerCase() || "reflex";
+    const rawSev = typeof f.severity === "string" ? f.severity.trim() : "";
+    const effSev = rawSev || cat?.defaultLevel || (effTier === "floor" ? "error" : "warning");
+    const msgText = String(f.message ?? "").trim() || cat?.shortDescription || ruleId;
+    return {
+      ruleId,
+      level: normalizeSarifLevel(effSev),
+      message: { text: msgText },
+      locations: [
+        {
+          physicalLocation: {
+            artifactLocation: { uri: toPosixUri(f.file, repoRoot) },
+            region: { startLine: line },
+          },
         },
-      },
-    ],
-    properties: { tier: f.tier || "reflex" },
-  }));
+      ],
+      properties: { tier: effTier },
+    };
+  });
 
   return {
     $schema: "https://json.schemastore.org/sarif-2.1.0.json",
@@ -4742,12 +5228,20 @@ function escapeGithubProp(str) {
 export function formatGithubAnnotations(findings, { repoRoot = null } = {}) {
   return findings
     .map((f) => {
-      const sev = String(f.severity || "warning").toLowerCase();
-      const cmd = sev === "error" ? "error" : sev === "note" || sev === "info" ? "notice" : "warning";
       const file = escapeGithubProp(toPosixPath(f.file, repoRoot));
-      const line = Math.max(1, Number(f.line) || 1);
-      const title = escapeGithubProp(f.ruleId);
-      const msg = escapeGithubData(`[${(f.tier || "reflex").toUpperCase()}] ${f.message}`);
+      const rawLine = Number(f.line);
+      const line = Number.isFinite(rawLine) && rawLine >= 1 ? Math.floor(rawLine) : 1;
+      const { ruleId, cat } = resolveCatalogRule(f.ruleId);
+      const title = escapeGithubProp(ruleId);
+      const effTier =
+        cat?.tier === "floor" ? "floor" : String(f.tier || cat?.tier || "reflex").trim().toLowerCase() || "reflex";
+      const rawSev = typeof f.severity === "string" ? f.severity.trim() : "";
+      const effSev = rawSev || cat?.defaultLevel || (effTier === "floor" ? "error" : "warning");
+      const sev = effSev.toLowerCase();
+      const cmd = sev === "error" ? "error" : sev === "note" || sev === "info" ? "notice" : "warning";
+      const tierStr = effSev ? effTier.toUpperCase() : "REFLEX";
+      const msgText = String(f.message ?? "").trim() || cat?.shortDescription || ruleId;
+      const msg = escapeGithubData(`[${tierStr}] ${msgText}`);
       return `::${cmd} file=${file},line=${line},title=${title}::${msg}`;
     })
     .join("\n");
@@ -5669,7 +6163,7 @@ function runSelfTest() {
     const r32CallSig = scanMarkupContexts(r32CallSigSrc);
     assert.equal(r32CallSig.openTags.filter((t) => t.tag === "item").length, 1, "R32 A3-H3: interface call-sig <Item>(x: Item): void; must not pair with <Item>");
     const cvaIdx = r32CallSigSrc.indexOf('cva("bg-[#ff00aa]")');
-    assert.equal(r32CallSig.proseSpans.some((sp) => cvaIdx >= sp.start && cvaIdx < sp.end), false, "R32 A3-H3: intermediate cva() must not fall inside proseSpans");
+    assert.equal(r32CallSig.proseSpans.some((sp) => cvaIdx >= sp[0] && cvaIdx < sp[1]), false, "R32 A3-H3: intermediate cva() must not fall inside proseSpans");
     const r32ProseMasked = maskProseAndDocStringsPreservingLines(
       'const doc = "Do not use var(--brand-primary) in raw code";\nconst ok = "var(--brand-primary)";\n<div style={{ color: "var(--brand-primary)" }} />;\n'
     );
@@ -5882,6 +6376,587 @@ function runSelfTest() {
     const r39MaskedRoot = stripTokenBlocksPreservingLines(r39NestedRoot);
     assert.doesNotMatch(r39MaskedRoot, /#222222/, "R39 A2-L3: --a inside :root &.dark must be masked");
     assert.match(r39MaskedRoot, /color: #ff00aa/, "R39 A2-L3: non-var color property inside :root &.dark must remain scannable");
+
+    // Round 41 (R40-A2-M6 symlink/.. lexical collapse prevention + R40-A2-L2 root artifact URI "." ):
+    const r41Root = join(scratch, "r41-repo");
+    const r41Out = join(scratch, "r41-outside");
+    mkdirSync(join(r41Out, "sub"), { recursive: true });
+    mkdirSync(r41Root, { recursive: true });
+    writeFileSync(join(r41Out, "secret.txt"), "secret");
+    symlinkSync(join(r41Out, "sub"), join(r41Root, "sym"));
+    assert.throws(
+      () => assertPathWithinRoot(r41Root, `${r41Root}/sym/../secret.txt`),
+      /escapes repository root/i,
+      "R41 A2-M6: sym/.. must resolve symlink before collapsing .. and throw escape error"
+    );
+    const r41Sarif = formatSarif(
+      [{ ruleId: "dsaf/hardcoded-color", tier: "reflex", severity: "warning", file: r41Root, line: 1, message: "msg" }],
+      { repoRoot: r41Root }
+    );
+    assert.equal(
+      r41Sarif.runs[0].results[0].locations[0].physicalLocation.artifactLocation.uri,
+      ".",
+      "R41 A2-L2: repoRoot artifactLocation.uri must be '.' rather than empty string"
+    );
+
+    // Round 42 (R41-A3-L2 preserve runtime http(s):// URIs in SARIF & GitHub annotations):
+    const r42UrlFindings = [
+      { ruleId: "dsaf/runtime-check-failed", tier: "floor", severity: "error", file: "http://127.0.0.1:3000/dashboard?tab=1", line: 1, message: "runtime fail" },
+    ];
+    const r42UrlSarif = formatSarif(r42UrlFindings, { repoRoot: r41Root });
+    assert.equal(
+      r42UrlSarif.runs[0].results[0].locations[0].physicalLocation.artifactLocation.uri,
+      "http://127.0.0.1:3000/dashboard?tab=1",
+      "R42 A3-L2: SARIF artifactLocation.uri must preserve runtime http:// URLs verbatim"
+    );
+    const r42UrlAnn = formatGithubAnnotations(r42UrlFindings, { repoRoot: r41Root });
+    assert.match(r42UrlAnn, /file=http%3A\/\/127\.0\.0\.1%3A3000\/dashboard\?tab=1,/);
+
+    // Round 43 (R42-A4-M1 alias/canonical ancestor check in assertWritableOutputTarget, R42-A4-M2 hasOwnProperty RULE_CATALOG, R42-A4-M3 finite integer lines, R42-A4-L4 ././ and file: URI):
+    const r43AliasToRoot = join(scratch, "r43-alias-to-root");
+    symlinkSync(r41Root, r43AliasToRoot);
+    assert.throws(
+      () => assertWritableOutputFile(join(r43AliasToRoot, "sym", "secret.txt"), "--sarif", { rootDir: r41Root }),
+      /escapes repository root/i,
+      "R43 A4-M1: symlink alias pointing into rootDir then escaping via internal symlink must throw"
+    );
+    const r43ExtOut = assertWritableOutputFile(join(r41Out, "legit-ext.sarif"), "--sarif", { rootDir: r41Root });
+    assert.ok(r43ExtOut.endsWith("legit-ext.sarif"));
+
+    const r43ProtoRes = applyIgnores([{ ruleId: "constructor", line: 1, message: "proto" }], "", join(r41Root, "a.css"));
+    assert.equal(r43ProtoRes.active[0].tier, "reflex", "R43 A4-M2: constructor ruleId must not inherit Object.prototype");
+    const r43SarifMix = formatSarif(
+      [
+        { ruleId: "constructor", file: "././src/a.css", line: Infinity, message: "inf" },
+        { ruleId: "dsaf/no-100vw", tier: "floor", severity: "error", file: pathToFileURL(join(r41Root, "sub", "b.css")).href, line: 3.9, message: "float" },
+      ],
+      { repoRoot: r41Root }
+    );
+    assert.equal(r43SarifMix.runs[0].results[0].locations[0].physicalLocation.artifactLocation.uri, "src/a.css", "R43 A4-L4: strip repeated ./");
+    assert.equal(r43SarifMix.runs[0].results[0].locations[0].physicalLocation.region.startLine, 1, "R43 A4-M3: Infinity line normalizes to 1");
+    assert.equal(r43SarifMix.runs[0].results[1].locations[0].physicalLocation.artifactLocation.uri, "sub/b.css", "R43 A4-L4: file: URL inside repoRoot relativizes cleanly");
+    assert.equal(r43SarifMix.runs[0].results[1].locations[0].physicalLocation.region.startLine, 3, "R43 A4-M3: float line floors to 3");
+    const r43GhAnn = formatGithubAnnotations(
+      [
+        { ruleId: "custom/null-tier-check", tier: null, file: "././src/a.css", line: Infinity, severity: "error", message: "m" },
+        { ruleId: "DSAF/NO-100VW", tier: null, file: "././src/a.css", line: Infinity, severity: "error", message: "m" },
+      ],
+      { repoRoot: r41Root }
+    );
+    assert.match(r43GhAnn, /file=src\/a\.css,line=1,title=custom\/null-tier-check::\[REFLEX\] m/);
+    assert.match(r43GhAnn, /file=src\/a\.css,line=1,title=dsaf\/no-100vw::\[FLOOR\] m/);
+
+    // Round 44 (A4-H1 case-insensitive ruleId/tier/Floor, A4-M2 SARIF blank ruleId/message, A4-L3 Windows drive URI, A4-L4 symlinked repoRoot missing child, A3-M2 brace boundary):
+    const r44FloorRes = applyIgnores(
+      [{ ruleId: "DSAF/NO-TRANSITION-ALL", tier: "reflex", severity: "warning", line: 2, message: "x" }],
+      "/* dsaf-ignore dsaf/no-transition-all -- brand animation exception */\n.a { transition: all 0.2s; }",
+      join(r41Root, "r44-floor.css")
+    );
+    assert.equal(r44FloorRes.active.length, 2, "R44 A4-H1: uppercase Floor ruleId downgraded to reflex must remain active + emit rejection");
+    assert.equal(r44FloorRes.active[0].tier, "floor");
+    assert.equal(r44FloorRes.active[0].severity, "error");
+    assert.equal(r44FloorRes.active[1].ruleId, "dsaf/floor-waiver-rejected");
+    const r44UpperCustomFloor = applyIgnores(
+      [{ ruleId: "DSAF/OFF-GRID-SPACING", tier: "FLOOR", severity: "warning", line: 2, message: "13px" }],
+      "/* dsaf-ignore dsaf/off-grid-spacing -- brand card optical margin */\n.a { padding: 13px; }",
+      join(r41Root, "r44-upper-floor.css")
+    );
+    assert.equal(r44UpperCustomFloor.waived.length, 0, "R44 A4-H1: uppercase tier FLOOR must not waive");
+    assert.equal(r44UpperCustomFloor.active[1]?.ruleId, "dsaf/floor-waiver-rejected");
+    const r44EvalUpper = applyIgnores(
+      [],
+      "/* dsaf-ignore dsaf/off-grid-spacing -- intentional optical margin */\n.a { padding: 13px; }",
+      join(r41Root, "r44-eval.css"),
+      { evaluatedRules: new Set(["DSAF/OFF-GRID-SPACING"]), reportUnusedIgnores: true }
+    );
+    assert.equal(r44EvalUpper.unusedIgnores.length, 1, "R44 A4-H1: evaluatedRules matching must be case-insensitive");
+
+    const r44SarifBlank = formatSarif(
+      [
+        { ruleId: "", message: "", file: "src/blank.css", line: 2 },
+        { message: "", file: "src/undef.css", line: 4 },
+      ],
+      { repoRoot: r41Root }
+    );
+    assert.equal(r44SarifBlank.runs[0].results[0].ruleId, "dsaf/unknown");
+    assert.equal(r44SarifBlank.runs[0].results[1].ruleId, "dsaf/unknown");
+    assert.ok(r44SarifBlank.runs[0].results[0].message.text.length > 0);
+    assert.ok(r44SarifBlank.runs[0].results[1].message.text.length > 0);
+    assert.equal(r44SarifBlank.runs[0].tool.driver.rules.length, 1);
+    assert.equal(r44SarifBlank.runs[0].tool.driver.rules[0].id, "dsaf/unknown");
+
+    const r44SarifWin = formatSarif(
+      [{ ruleId: "dsaf/off-grid-spacing", tier: "reflex", severity: "warning", file: "C:\\repo\\my file.css", line: 1, message: "win" }],
+      { repoRoot: "/repo" }
+    );
+    assert.equal(
+      r44SarifWin.runs[0].results[0].locations[0].physicalLocation.artifactLocation.uri,
+      "file:" + "///C:/repo/my%20file.css",
+      "R44 A4-L3: Windows path must preserve drive letter in POSIX URI on any host"
+    );
+
+    const r44SymMissingSarif = formatSarif(
+      [{ ruleId: "dsaf/off-grid-spacing", tier: "reflex", severity: "warning", file: join(r41Root, "new-dir", "missing.css"), line: 1, message: "miss" }],
+      { repoRoot: r43AliasToRoot }
+    );
+    assert.equal(
+      r44SymMissingSarif.runs[0].results[0].locations[0].physicalLocation.artifactLocation.uri,
+      "new-dir/missing.css",
+      "R44 A4-L4: symlinked repoRoot must relativize nonexistent child under real root cleanly"
+    );
+
+    const r44BraceSrc = "} /* dsaf-ignore dsaf/off-grid-spacing -- spacing exception for card */\n.b { padding: 13px; }";
+    const r44BraceRes = applyIgnores(
+      [{ ruleId: "dsaf/off-grid-spacing", tier: "reflex", severity: "warning", line: 2, message: "13px" }],
+      r44BraceSrc,
+      join(r41Root, "r44-brace.css")
+    );
+    assert.equal(r44BraceRes.active.length, 1, "R44 A3-M2: closing brace before dsaf-ignore must stay inline and not waive line 2");
+
+    const r44SelfJsxSrc = "{/* dsaf-ignore dsaf/off-grid-spacing -- spacing exception for card */}\n}\n<div style={{ padding: 13 }} />";
+    const r44SelfJsxRes = applyIgnores(
+      [{ ruleId: "dsaf/off-grid-spacing", tier: "reflex", severity: "warning", line: 3, message: "13px" }],
+      r44SelfJsxSrc,
+      join(r41Root, "r44-selfjsx.tsx")
+    );
+    assert.equal(r44SelfJsxRes.active.length, 1, "R44 A3-M2: self-contained {/* ... */} must not skip closing } on line 2");
+
+    const r44NormalJsxSrc = "{/* dsaf-ignore dsaf/off-grid-spacing -- spacing exception for card */}\n<div style={{ padding: 13 }} />";
+    const r44NormalJsxRes = applyIgnores(
+      [{ ruleId: "dsaf/off-grid-spacing", tier: "reflex", severity: "warning", line: 2, message: "13px" }],
+      r44NormalJsxSrc,
+      join(r41Root, "r44-normaljsx.tsx")
+    );
+    assert.equal(r44NormalJsxRes.active.length, 0, "R44 A3-M2: standalone {/* ... */} must waive line 2");
+    assert.equal(r44NormalJsxRes.waived.length, 1);
+
+    // Round 45 (mixed-case RULE_CATALOG SARIF dedup/linking, Allman { } block non-escape, UNC backslash URI):
+    const r45MixedCaseSarif = formatSarif(
+      [
+        { ruleId: "DSAF/NO-100VW", severity: "error", file: "a.css", line: 1, message: "bad1" },
+        { ruleId: "dsaf/no-100vw", severity: "error", file: "b.css", line: 2, message: "bad2" },
+      ],
+      { repoRoot: r41Root }
+    );
+    assert.deepEqual(
+      r45MixedCaseSarif.runs[0].tool.driver.rules.map((r) => r.id),
+      ["dsaf/no-100vw"],
+      "R45 A4-M1: mixed-case RULE_CATALOG IDs must dedup to single lowercase canonical rule"
+    );
+    assert.deepEqual(
+      r45MixedCaseSarif.runs[0].results.map((r) => r.ruleId),
+      ["dsaf/no-100vw", "dsaf/no-100vw"],
+      "R45 A4-M1: SARIF results must match canonical driver.rules[].id"
+    );
+
+    const r45AllmanCss = [
+      ".empty",
+      "{",
+      "  /* dsaf-ignore dsaf/off-grid-spacing -- unused ignore inside empty block */",
+      "}",
+      ".real { padding: 13px; }",
+    ].join("\n");
+    const r45AllmanRes = applyIgnores(
+      [{ ruleId: "dsaf/off-grid-spacing", tier: "reflex", severity: "warning", line: 5, message: "13px" }],
+      r45AllmanCss,
+      join(r41Root, "r45-allman.css"),
+      { reportUnusedIgnores: true }
+    );
+    assert.equal(r45AllmanRes.waived.length, 0, "R45 A4-L1: closed Allman { } block must not escape across } to waive next rule");
+    assert.equal(r45AllmanRes.unusedIgnores.length, 1);
+    assert.ok(r45AllmanRes.active.some((f) => f.ruleId === "dsaf/off-grid-spacing" && f.line === 5));
+
+    const r45UncSarif = formatSarif(
+      [{ ruleId: "dsaf/no-100vw", severity: "error", file: "\\\\server\\share\\my file.css", line: 1, message: "unc" }],
+      { repoRoot: null }
+    );
+    assert.equal(
+      r45UncSarif.runs[0].results[0].locations[0].physicalLocation.artifactLocation.uri,
+      "file:" + "//server/share/my%20file.css",
+      "R45 A4-L2: UNC backslash path must map to RFC 8089 UNC file URI on POSIX"
+    );
+
+    // Round 46 (A4-M3 Prettier brace + note/blank gap, A4-M4 stacked/adjacent JSX comments, non-JSX block, A4-L5 cat defaultLevel fallback):
+    const r46GapNote = [
+      "{",
+      "  /* dsaf-ignore dsaf/important-override -- intentional demo override */",
+      "}",
+      "{/* regular note */}",
+      '<div style={{ color: "red !important" }} />',
+    ].join("\n");
+    const r46GapNoteRes = applyIgnores(
+      [{ ruleId: "dsaf/important-override", line: 5, message: "x" }],
+      r46GapNote,
+      join(r41Root, "r46-gapnote.tsx"),
+      { reportUnusedIgnores: true }
+    );
+    assert.equal(r46GapNoteRes.waived.length, 1, "R46 A4-M3: Prettier JSX ignore before regular comment note must waive element");
+    assert.equal(r46GapNoteRes.unusedIgnores.length, 0);
+
+    const r46GapBlank = [
+      "{",
+      "  /* dsaf-ignore dsaf/important-override -- intentional demo override */",
+      "}",
+      "",
+      '<div style={{ color: "red !important" }} />',
+    ].join("\n");
+    const r46GapBlankRes = applyIgnores(
+      [{ ruleId: "dsaf/important-override", line: 5, message: "x" }],
+      r46GapBlank,
+      join(r41Root, "r46-gapblank.tsx"),
+      { reportUnusedIgnores: true }
+    );
+    assert.equal(r46GapBlankRes.waived.length, 1, "R46 A4-M3: Prettier JSX ignore before blank line must waive element");
+    assert.equal(r46GapBlankRes.unusedIgnores.length, 0);
+
+    const r46StackedOne = [
+      "{/* dsaf-ignore dsaf/important-override -- intentional demo override */",
+      " /* dsaf-ignore dsaf/hardcoded-color -- intentional brand hex */}",
+      '<div style={{ color: "#ff00aa !important" }} />',
+    ].join("\n");
+    const r46StackedOneRes = applyIgnores(
+      [
+        { ruleId: "dsaf/important-override", line: 3, message: "x" },
+        { ruleId: "dsaf/hardcoded-color", line: 3, message: "y" },
+      ],
+      r46StackedOne,
+      join(r41Root, "r46-stacked1.tsx"),
+      { reportUnusedIgnores: true }
+    );
+    assert.equal(r46StackedOneRes.waived.length, 2, "R46 A4-M4: stacked ignores inside one multiline JSX brace container must waive both");
+    assert.equal(r46StackedOneRes.unusedIgnores.length, 0);
+
+    const r46AdjJsx = [
+      "{/* dsaf-ignore dsaf/hardcoded-color -- intentional brand hex */} {/* note */}",
+      '<div style={{ color: "#ff00aa" }} />',
+    ].join("\n");
+    const r46AdjJsxRes = applyIgnores(
+      [{ ruleId: "dsaf/hardcoded-color", line: 2, message: "y" }],
+      r46AdjJsx,
+      join(r41Root, "r46-adj.tsx"),
+      { reportUnusedIgnores: true }
+    );
+    assert.equal(r46AdjJsxRes.waived.length, 1, "R46 A4-M4: JSX ignore sharing line with sibling JSX comment must waive element");
+    assert.equal(r46AdjJsxRes.unusedIgnores.length, 0);
+
+    const r46NonJsxBlk = [
+      "{",
+      "  /* dsaf-ignore dsaf/hardcoded-color -- dead standalone block */",
+      "}",
+      "const S = styled.div`color: #ff00aa;`;",
+    ].join("\n");
+    const r46NonJsxRes = applyIgnores(
+      [{ ruleId: "dsaf/hardcoded-color", line: 4, message: "y" }],
+      r46NonJsxBlk,
+      join(r41Root, "r46-nonjsx.tsx"),
+      { reportUnusedIgnores: true }
+    );
+    assert.equal(r46NonJsxRes.waived.length, 0, "R46 A4-M4: non-JSX block } before const must not waive");
+    assert.equal(r46NonJsxRes.unusedIgnores.length, 1);
+
+    const r46DefaultLevelFindings = [
+      { ruleId: "dsaf/no-100vw", file: "a.css", line: 1, message: "100vw" },
+      { ruleId: "dsaf/semantic-orphan-var", file: "a.css", line: 2, message: "orphan" },
+    ];
+    const r46DefaultSarif = formatSarif(r46DefaultLevelFindings);
+    assert.deepEqual(r46DefaultSarif.runs[0].results.map((r) => r.level), ["error", "note"], "R46 A4-L5: formatSarif must fall back to cat.defaultLevel");
+    const r46DefaultGh = formatGithubAnnotations(r46DefaultLevelFindings);
+    assert.match(r46DefaultGh, /^::error .*\[FLOOR\] 100vw/m);
+    assert.match(r46DefaultGh, /^::notice .*\[FINISH\] orphan/m);
+
+    const r46AstroMulti = [
+      "---",
+      "---",
+      "{",
+      "  /* dsaf-ignore dsaf/tailwind-arbitrary -- custom hero grid track width */",
+      "}",
+      '<div class="w-[317px]" />',
+    ].join("\n");
+    const r46AstroRes = applyIgnores(
+      [{ ruleId: "dsaf/tailwind-arbitrary", line: 6, message: "w-[317px]" }],
+      r46AstroMulti,
+      join(r41Root, "r46-astro.astro"),
+      { reportUnusedIgnores: true }
+    );
+    assert.equal(r46AstroRes.waived.length, 1, "R46: Astro multiline { /* dsaf-ignore */ } after --- frontmatter must waive element");
+    assert.equal(r46AstroRes.unusedIgnores.length, 0);
+
+    // Round 47 (A4-M2 same-line closeLine & trailing comma, A4-M3 intervening regular comment, A4-L5 empty annotation message fallback):
+    const r47SameLineJsx = [
+      "<>",
+      "  {",
+      "    /* dsaf-ignore dsaf/hardcoded-color -- same-line brand accent */",
+      '  } <span style={{ color: "#ff00aa" }} />',
+      "</>",
+    ].join("\n");
+    const r47SameLineRes = applyIgnores(
+      [{ ruleId: "dsaf/hardcoded-color", line: 4, message: "hex" }],
+      r47SameLineJsx,
+      join(r41Root, "r47-sameline.tsx"),
+      { reportUnusedIgnores: true }
+    );
+    assert.equal(r47SameLineRes.waived.length, 1, "R47 A4-M2: multiline { /* ignore */ } <span /> on close line must waive same line");
+    assert.equal(r47SameLineRes.unusedIgnores.length, 0);
+
+    const r47ObjAfter = [
+      "const xs = [",
+      "  {",
+      "    /* dsaf-ignore dsaf/hardcoded-color -- object literal, not JSX */",
+      "  },",
+      "];",
+      '<span style={{ color: "#ff00aa" }} />',
+    ].join("\n");
+    const r47ObjRes = applyIgnores(
+      [{ ruleId: "dsaf/hardcoded-color", line: 6, message: "hex" }],
+      r47ObjAfter,
+      join(r41Root, "r47-obj.tsx"),
+      { reportUnusedIgnores: true }
+    );
+    assert.equal(r47ObjRes.waived.length, 0, "R47 A4-M2: JS object literal }, must NOT waive later JSX");
+    assert.equal(r47ObjRes.unusedIgnores.length, 1);
+
+    const r47InterCss = [
+      "/* dsaf-ignore dsaf/hardcoded-color -- brand gradient canvas fallback */",
+      "/* regular note explaining exception */",
+      ".a { color: #ff00aa; }",
+    ].join("\n");
+    const r47InterCssRes = applyIgnores(
+      [{ ruleId: "dsaf/hardcoded-color", line: 3, message: "hex" }],
+      r47InterCss,
+      join(r41Root, "r47-inter.css"),
+      { reportUnusedIgnores: true }
+    );
+    assert.equal(r47InterCssRes.waived.length, 1, "R47 A4-M3: intervening regular CSS comment must skip to next code line");
+    assert.equal(r47InterCssRes.unusedIgnores.length, 0);
+
+    const r47InterJs = [
+      "// dsaf-ignore dsaf/hardcoded-color -- intentional brand canvas swatch",
+      "// eslint-disable-next-line no-inline-styles",
+      'const el = <div style={{ color: "#ff00aa" }} />;',
+    ].join("\n");
+    const r47InterJsRes = applyIgnores(
+      [{ ruleId: "dsaf/hardcoded-color", line: 3, message: "hex" }],
+      r47InterJs,
+      join(r41Root, "r47-inter.tsx"),
+      { reportUnusedIgnores: true }
+    );
+    assert.equal(r47InterJsRes.waived.length, 1, "R47 A4-M3: intervening regular JS line comment must skip to next code line");
+
+    const r47InterHtml = [
+      "<!-- dsaf-ignore dsaf/hardcoded-color -- hero SVG fallback tint -->",
+      "<!-- regular HTML comment -->",
+      '<div style="color: #ff00aa"></div>',
+    ].join("\n");
+    const r47InterHtmlRes = applyIgnores(
+      [{ ruleId: "dsaf/hardcoded-color", line: 3, message: "hex" }],
+      r47InterHtml,
+      join(r41Root, "r47-inter.html"),
+      { reportUnusedIgnores: true }
+    );
+    assert.equal(r47InterHtmlRes.waived.length, 1, "R47 A4-M3: intervening regular HTML comment must skip to next code line");
+
+    const r47BlankSepCss = [
+      "/* dsaf-ignore dsaf/hardcoded-color -- separated by blank line */",
+      "",
+      ".a { color: #ff00aa; }",
+    ].join("\n");
+    const r47BlankSepRes = applyIgnores(
+      [{ ruleId: "dsaf/hardcoded-color", line: 3, message: "hex" }],
+      r47BlankSepCss,
+      join(r41Root, "r47-blank.css"),
+      { reportUnusedIgnores: true }
+    );
+    assert.equal(r47BlankSepRes.waived.length, 0, "R47 A4-M3: blank line between CSS dsaf-ignore and target must still NOT waive");
+
+    const r47EmptyMsgAnn = formatGithubAnnotations([{ file: "a.css", line: 3, ruleId: "dsaf/no-transition-all", message: "" }]);
+    assert.ok(r47EmptyMsgAnn.includes("[FLOOR] ") && r47EmptyMsgAnn.trim().length > r47EmptyMsgAnn.indexOf("[FLOOR] ") + 8, "R47 A4-L5: formatGithubAnnotations must fall back to catalog shortDescription when message is empty");
+
+    // Round 48 regressions (A4-M1, A4-M2):
+    const r48StackedSrc = [
+      'export const S = ({ title }: any) => (',
+      '  <div>',
+      '    Hello {title}',
+      '    {',
+      '      /* dsaf-ignore dsaf/important-override -- first stacked rationale */',
+      '    }',
+      '    {',
+      '      /* dsaf-ignore dsaf/hardcoded-color -- second stacked rationale */',
+      '    }',
+      '    <span style={{ color: "#ff00aa !important" }} />',
+      '  </div>',
+      ');',
+    ].join("\n");
+    const r48StackedDirs = parseInlineIgnores(r48StackedSrc, { filePath: "r48-stacked.tsx" });
+    assert.equal(r48StackedDirs.length, 2, "R48 A4-M1: stacked multiline JSX containers after text/{title} must parse both directives");
+    const r48StackedApplied = applyIgnores(
+      [
+        { file: "r48-stacked.tsx", line: 10, ruleId: "dsaf/important-override", tier: "reflex", severity: "warning", message: "!important" },
+        { file: "r48-stacked.tsx", line: 10, ruleId: "dsaf/hardcoded-color", tier: "reflex", severity: "warning", message: "#ff00aa" },
+      ],
+      r48StackedSrc,
+      "r48-stacked.tsx",
+      { reportUnusedIgnores: true }
+    );
+    assert.equal(r48StackedApplied.waived.length, 2);
+    assert.equal(r48StackedApplied.active.length, 0);
+    assert.equal(r48StackedApplied.unusedIgnores.length, 0);
+
+    for (const [negLabel, negSrc] of [
+      ["js-fn-block", 'function foo() {\n  /* dsaf-ignore dsaf/important-override -- non-jsx block container */\n}\n<div style={{ color: "red !important" }} />\n'],
+      ["js-obj-lit", 'const obj = {\n  /* dsaf-ignore dsaf/important-override -- non-jsx object container */\n};\n<div style={{ color: "red !important" }} />\n'],
+    ]) {
+      const negApp = applyIgnores(
+        [{ file: "r48-neg.tsx", line: 4, ruleId: "dsaf/important-override", tier: "reflex", severity: "warning", message: "!important" }],
+        negSrc,
+        "r48-neg.tsx",
+        { reportUnusedIgnores: true }
+      );
+      assert.equal(negApp.waived.length, 0, `R48 A4-M1: ${negLabel} must remain rejected as non-JSX`);
+    }
+
+    const r48ImpCommented = extractImportantStyleSurfacePreservingLines('<div style={{ /* " */ color: "red !important" }} />', false);
+    assert.match(r48ImpCommented, /!important/, "R48 A4-M2: /* \" */ comment inside style={{}} must not hide !important");
+    const r48CmtCtx = scanMarkupContexts('<div>{/* } <video autoplay /> */}</div>', {});
+    assert.equal(r48CmtCtx.openTags.some((t) => t.tag === "video"), false, "R48 A4-M2: '}' inside JSX comment must not close container and expose <video>");
+    const r48MaskedRaw = maskProseAndDocStringsPreservingLines('/* <div> */ const x = "hello";', {});
+    assert.match(r48MaskedRaw, /const x = /, "R48 A4-M2: maskProseAndDocStringsPreservingLines must strip raw comments before scanning JSX tags");
+
+    // Round 49 regressions (R49-A4-H1, R49-A4-M1, R49-A4-M2, R49-A4-L1):
+    const r49ProseSrc = [
+      'export function Card({ ok }: { ok: boolean }) {',
+      '  return (',
+      '    <div>',
+      "      {ok && <p>It's broken</p>}",
+      '    </div>',
+      '  );',
+      '}',
+      '',
+      'const badgeCls = "bg-[#ff00aa] p-[13px] transition-all outline-none";',
+      'const Box = styled.div`color: #123456 !important;`;',
+    ].join("\n");
+    const r49Masked = maskProseAndDocStringsPreservingLines(r49ProseSrc, {});
+    assert.match(r49Masked, /styled\.div`color: #123456 !important;`/, "R49 A4-H1: apostrophe inside {ok && <p>It's</p>} must not swallow downstream code in proseSpans");
+    const r49PopSrc = [
+      'export const Demo = () => (',
+      '  <Popover',
+      "    trigger={<span>It's open</span>}",
+      '    style={{ color: "red !important" }}',
+      '  >',
+      '    <div style={{ color: "blue !important" }} />',
+      '  </Popover>',
+      ');',
+    ].join("\n");
+    const r49PopImp = extractImportantStyleSurfacePreservingLines(r49PopSrc, false);
+    assert.equal((r49PopImp.match(/!important/gi) || []).length, 2, "R49 A4-H1: apostrophe inside trigger={<span>It's</span>} must not drop host style={{}}");
+    const r49SvgSrc = [
+      'export const A = ({ ok }: any) => (',
+      '  <svg viewBox="0 0 24 24">',
+      "    {ok && <text>It's</text>}",
+      '    <path fill="#ff00aa" />',
+      '  </svg>',
+      ');',
+      'export const C = () => <div><p>Don\'t</p><span style={{ color: "#123456" }} /></div>;',
+      'export const B = () => <svg><path /></svg>;',
+    ].join("\n");
+    assert.equal(findSvgBlockRanges(r49SvgSrc).length, 2, "R49 A4-H1: findSvgBlockRanges must keep enclosing <svg> when child brace has apostrophe");
+
+    const r49StackedSameLine = [
+      '<div>',
+      '  {',
+      '    /* dsaf-ignore dsaf/important-override -- first valid rationale */',
+      '  }',
+      '  {',
+      '    /* dsaf-ignore dsaf/hardcoded-color -- second valid rationale */',
+      '  } <div style={{ color: "#ff00aa !important" }} />',
+      '</div>',
+    ].join("\n");
+    const r49SameLineApp = applyIgnores(
+      [
+        { file: "r49-same.tsx", line: 7, ruleId: "dsaf/important-override", tier: "reflex", severity: "warning", message: "!important" },
+        { file: "r49-same.tsx", line: 7, ruleId: "dsaf/hardcoded-color", tier: "reflex", severity: "warning", message: "#ff00aa" },
+      ],
+      r49StackedSameLine,
+      "r49-same.tsx",
+      { reportUnusedIgnores: true }
+    );
+    assert.equal(r49SameLineApp.waived.length, 2, "R49 A4-M1: closing line with live JSX must receive stacked multiline waiver");
+    assert.equal(r49SameLineApp.active.length, 0);
+    assert.equal(r49SameLineApp.unusedIgnores.length, 0);
+
+    const r49ScssUrl = [
+      '<style lang="scss">.hero { background: url(https://cdn.example.com/bg.png); color: #ff00aa !important; }</style>',
+      '<template>',
+      '  <p>Route: /a // <button class="outline-none" /></p>',
+      '</template>',
+    ].join("\n");
+    assert.equal(extractRealStyleBlocks(r49ScssUrl, null, { isMarkupSfc: true }).length, 1, "R49 A4-M2: unquoted url(https://...) in SCSS style must not swallow </style>");
+    assert.match(extractImportantStyleSurfacePreservingLines(r49ScssUrl, false, { isMarkupSfc: true }), /!important/);
+    assert.match(stripCommentsPreservingLines(r49ScssUrl), /outline-none/);
+
+    assert.match(
+      extractImportantStyleSurfacePreservingLines('<div style:--brandColor|important={x} />', false),
+      /!important/,
+      "R49 A4-L1: braced style directive with uppercase CSS variable must match case-insensitively"
+    );
+
+    // Round 50 regressions (R50-A4-H1, R50-A4-M1, R50-A4-L1, R50-A2-M4):
+    const r50VueUnclosed = '<template><style>.btn { outline: none; }</style><p>Unclosed {{ literal</p></template>\n';
+    const r50VueCtx = scanMarkupContexts(r50VueUnclosed, { isMarkupSfc: true, mustacheExprs: true });
+    assert.ok(r50VueCtx.proseSpans.every(([s0]) => s0 >= 0), "R50 A4-H1: unclosed {{ must never emit negative proseSpan start");
+    assert.equal(extractRealStyleBlocks(r50VueUnclosed, r50VueCtx, { isMarkupSfc: true }).length, 1);
+    const r50VueImp = extractImportantStyleSurfacePreservingLines(
+      '<template><style>.btn { color: #ff00aa !important; }</style><p>Unclosed {{ literal</p></template>\n',
+      false,
+      { isMarkupSfc: true, mustacheExprs: true }
+    );
+    assert.match(r50VueImp, /!important/, "R50 A4-H1: unclosed {{ must not blank preceding <style> block");
+
+    const r50SvelteUnclosed = '<style>.btn { color: #ff00aa !important; }</style><p>Unclosed { brace</p>\n';
+    const r50SvelteCtx = scanMarkupContexts(r50SvelteUnclosed, { isMarkupSfc: true, braceExprs: true });
+    assert.ok(r50SvelteCtx.proseSpans.every(([s0]) => s0 >= 0), "R50 A4-H1: unclosed { must never emit negative proseSpan start");
+    assert.match(
+      extractImportantStyleSurfacePreservingLines(r50SvelteUnclosed, false, { isMarkupSfc: true, braceExprs: true }),
+      /!important/,
+      "R50 A4-H1: unclosed { must not blank preceding <style> block"
+    );
+
+    const r50AstroVoid1 = '{show && <img src="/hero.png">} <div style={{ color: "#ff00aa !important" }} />\n';
+    assert.match(
+      extractImportantStyleSurfacePreservingLines(r50AstroVoid1, false, { isMarkupSfc: true, braceExprs: true }),
+      /!important/,
+      "R50 A4-M1: lowercase void <img> inside Astro brace expression must not swallow downstream code"
+    );
+    const r50AstroVoid2 = '{show && <div><img src="/hero.png"></div>} <div style={{ color: "#112233 !important" }} />\n';
+    assert.match(
+      extractImportantStyleSurfacePreservingLines(r50AstroVoid2, false, { isMarkupSfc: true, braceExprs: true }),
+      /!important/,
+      "R50 A4-M1: void <img> inside balanced <div> inside Astro brace expression must close properly"
+    );
+    const r50JsxLink = '{show && <Link href="/"><span>Home</span></Link>} <div style={{ color: "#112233 !important" }} />\n';
+    assert.match(
+      extractImportantStyleSurfacePreservingLines(r50JsxLink, false),
+      /!important/,
+      "R50 A4-M1: paired <Link> inside JSX brace expression must remain balanced"
+    );
+
+    const r50DirImp = '<div style:--my_accent|important="var(--c)" style:--_bg|important={val} />\n';
+    assert.equal(
+      (extractImportantStyleSurfacePreservingLines(r50DirImp, false, { isMarkupSfc: true, braceExprs: true }).match(/!important/g) || []).length,
+      2,
+      "R50 A4-L1: Svelte style:--my_accent|important and style:--_bg|important must emit !important"
+    );
+
+    const r50SxCss = extractImportantStyleSurfacePreservingLines(
+      '<Box sx={{ color: "#ff00aa !important", "& #ace": { color: "var(--ink)" }, ["#cab"]: { color: "#112233" } }} css={{ background: "#223344" }} CSS={{ background: "#dead00" }} />\n',
+      false
+    );
+    assert.match(r50SxCss, /#ff00aa/);
+    assert.match(r50SxCss, /!important/);
+    assert.match(r50SxCss, /#112233/);
+    assert.match(r50SxCss, /#223344/);
+    assert.doesNotMatch(r50SxCss, /#ace/);
+    assert.doesNotMatch(r50SxCss, /#cab/);
+    assert.doesNotMatch(r50SxCss, /#dead00/);
 
     console.log("CI_REPORT_SELF_TEST_PASSED (SARIF 2.1.0 + GitHub annotations + 3-tier waiver & unused-ignore gate)");
     return 0;

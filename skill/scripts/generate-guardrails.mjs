@@ -57,7 +57,7 @@ const QUOTED_HEX_RE = /["']#(?:[0-9a-fA-F]{8}|[0-9a-fA-F]{6}|[0-9a-fA-F]{4}|[0-9
 const SVG_PROP_HEX_RE =
   /(?<![-\\w])(?:fill|stroke|stopColor|stop-color|floodColor|flood-color|lightingColor|lighting-color)\\s*(?:=|:)\\s*(?:\\{\\s*)?["']#(?:[0-9a-fA-F]{8}|[0-9a-fA-F]{6}|[0-9a-fA-F]{4}|[0-9a-fA-F]{3})["'](?:\\s*\\})?/gi;
 const TW_ARB_RE =
-  /(?<=^|[\\s"'\`:])(!?(?:bg|text|border(?:-(?:t|r|b|l|x|y|s|e))?|divide(?:-[xy])?|shadow|drop-shadow|caret|ring(?:-offset)?|inset-ring|placeholder|fill|stroke|from|to|via|accent|outline|decoration)-\\[(?:color:)?(?:#[^\\]\\s]+|(?:rgba?|hsla?|oklch|oklab|hwb|lab|lch)\\([^\\]\\s]+\\))\\]!?|!?\\[(?:color|background-color|background|border-color|outline-color|fill|stroke|accent-color|caret-color):(?:#[0-9a-fA-F]{3,8}|(?:rgba?|hsla?|oklch|oklab|hwb|lab|lch)\\([^\\]\\s]+\\))\\]!?|!?-?(?:p|px|py|pt|pr|pb|pl|ps|pe|m|mx|my|mt|mr|mb|ml|ms|me|gap|gap-x|gap-y|space-x|space-y|rounded(?:-[a-z]+)?|(?:min-|max-)?(?:w|h|size)|inset(?:-[xy])?|top|right|bottom|left|start|end)-\\[-?\\d+(?:\\.\\d+)?px\\]!?|!?\\[(?:padding|margin|gap|row-gap|column-gap|width|height|min-width|max-width|min-height|max-height|inset|top|right|bottom|left|border-radius)(?:-(?:top|right|bottom|left|inline|block)(?:-(?:start|end))?)?:\\s*-?\\d+(?:\\.\\d+)?px\\]!?)/g;
+  /(?<=^|[\\s"'\`:])(!?(?:bg|text|border(?:-(?:t|r|b|l|x|y|s|e))?|divide(?:-[xy])?|shadow|drop-shadow|caret|ring(?:-offset)?|inset-ring|placeholder|fill|stroke|from|to|via|accent|outline|decoration)-\\[(?:color:)?(?:#[^\\]\\s]+|(?:rgba?|hsla?|oklch|oklab|hwb|lab|lch|color-mix|color|light-dark)\\([^\\]\\s]+\\))\\]!?|!?\\[(?:color|background-color|background|border-color|outline-color|fill|stroke|accent-color|caret-color):(?:#[0-9a-fA-F]{3,8}|(?:rgba?|hsla?|oklch|oklab|hwb|lab|lch|color-mix|color|light-dark)\\([^\\]\\s]+\\))\\]!?|!?-?(?:p|px|py|pt|pr|pb|pl|ps|pe|m|mx|my|mt|mr|mb|ml|ms|me|gap|gap-x|gap-y|space-x|space-y|rounded(?:-[a-z]+)?|(?:min-|max-)?(?:w|h|size)|inset(?:-[xy])?|top|right|bottom|left|start|end)-\\[-?\\d+(?:\\.\\d+)?px\\]!?|!?\\[(?:padding|margin|gap|row-gap|column-gap|width|height|min-width|max-width|min-height|max-height|inset|top|right|bottom|left|border-radius)(?:-(?:top|right|bottom|left|inline|block)(?:-(?:start|end))?)?:\\s*-?\\d+(?:\\.\\d+)?px\\]!?)/g;
 
 function findSvgBlockRanges(src, isMarkupSfc = false, ext = "") {
   const s = String(src || "");
@@ -65,37 +65,28 @@ function findSvgBlockRanges(src, isMarkupSfc = false, ext = "") {
   const ranges = [];
   const strSpans = computeJsStringLiteralSpans(s, isMarkupSfc, ext);
   const inJsStr = (idx) => strSpans.some(([s0, e0]) => idx >= s0 && idx < e0);
+  const lowerExtSvg = String(ext || "").toLowerCase();
+  const allowSvgBraceExpr = !isMarkupSfc || lowerExtSvg === ".astro" || lowerExtSvg === ".svelte";
+  const allowSvgMustache = lowerExtSvg === ".vue";
+  const allowSvgJsx = !isMarkupSfc || lowerExtSvg === ".astro";
   const skipExprBraces = (openIdx) => {
-    let k = openIdx + 1;
-    let br = 1;
-    let q = null;
-    let lastSig = "{";
-    const parenStack = [];
-    while (k < s.length && br > 0) {
+    if (!allowSvgBraceExpr) return -1;
+    const endIdx = findBalancedBraceEnd(s, openIdx, allowSvgJsx);
+    return endIdx === -1 ? -1 : endIdx + 1;
+  };
+  const skipVueMustache = (openIdx) => {
+    let k = openIdx + 2;
+    let mq = null;
+    while (k < s.length) {
       const c = s[k];
-      if (q) {
+      if (mq) {
         if (c === "\\\\" && k + 1 < s.length) { k += 2; continue; }
-        if (q === BT && c === "$" && s[k + 1] === "{") {
-          const innerEnd = skipExprBraces(k + 1);
-          if (innerEnd !== -1) { lastSig = "}"; k = innerEnd; continue; }
-        }
-        if (c === q || (q !== BT && c === "\\n")) { q = null; lastSig = c; }
+        if (c === mq || (mq !== BT && c === "\\n")) mq = null;
         k++;
         continue;
       }
-      const reEnd = skipJsRegexLiteral(s, k, lastSig, openIdx);
-      if (reEnd !== -1) { lastSig = "/"; k = reEnd; continue; }
-      if (c === '"' || c === "'" || c === BT) { q = c; }
-      else if (c === "{") { br++; lastSig = "{"; }
-      else if (c === "}") { br--; lastSig = "}"; if (br === 0) return k + 1; }
-      else if (c === "(") {
-        parenStack.push(/(?:^|[^\\w$.])(?:if|while|for|with)\\s*$/.test(s.slice(Math.max(openIdx, k - 16), k)));
-        lastSig = "(";
-      } else if (c === ")") {
-        lastSig = parenStack.length > 0 && parenStack.pop() ? "control)" : ")";
-      } else if (!/\\s/.test(c)) {
-        lastSig = c;
-      }
+      if (c === '"' || c === "'" || c === BT) { mq = c; k++; continue; }
+      if (c === "}" && s[k + 1] === "}") return k + 2;
       k++;
     }
     return -1;
@@ -103,28 +94,49 @@ function findSvgBlockRanges(src, isMarkupSfc = false, ext = "") {
   const scanOpenSvgEnd = (openStart) => {
     let i = openStart + 4;
     let q = null;
+    let brackDepth = 0;
+    let inBrackQ = false;
     while (i < s.length) {
       const ch = s[i];
       if (q) {
-        if (q === BT && ch === "\\\\" && i + 1 < s.length) i += 2;
+        if ((inBrackQ || q === BT) && ch === "\\\\" && i + 1 < s.length) i += 2;
         else {
           if (q === BT && ch === "$" && s[i + 1] === "{") {
             const bEnd = skipExprBraces(i + 1);
             if (bEnd !== -1) { i = bEnd; continue; }
           }
-          if (ch === q) q = null;
+          if (lowerExtSvg === ".svelte" && !inBrackQ && (q === '"' || q === "'") && ch === "{") {
+            const bEnd = skipExprBraces(i);
+            if (bEnd !== -1) { i = bEnd; continue; }
+          }
+          if (ch === q) {
+            q = null;
+            inBrackQ = false;
+          }
           i++;
         }
         continue;
       }
-      if (ch === "{") {
+      if (ch === "[" ) {
+        brackDepth++;
+        i++;
+        continue;
+      }
+      if (ch === "]") {
+        brackDepth = Math.max(0, brackDepth - 1);
+        i++;
+        continue;
+      }
+      if (allowSvgBraceExpr && brackDepth === 0 && ch === "{") {
         const bEnd = skipExprBraces(i);
         if (bEnd !== -1) { i = bEnd; continue; }
         i++;
         continue;
       }
-      if (ch === '"' || ch === "'" || ch === BT) q = ch;
-      else if (ch === ">") {
+      if (ch === '"' || ch === "'" || ch === BT) {
+        q = ch;
+        inBrackQ = brackDepth > 0;
+      } else if (ch === ">" && brackDepth === 0) {
         let p = i - 1;
         while (p >= openStart && /\\s/.test(s[p])) p--;
         return { end: i + 1, selfClosing: s[p] === "/" };
@@ -151,7 +163,7 @@ function findSvgBlockRanges(src, isMarkupSfc = false, ext = "") {
         i++;
         continue;
       }
-      if (ch === "{") {
+      if (allowSvgBraceExpr && ch === "{") {
         const bEnd = skipExprBraces(i);
         if (bEnd !== -1) { sawEq = false; i = bEnd; continue; }
       }
@@ -190,7 +202,13 @@ function findSvgBlockRanges(src, isMarkupSfc = false, ext = "") {
     let matchedEnd = -1;
     while (scan < s.length && depth > 0) {
       const sc = s[scan];
-      if (sc === "{") {
+      if (allowSvgMustache && sc === "{" && s[scan + 1] === "{") {
+        const mEnd = skipVueMustache(scan);
+        if (mEnd !== -1) { scan = mEnd; continue; }
+        scan++;
+        continue;
+      }
+      if (allowSvgBraceExpr && sc === "{") {
         const bEnd = skipExprBraces(scan);
         if (bEnd !== -1) { scan = bEnd; continue; }
         scan++;
@@ -214,6 +232,18 @@ function findSvgBlockRanges(src, isMarkupSfc = false, ext = "") {
           if (!innerOpen.selfClosing) depth++;
           scan = innerOpen.end;
           continue;
+        }
+        if (/^<style(?=[\\s/>])/i.test(s.slice(scan, scan + 7))) {
+          const openStyle = findOpenStyleTagEnd(s, scan, true);
+          if (openStyle) {
+            if (openStyle.selfClosing) { scan = openStyle.tagEnd; continue; }
+            const styleTagStr = s.slice(scan, openStyle.tagEnd);
+            const isScssStyle = /\\blang\\s*=\\s*(?:"(?:scss|sass|less|stylus)"|'(?:scss|sass|less|stylus)')/i.test(styleTagStr);
+            const isJsxStyleBody = s.slice(openStyle.tagEnd).trimStart().startsWith("{");
+            const closeStyle = findStyleTagClose(s, openStyle.tagEnd, isScssStyle, isJsxStyleBody, false);
+            scan = closeStyle ? closeStyle.closeEnd : openStyle.tagEnd;
+            continue;
+          }
         }
         if (/^<[A-Za-z!]/.test(s.slice(scan, scan + 2))) {
           const tEnd = scanTagClose(scan);
@@ -325,6 +355,34 @@ function classifyAfterReturnType(str, startAfterRp) {
   return null;
 }
 
+function isJsxStartAllowedAt(src, ltIdx, lastSig, minStart = 0) {
+  if (lastSig === "" || lastSig === "control)") return true;
+  const pre96 = src.slice(Math.max(minStart, ltIdx - 96), ltIdx);
+  if (lastSig === ">") {
+    return /(?:=>|\\/>|<\\/[A-Za-z0-9_.:-]*\\s*>)\\s*$/.test(pre96);
+  }
+  if (lastSig === "+" || lastSig === "-") {
+    const preTrim = pre96.trimEnd();
+    if (preTrim.endsWith("++") || preTrim.endsWith("--")) return false;
+    return lastSig === "+";
+  }
+  if (lastSig === "!") {
+    const beforeBang = pre96.trimEnd().replace(/!+\\s*$/, "").trimEnd();
+    if (
+      beforeBang &&
+      /[A-Za-z0-9_$\\])'"\\x60]$/.test(beforeBang) &&
+      !/(?:^|[^\\w$.])(?:return|case|throw|else|default|yield|await|void|typeof|in|of|instanceof|new|delete)$/.test(beforeBang)
+    ) {
+      return false;
+    }
+    return true;
+  }
+  if (/[=([,:;?&|{}]/.test(lastSig)) return true;
+  return /(?:^|[^\\w$.])(?:return|case|throw|else|default|yield|await|void)\\s*$|=>\\s*$/.test(
+    src.slice(Math.max(minStart, ltIdx - 24), ltIdx)
+  );
+}
+
 function parseJsxOpenTagAt(s, ltIdx) {
   if (s.startsWith("<>", ltIdx)) return { start: ltIdx, end: ltIdx + 2, tag: "", selfClosing: false, exprSpans: [], attrStrSpans: [] };
   const om = /^<([A-Za-z][A-Za-z0-9_.:-]*)(?=[\\s/><])/.exec(s.slice(ltIdx, ltIdx + 64));
@@ -409,7 +467,7 @@ function parseJsxOpenTagAt(s, ltIdx) {
       j = be + 1;
       continue;
     }
-    if (c === "," || c === ";" || c === "<") return null;
+    if (c === "," || c === ";" || c === "<" || c === "&" || c === "|" || c === "?" || c === "(" || c === ")" || c === "[") return null;
     if (c === "=" && s[j + 1] === ">") return null;
     if (c === ">") {
       if (/(?:^|\\s)extends(?:\\s+(?![=/>\\s])|\\s*\\{)/.test(nonExpr)) return null;
@@ -611,14 +669,7 @@ function isInOpenJsxChildren(priorSrc) {
       continue;
     }
     if (ch === "<") {
-      const canStartJsx =
-        lastSig === "" ||
-        lastSig === "control)" ||
-        /[=([,:;?+&|!{}>]/.test(lastSig) ||
-        /(?:^|[^\\w$.])(?:return|case|throw|else|default|yield|await|void)\\s*$|=>\\s*$/.test(
-          s.slice(Math.max(0, i - 24), i)
-        );
-      if (canStartJsx) {
+      if (isJsxStartAllowedAt(s, i, lastSig, 0)) {
         const openTag = scanJsxOpenTag(i);
         if (openTag) {
           if (!openTag.selfClosing) stack.push({ kind: "jsx", tag: openTag.tag });
@@ -655,7 +706,7 @@ function isInOpenJsxChildren(priorSrc) {
   return Boolean(tEnd && tEnd.kind === "jsx");
 }
 
-function createJsxChildrenCursor(outArr) {
+function createJsxChildrenCursor(outArr, onJsxChildBrace = null) {
   const BT = String.fromCharCode(96);
   const stack = [];
   const top = () => (stack.length > 0 ? stack[stack.length - 1] : null);
@@ -728,6 +779,7 @@ function createJsxChildrenCursor(outArr) {
             return inc.exprStart === -1 ? false : isInOpenJsxChildren(buf.slice(inc.exprStart));
           }
         } else if (ch === "{") {
+          if (onJsxChildBrace) onJsxChildBrace(curPos);
           stack.push({ kind: "brace", isTpl: false });
           lastSig = "{";
           curPos++;
@@ -756,14 +808,7 @@ function createJsxChildrenCursor(outArr) {
         continue;
       }
       if (ch === "<") {
-        const canStartJsx =
-          lastSig === "" ||
-          lastSig === "control)" ||
-          /[=([,:;?+&|!{}>]/.test(lastSig) ||
-          /(?:^|[^\\w$.])(?:return|case|throw|else|default|yield|await|void)\\s*$|=>\\s*$/.test(
-            buf.slice(Math.max(0, curPos - 24), curPos)
-          );
-        if (canStartJsx) {
+        if (isJsxStartAllowedAt(buf, curPos, lastSig, 0)) {
           const openTag = parseJsxOpenTagAt(buf, curPos);
           if (openTag) {
             if (!openTag.selfClosing) stack.push({ kind: "jsx", tag: openTag.tag });
@@ -1151,14 +1196,17 @@ function isHtmlAttrAssign(outArr) {
     } else if (c === ")" && brace > 0) {
       lastSig = parenStack.length > 0 && parenStack.pop() ? "control)" : ")";
     } else if (c === "<" && brace === 0) {
-      const prevCh = k > 0 ? tail[k - 1] : "";
+      const immediatePrevCh = k > 0 ? tail[k - 1] : "";
+      let pIdx = k - 1;
+      while (pIdx >= 0 && (tail[pIdx] === " " || tail[pIdx] === "\\t")) pIdx--;
+      const prevCh = pIdx >= 0 ? tail[pIdx] : "";
       const isJsKw =
         /[A-Za-z]/.test(prevCh) &&
-        /(?:^|[^\\w$.])(?:return|case|throw|else|default|yield|await|void)$/.test(tail.slice(Math.max(0, k - 16), k));
+        /(?:^|[^\\w$.])(?:return|case|throw|else|default|yield|await|void)$/.test(tail.slice(Math.max(0, pIdx - 15), pIdx + 1));
       const blockedByOperand = !isJsKw && /[A-Za-z0-9_$\\]\\])]/.test(prevCh);
       if (
         lastLt > lastGt &&
-        (genericDepth > 0 || (/[A-Za-z0-9_$.]/.test(prevCh) && !/\\s/.test(tail.slice(lastLt + 1, k))))
+        (genericDepth > 0 || (/[A-Za-z0-9_$.]/.test(immediatePrevCh) && !/\\s/.test(tail.slice(lastLt + 1, k))))
       ) {
         genericDepth++;
       } else if (!blockedByOperand && /[A-Za-z]/.test(tail[k + 1] || "")) {
@@ -1178,7 +1226,7 @@ function isHtmlAttrAssign(outArr) {
       lastSig = c === ">" && k > 0 && tail[k - 1] === "=" ? "=>" : c;
     }
   }
-  return lastLt !== -1 && lastLt > lastGt;
+  return brace === 0 && lastLt !== -1 && lastLt > lastGt;
 }
 
 function stripComments(text, isCss = true, allowLineComments = !isCss, allowBacktickStrings = !isCss, allowJsx = !isCss, onComment = null, baseOffset = 0) {
@@ -1360,8 +1408,18 @@ function stripComments(text, isCss = true, allowLineComments = !isCss, allowBack
     }
 
     if (!isCss || (mode && mode.kind === "expr")) {
+      let recentNonWsOut = "";
+      if (ch === "/") {
+        let ok = out.length - 1;
+        while (ok >= 0 && /^\\s*$/.test(out[ok])) ok--;
+        while (ok >= 0 && recentNonWsOut.length < 24) {
+          recentNonWsOut = out[ok] + recentNonWsOut;
+          ok--;
+        }
+        if (recentNonWsOut.length > 24) recentNonWsOut = recentNonWsOut.slice(-24);
+      }
       const isPostfixIncDec =
-        (lastSig === "+" || lastSig === "-") && /(?:\\+\\+|--)\\s*$/.test(text.slice(Math.max(0, i - 16), i));
+        (lastSig === "+" || lastSig === "-") && /(?:\\+\\+|--)$/.test(recentNonWsOut);
       if (
         ch === "/" &&
         next !== "/" &&
@@ -1373,8 +1431,8 @@ function stripComments(text, isCss = true, allowLineComments = !isCss, allowBack
           lastSig === "control)" ||
           (lastSig === "!" && !isTsNonNullBang(text, i, 0)) ||
           /[=([,:;&|?{}~+\\-*%^]/.test(lastSig) ||
-          /(?:^|[^\\w$.])(?:return|case|throw|typeof|void|delete|in|of|new|yield|await|else|do|default)\\s*$|=>\\s*$/.test(
-            text.slice(Math.max(0, i - 24), i)
+          /(?:^|[^\\w$.])(?:return|case|throw|typeof|void|delete|in|of|new|yield|await|else|do|default)$|=>$/.test(
+            recentNonWsOut
           ))
       ) {
         let j = i + 1;
@@ -1518,7 +1576,7 @@ function stripComments(text, isCss = true, allowLineComments = !isCss, allowBack
     }
 
     const isOpenJsxProseQuote = () => {
-      if (!allowJsx || tplModes.length > 0 || out.length === 0) return false;
+      if (!allowJsx || (mode && mode.kind !== "expr") || out.length === 0) return false;
       if (lastSig === "=" && isHtmlAttrAssign(out)) return false;
       return isInOpenJsxNow();
     };
@@ -1574,13 +1632,17 @@ function stripComments(text, isCss = true, allowLineComments = !isCss, allowBack
         (prev === "" || /[\\s>([]/.test(prev)) &&
         /^'(?:\\d{2}s|tis|twas|twere|twill|twould|em|cause|til|bout|round|neath|gainst|mid|mongst|n)(?![A-Za-z0-9_$])/i.test(text.slice(i, i + 16));
       const isJsKeywordBefore =
-        /(?:^|[^A-Za-z0-9_$])(?:return|in|of|case|throw|typeof|void|delete|else|do|await|yield|as|from|import|export|extends|satisfies|new)$/.test(
+        /(?:^|[^A-Za-z0-9_$])(?:return|in|of|case|throw|typeof|void|delete|else|do|await|yield|as|from|import|export|extends|satisfies|new|default)$/.test(
           recentOut
         );
+      const inOpenJsxForQuote = isInOpenJsxNow();
+      const blockProseForJsKw =
+        isJsKeywordBefore &&
+        (!inOpenJsxForQuote || (hasClosingSingleQuoteOnLine && !/^'s(?![A-Za-z0-9_$])/i.test(text.slice(i, i + 4))));
       if (
         allowJsx &&
         (isProseLeadingApostrophe ||
-          (/[A-Za-z0-9]/.test(prev) && /[A-Za-z]/.test(nxt)) ||
+          (!blockProseForJsKw && /[A-Za-z0-9]/.test(prev) && /[A-Za-z]/.test(nxt)) ||
           (!isJsKeywordBefore &&
             ((/[sSnN]/.test(prev) && /[A-Za-z0-9]/.test(prev2)) || ((prev === "n" || prev === "N") && prev2 === "'")) &&
             (nxt === "" || /[\\s<.,;:!?)\\]}\\"-]/.test(nxt))))
@@ -2077,7 +2139,12 @@ function stripCssCustomPropDefs(text, isJsx = false, allowBackticks = isJsx) {
               continue;
             }
           }
-          if (vc === "\\n") out.push("\\n");
+          if (!isJsx && vc === "\\\\" && j + 1 < text.length) {
+          if (text[j + 1] === "\\n") out.push("\\n");
+          j += 2;
+          continue;
+        }
+        if (vc === "\\n") out.push("\\n");
           if (vEsc) vEsc = false;
           else if (vc === "\\\\") vEsc = true;
           else if (vInT && vc === "$" && text[j + 1] === "{") {
@@ -2115,7 +2182,12 @@ function stripCssCustomPropDefs(text, isJsx = false, allowBackticks = isJsx) {
             j = reVEnd;
             continue;
           }
-          if (vc === "\\n") out.push("\\n");
+          if (!isJsx && vc === "\\\\" && j + 1 < text.length) {
+          if (text[j + 1] === "\\n") out.push("\\n");
+          j += 2;
+          continue;
+        }
+        if (vc === "\\n") out.push("\\n");
           if (vc === "'") {
             vInS = true;
             vf.lastSig = "'";
@@ -2187,6 +2259,11 @@ function stripCssCustomPropDefs(text, isJsx = false, allowBackticks = isJsx) {
         }
         if (!isJsx && top && top.kind === "css-tpl" && vc === BT) {
           break;
+        }
+        if (!isJsx && vc === "\\\\" && j + 1 < text.length) {
+          if (text[j + 1] === "\\n") out.push("\\n");
+          j += 2;
+          continue;
         }
         if (vc === "\\n") out.push("\\n");
         if (vc === "'") {
@@ -2362,7 +2439,35 @@ function maskCssNonColorHashes(cssSrc, allowBackticks = false) {
   const interpSpans = [];
   const topTpl = () => (tplStack.length > 0 ? tplStack[tplStack.length - 1] : null);
   const maskHeader = (hdrStart, idx) => {
-    if (/^@(?:mixin|function|include|each|if|else\\s+if|while|for|supports|container)\\b/i.test(noUrls.slice(hdrStart, idx).trimStart())) return;
+    const hdrTrim = noUrls.slice(hdrStart, idx).trimStart();
+    if (/^@(?:mixin|function|include|each|if|else\\s+if|while|for|container)\\b/i.test(hdrTrim)) return;
+    if (/^@supports\\b/i.test(hdrTrim)) {
+      const hdrSlice = noUrls.slice(hdrStart, idx);
+      for (const sm of hdrSlice.matchAll(/(?<![a-zA-Z0-9_-])selector\\(/gi)) {
+        const openIdx = hdrStart + sm.index + sm[0].length - 1;
+        let depth = 1;
+        let k = openIdx + 1;
+        let sq = null;
+        while (k < idx && depth > 0) {
+          const kc = noUrls[k];
+          if (sq) {
+            if (kc === "\\\\" && k + 1 < idx) { k += 2; continue; }
+            if (kc === sq) sq = null;
+          } else if (kc === '"' || kc === "'") {
+            sq = kc;
+          } else if (kc === "(") {
+            depth++;
+          } else if (kc === ")") {
+            depth--;
+          }
+          if (depth > 0 && kc !== "\\n" && !interpSpans.some(([s0, e0]) => k >= s0 && k <= e0)) {
+            chars[k] = " ";
+          }
+          k++;
+        }
+      }
+      return;
+    }
     let outsideHash = false;
     for (let k = hdrStart; k < idx; k++) {
       if (chars[k] === "#" && !interpSpans.some(([s0, e0]) => k >= s0 && k <= e0)) {
@@ -2605,17 +2710,7 @@ function findBalancedDelimEnd(str, openIdx, openCh, closeCh, allowJsx = false) {
       continue;
     }
     if (allowJsx && ch === "<" && next !== "/") {
-      const isAfterJsxCloseOrArrow =
-        lastSig === ">" && /(?:=>|\\/>|<\\/[A-Za-z0-9_.:-]*\\s*>)\\s*$/.test(str.slice(Math.max(openIdx, i - 48), i));
-      const canStartJsx =
-        lastSig === "" ||
-        lastSig === "control)" ||
-        isAfterJsxCloseOrArrow ||
-        /[=([,:;?+&|!{}]/.test(lastSig) ||
-        /(?:^|[^\\w$.])(?:return|case|throw|else|default|yield|await|void)\\s*$|=>\\s*$/.test(
-          str.slice(Math.max(openIdx, i - 24), i)
-        );
-      if (canStartJsx) {
+      if (isJsxStartAllowedAt(str, i, lastSig, openIdx)) {
         if (str.startsWith("<>", i)) {
           jsxCtxStack.push({ kind: "jsx", tag: "" });
           i++;
@@ -2824,7 +2919,6 @@ function stripSvelteCssPropDecls(jsExpr) {
           if (s[cEnd] === "*" && s[cEnd + 1] === "/") { cEnd += 2; break; }
           cEnd++;
         }
-        maskRange(chars, i, cEnd);
         i = cEnd;
         continue;
       }
@@ -3024,19 +3118,28 @@ function stripSvelteCssPropDecls(jsExpr) {
   return chars.join("");
 }
 
-function extractJsStringChunks(jsSrc, decodeJsEscapes = false, onCssChunk = null) {
+function extractJsStringChunks(jsSrc, decodeJsEscapes = false, onCssChunk = null, skipObjPropWaivers = false, opts = {}) {
   const s = String(jsSrc || "");
   const BT = String.fromCharCode(96);
+  const preserveRawTemplates = Boolean(opts?.preserveRawTemplates);
+  const allowRawLitWaivers = opts?.allowRawLitWaivers !== undefined ? Boolean(opts.allowRawLitWaivers) : true;
+  const allowObjPropTemplates = Boolean(opts?.allowObjPropTemplates);
   const out = [];
   let i = 0;
   let lastSig = "";
   const parenStack = [];
-  const stripChunkCss = (rawChunk, ld, pendingWaivers) => {
+  const scopeStack = [{ kind: "root", ternary: 0, inObjProp: false, inAssign: false, inNestedCall: false }];
+  const curScope = () => scopeStack[scopeStack.length - 1];
+  const isInBlockedStmt = () =>
+    skipObjPropWaivers && scopeStack.some((f) => f.inObjProp || f.inAssign || f.inNestedCall);
+  const isBlockedRawTpl = () =>
+    skipObjPropWaivers && scopeStack.some((f) => (!allowObjPropTemplates && f.inObjProp) || f.inAssign || f.inNestedCall);
+  const stripChunkCss = (rawChunk, ld, pendingWaivers, allowWaivers = true, hasTrailingExpr = false) => {
     const cmts = [];
-    const onCmt = onCssChunk ? (k, s0, e0, t0) => cmts.push({ kind: k, start: s0, end: e0, text: t0 }) : null;
+    const onCmt = onCssChunk && allowWaivers ? (k, s0, e0, t0) => cmts.push({ kind: k, start: s0, end: e0, text: t0 }) : null;
     const stripped = stripComments(rawChunk, true, false, false, false, onCmt, 0);
-    if (onCssChunk && cmts.length > 0 && pendingWaivers) {
-      pendingWaivers.push({ rawCss: rawChunk, cssCmts: cmts, lineDelta: ld });
+    if (onCssChunk && allowWaivers && cmts.length > 0 && pendingWaivers) {
+      pendingWaivers.push({ rawCss: hasTrailingExpr ? rawChunk + " _" : rawChunk, cssCmts: cmts, lineDelta: ld });
     }
     return stripped;
   };
@@ -3078,7 +3181,7 @@ function extractJsStringChunks(jsSrc, decodeJsEscapes = false, onCssChunk = null
     if (/^(?:===|!==|==|!=)/.test(str.slice(aStart, aStart + 4))) return true;
     return false;
   };
-  const scanTpl = (openBtIdx, tplChunks, tplWaivers = null) => {
+  const scanTpl = (openBtIdx, tplChunks, tplWaivers = null, allowLitWaiver = true) => {
     let k = openBtIdx + 1;
     let buf = "";
     let bufStart = openBtIdx + 1;
@@ -3120,14 +3223,11 @@ function extractJsStringChunks(jsSrc, decodeJsEscapes = false, onCssChunk = null
           k = endE + 1;
           continue;
         }
-        if (buf.trim()) tplChunks.push({ text: stripChunkCss(buf, countNlBefore(bufStart), tplWaivers), lineDelta: countNlBefore(bufStart) });
+        if (buf.trim()) tplChunks.push({ text: stripChunkCss(buf, countNlBefore(bufStart), tplWaivers, allowLitWaiver, true), lineDelta: countNlBefore(bufStart) });
         buf = "";
         const exprBaseDelta = countNlBefore(k + 2);
-        const nestedCb =
-          onCssChunk && tplWaivers
-            ? (rc, cc, rld) => tplWaivers.push({ rawCss: rc, cssCmts: cc, lineDelta: exprBaseDelta + rld })
-            : null;
-        for (const nc of extractJsStringChunks(s.slice(k + 2, endE), decodeJsEscapes, nestedCb)) {
+        const nestedExprCb = onCssChunk ? (rc, cc, ld) => onCssChunk(rc, cc, exprBaseDelta + ld) : null;
+        for (const nc of extractJsStringChunks(s.slice(k + 2, endE), decodeJsEscapes, nestedExprCb, true, { allowRawLitWaivers: false })) {
           tplChunks.push({ text: nc.text, lineDelta: exprBaseDelta + nc.lineDelta });
         }
         bufStart = endE + 1;
@@ -3135,7 +3235,7 @@ function extractJsStringChunks(jsSrc, decodeJsEscapes = false, onCssChunk = null
         continue;
       }
       if (c === BT) {
-        if (buf.trim()) tplChunks.push({ text: stripChunkCss(buf, countNlBefore(bufStart), tplWaivers), lineDelta: countNlBefore(bufStart) });
+        if (buf.trim()) tplChunks.push({ text: stripChunkCss(buf, countNlBefore(bufStart), tplWaivers, allowLitWaiver), lineDelta: countNlBefore(bufStart) });
         return k;
       }
       if (cssQ) {
@@ -3146,7 +3246,7 @@ function extractJsStringChunks(jsSrc, decodeJsEscapes = false, onCssChunk = null
       buf += c;
       k++;
     }
-    if (buf.trim()) tplChunks.push({ text: stripChunkCss(buf, countNlBefore(bufStart), tplWaivers), lineDelta: countNlBefore(bufStart) });
+    if (buf.trim()) tplChunks.push({ text: stripChunkCss(buf, countNlBefore(bufStart), tplWaivers, allowLitWaiver), lineDelta: countNlBefore(bufStart) });
     return s.length - 1;
   };
   while (i < s.length) {
@@ -3191,8 +3291,9 @@ function extractJsStringChunks(jsSrc, decodeJsEscapes = false, onCssChunk = null
       if (buf.trim() && !isComparisonOperand(s, i, litEnd)) {
         const litDelta = countNlBefore(i);
         const litWaivers = [];
-        out.push({ text: stripChunkCss(buf, litDelta, litWaivers), lineDelta: litDelta });
-        if (onCssChunk) {
+        const allowLitWaiver = allowRawLitWaivers && !isInBlockedStmt();
+        out.push({ text: stripChunkCss(buf, litDelta, litWaivers, allowLitWaiver), lineDelta: litDelta });
+        if (onCssChunk && allowLitWaiver) {
           for (const w of litWaivers) onCssChunk(w.rawCss, w.cssCmts, w.lineDelta);
         }
       }
@@ -3201,13 +3302,26 @@ function extractJsStringChunks(jsSrc, decodeJsEscapes = false, onCssChunk = null
       continue;
     }
     if (ch === BT) {
+      if (preserveRawTemplates) {
+        const btEnd = findTemplateLiteralEnd(s, i);
+        const tplEnd = btEnd === -1 ? s.length : btEnd + 1;
+        const rawTplBody = s.slice(i + 1, btEnd === -1 ? s.length : btEnd);
+        const allowTplWaiver = !isBlockedRawTpl();
+        if (rawTplBody.trim() && !isComparisonOperand(s, i, tplEnd)) {
+          out.push({ text: rawTplBody, lineDelta: countNlBefore(i + 1), isRawTpl: true, allowTplWaiver });
+        }
+        i = tplEnd;
+        lastSig = BT;
+        continue;
+      }
       const tplChunks = [];
       const tplWaivers = [];
-      const closeIdx = scanTpl(i, tplChunks, tplWaivers);
+      const allowLitWaiver = !isInBlockedStmt();
+      const closeIdx = scanTpl(i, tplChunks, tplWaivers, allowLitWaiver);
       const tplEnd = closeIdx + 1;
       if (!isComparisonOperand(s, i, tplEnd)) {
         if (tplChunks.length > 0) out.push(...tplChunks);
-        if (onCssChunk) {
+        if (onCssChunk && allowLitWaiver) {
           for (const w of tplWaivers) onCssChunk(w.rawCss, w.cssCmts, w.lineDelta);
         }
       }
@@ -3216,10 +3330,54 @@ function extractJsStringChunks(jsSrc, decodeJsEscapes = false, onCssChunk = null
       continue;
     }
     if (ch === "(") {
-      parenStack.push(/(?:^|[^\\w$.])(?:if|while|for|with)\\s*$/.test(s.slice(Math.max(0, i - 16), i)));
+      const preParen = s.slice(Math.max(0, i - 24), i);
+      const isCtrlParen = /(?:^|[^\\w$.])(?:if|while|for|with|switch|catch)\\s*$/.test(preParen);
+      parenStack.push(isCtrlParen);
+      const looksLikeCall =
+        !isCtrlParen &&
+        /[a-zA-Z0-9_$)\\]]\\s*$/.test(preParen) &&
+        !/(?:^|[^\\w$.])(?:return|typeof|void|delete|throw|await|yield|case|else)\\s*$/.test(preParen);
+      scopeStack.push({ kind: "(", ternary: 0, inObjProp: false, inAssign: false, inNestedCall: looksLikeCall });
       lastSig = "(";
+    } else if (ch === "[") {
+      scopeStack.push({ kind: "[", ternary: 0, inObjProp: false, inAssign: false, inNestedCall: false });
+      lastSig = "[";
+    } else if (ch === "{") {
+      scopeStack.push({ kind: "{", ternary: 0, inObjProp: false, inAssign: false, inNestedCall: false });
+      lastSig = "{";
     } else if (ch === ")") {
+      if (scopeStack.length > 1) scopeStack.pop();
       lastSig = parenStack.length > 0 && parenStack.pop() ? "control)" : ")";
+    } else if (ch === "]" || ch === "}") {
+      if (scopeStack.length > 1) scopeStack.pop();
+      lastSig = ch;
+    } else if (ch === "," || ch === ";") {
+      curScope().ternary = 0;
+      curScope().inObjProp = false;
+      curScope().inAssign = false;
+      lastSig = ch;
+    } else if (ch === "?" && s[i - 1] !== "?" && s[i + 1] !== "?" && s[i + 1] !== ".") {
+      curScope().ternary++;
+      lastSig = "?";
+    } else if (ch === ":") {
+      if (curScope().ternary > 0) {
+        curScope().ternary--;
+        lastSig = "ternary:";
+      } else {
+        curScope().inObjProp = true;
+        lastSig = ":";
+      }
+    } else if (
+      ch === "=" &&
+      s[i - 1] !== "=" &&
+      s[i - 1] !== "!" &&
+      s[i - 1] !== "<" &&
+      s[i - 1] !== ">" &&
+      s[i + 1] !== "=" &&
+      s[i + 1] !== ">"
+    ) {
+      curScope().inAssign = true;
+      lastSig = "=";
     } else if (!/\\s/.test(ch)) {
       lastSig = ch;
     }
@@ -3267,7 +3425,7 @@ function projectExprChunksPreservingLines(rawSpan, exprSlice, transformChunk, fa
     return n;
   };
   const totalNl = countNl(rawSpan);
-  const chunks = extractJsStringChunks(exprSlice, true, onCssChunk);
+  const chunks = extractJsStringChunks(exprSlice, true, onCssChunk, false, { allowRawLitWaivers: false });
   if (chunks.length === 0) return fallbackToken + "\\n".repeat(totalNl);
   const parts = [];
   let curNl = 0;
@@ -3289,29 +3447,36 @@ function projectExprChunksPreservingLines(rawSpan, exprSlice, transformChunk, fa
   return parts.join("");
 }
 
-function extractImportantFromTplCss(innerCss) {
+function extractImportantFromTplCss(innerCss, onNestedCss = null) {
   const s = String(innerCss || "");
   const out = [];
   let i = 0;
   let cssQuote = null;
+  let srcNl = 0;
   while (i < s.length) {
     const ch = s[i];
     if (cssQuote) {
       if (ch === "\\\\" && i + 1 < s.length) {
-        out.push(s[i + 1] === "\\n" ? "\\n" : "  ");
+        const nextNl = s[i + 1] === "\\n";
+        if (nextNl) srcNl++;
+        out.push(nextNl ? "\\n" : "  ");
         i += 2;
         continue;
       }
       if (ch === "$" && s[i + 1] === "{") {
         const endE = findBalancedDelimEnd(s, i + 1, "{", "}");
         if (endE !== -1) {
-          for (let k = i; k <= endE; k++) out.push(s[k] === "\\n" ? "\\n" : " ");
+          for (let k = i; k <= endE; k++) {
+            if (s[k] === "\\n") { srcNl++; out.push("\\n"); }
+            else out.push(" ");
+          }
           i = endE + 1;
           continue;
         }
       }
       if (ch === cssQuote || ch === "\\n") {
         cssQuote = null;
+        if (ch === "\\n") srcNl++;
         out.push(ch);
       } else {
         out.push(" ");
@@ -3320,6 +3485,7 @@ function extractImportantFromTplCss(innerCss) {
       continue;
     }
     if (ch === "\\\\" && i + 1 < s.length) {
+      if (s[i + 1] === "\\n") srcNl++;
       out.push(ch, s[i + 1]);
       i += 2;
       continue;
@@ -3337,17 +3503,23 @@ function extractImportantFromTplCss(innerCss) {
         i += 2;
         continue;
       }
+      const nlAtExpr = srcNl;
+      const nestedCb = onNestedCss ? (rc, cc, ld) => onNestedCss(rc, cc, nlAtExpr + ld) : null;
+      const spanSlice = s.slice(i, endE + 1);
+      for (let k = i; k <= endE; k++) if (s[k] === "\\n") srcNl++;
       out.push(
         projectExprChunksPreservingLines(
-          s.slice(i, endE + 1),
+          spanSlice,
           s.slice(i + 2, endE),
           (rawLit) => maskCssQuotedStrings(stripCssCustomPropDefs(stripTokenBlocks(rawLit, true, false), false, false)),
-          " var(--_) "
+          " var(--_) ",
+          nestedCb
         )
       );
       i = endE + 1;
       continue;
     }
+    if (ch === "\\n") srcNl++;
     out.push(ch);
     i++;
   }
@@ -3723,6 +3895,100 @@ function findStyleTagClose(src, bodyStart, isScss = false, isJsxStyle = false, c
   return null;
 }
 
+function findOpenStyleTagEnd(src, tagStart, allowStyleTagBraceExprs = true) {
+  let k = tagStart + 6;
+  let q = null;
+  while (k < src.length) {
+    const c = src[k];
+    if (q) {
+      if (c === q) q = null;
+      k++;
+      continue;
+    }
+    if (c === '"' || c === "'") { q = c; k++; continue; }
+    if (allowStyleTagBraceExprs && c === "{") {
+      const be = findBalancedBraceEnd(src, k);
+      if (be !== -1) { k = be + 1; continue; }
+    }
+    if (c === ">") {
+      let p = k - 1;
+      while (p > tagStart && /\\s/.test(src[p])) p--;
+      return { tagEnd: k + 1, selfClosing: src[p] === "/" };
+    }
+    if (c === "<") return null;
+    k++;
+  }
+  return null;
+}
+
+function stripCommentsInSvgStyleTags(svgSeg, isSvelte, isMarkupSfc, ext) {
+  const s = String(svgSeg || "");
+  const BT = String.fromCharCode(96);
+  const lowerExt = String(ext || "").toLowerCase();
+  const isHtmlOnly = lowerExt === ".html" || lowerExt === ".htm";
+  const allowBraces = isSvelte || lowerExt === ".astro" || !isMarkupSfc;
+  const isJsxStyle = !isMarkupSfc || lowerExt === ".astro";
+  const openStyleRe = isHtmlOnly ? /<style(?=[\\s>/])/gi : /<style(?=[\\s>/])/g;
+  const out = [];
+  let lastOut = 0;
+  let osm;
+  while ((osm = openStyleRe.exec(s)) !== null) {
+    const openInfo = findOpenStyleTagEnd(s, osm.index, allowBraces);
+    if (!openInfo || openInfo.selfClosing) {
+      openStyleRe.lastIndex = openInfo ? openInfo.tagEnd : osm.index + 6;
+      continue;
+    }
+    const oTag = s.slice(osm.index, openInfo.tagEnd);
+    const isScssSvg = /\\blang\\s*=\\s*["']s[ca]ss["']/i.test(oTag);
+    const closeInfo = findStyleTagClose(s, openInfo.tagEnd, isScssSvg, isJsxStyle, !isHtmlOnly);
+    if (!closeInfo) {
+      openStyleRe.lastIndex = openInfo.tagEnd;
+      continue;
+    }
+    const body = s.slice(openInfo.tagEnd, closeInfo.closeStart);
+    let cleanBody;
+    if (!isJsxStyle || !body.trim().startsWith("{")) {
+      cleanBody = stripComments(body, true, isScssSvg, false, false);
+    } else {
+      const jsCleaned = stripComments(body, false, true, true, false);
+      const chunks = [];
+      let ki = 0;
+      let segStart = 0;
+      let jq = null;
+      while (ki < jsCleaned.length) {
+        const ch = jsCleaned[ki];
+        if (jq) {
+          if (ch === "\\\\" && ki + 1 < jsCleaned.length) { ki += 2; continue; }
+          if (ch === jq || ch === "\\n") jq = null;
+          ki++;
+          continue;
+        }
+        if (ch === '"' || ch === "'") { jq = ch; ki++; continue; }
+        if (ch === BT) {
+          const btEnd = findTemplateLiteralEnd(jsCleaned, ki);
+          if (btEnd !== -1) {
+            chunks.push(jsCleaned.slice(segStart, ki + 1));
+            chunks.push(stripComments(jsCleaned.slice(ki + 1, btEnd), true, isScssSvg, true, false));
+            chunks.push(BT);
+            ki = btEnd + 1;
+            segStart = ki;
+            continue;
+          }
+        }
+        ki++;
+      }
+      if (segStart < jsCleaned.length) chunks.push(jsCleaned.slice(segStart));
+      cleanBody = chunks.join("");
+    }
+    out.push(s.slice(lastOut, openInfo.tagEnd), cleanBody, closeInfo.closeText);
+    lastOut = closeInfo.closeEnd;
+    openStyleRe.lastIndex = closeInfo.closeEnd;
+  }
+  if (lastOut === 0) return s;
+  out.push(s.slice(lastOut));
+  return out.join("");
+}
+
 function findScriptCloseRaw(src, bodyStart) {
   const s = String(src || "");
   const BT = String.fromCharCode(96);
@@ -3973,17 +4239,7 @@ function computeMarkupRegions(src, isMarkupSfc = false, ext = "") {
       const reEnd = skipJsRegexLiteral(s, i, lastSig, startIdx);
       if (reEnd !== -1 && reEnd <= endIdx) { spans.push([i, reEnd]); lastSig = "/"; i = reEnd; continue; }
       if (trackJsx && ch === "<") {
-        const isAfterJsxCloseOrArrow =
-          lastSig === ">" && /(?:=>|\\/>|<\\/[A-Za-z0-9_.:-]*\\s*>)\\s*$/.test(s.slice(Math.max(startIdx, i - 48), i));
-        const canStartJsx =
-          lastSig === "" ||
-          lastSig === "control)" ||
-          isAfterJsxCloseOrArrow ||
-          /[=([,:;?+&|!{}]/.test(lastSig) ||
-          /(?:^|[^\\w$.])(?:return|case|throw|else|default|yield|await|void)\\s*$|=>\\s*$/.test(
-            s.slice(Math.max(startIdx, i - 24), i)
-          );
-        if (canStartJsx) {
+        if (isJsxStartAllowedAt(s, i, lastSig, startIdx)) {
           const openTag = parseJsxOpenTagAt(s, i);
           if (openTag && openTag.end <= endIdx) {
             openTags.push(openTag);
@@ -4043,7 +4299,12 @@ function computeMarkupRegions(src, isMarkupSfc = false, ext = "") {
       if (ch === '"' || ch === "'") {
         const prev = i > 0 ? s[i - 1] : "";
         const nxt = i + 1 < endIdx ? s[i + 1] : "";
-        if (ch === "'" && /[A-Za-z0-9]/.test(prev) && /[A-Za-z]/.test(nxt)) {
+        const isJsKwBefore =
+          ch === "'" &&
+          /(?:^|[^A-Za-z0-9_$])(?:return|in|of|case|throw|typeof|void|delete|else|do|await|yield|as|from|import|export|extends|satisfies|new|default)$/.test(
+            s.slice(Math.max(startIdx, i - 24), i)
+          );
+        if (ch === "'" && !isJsKwBefore && /[A-Za-z0-9]/.test(prev) && /[A-Za-z]/.test(nxt)) {
           lastSig = ch;
           i++;
           continue;
@@ -4232,7 +4493,8 @@ function computeMarkupRegions(src, isMarkupSfc = false, ext = "") {
             const tagEnd = j + 1;
             openTags.push({ start: i, end: tagEnd, attrStrSpans: localSpans, exprSpans: localExprs });
             const isRealStyleTag = isHtmlOnlyExt ? tagLower === "style" : tagName === "style";
-            if (!selfClose && tagLower === "script") {
+            const isRealScriptTag = isHtmlOnlyExt ? tagLower === "script" : tagName === "script";
+            if (!selfClose && isRealScriptTag) {
               const allowScriptJsx = /\\blang\\s*=\\s*["'](?:jsx|tsx)["']/i.test(s.slice(i, tagEnd));
               const closeInfo = findScriptCloseRaw(s, tagEnd);
               if (closeInfo) {
@@ -4267,7 +4529,8 @@ function computeJsStringLiteralSpans(src, isMarkupSfc = false, ext = "") {
   return computeMarkupRegions(src, isMarkupSfc, ext).strSpans;
 }
 
-function extractStyleRegions(raw, isSvelte = false, isMarkupSfc = false, ext = "") {
+function extractStyleRegions(raw, isSvelte = false, isMarkupSfc = false, ext = "", preSvgRanges = []) {
+  const inPreSvg = (idx) => preSvgRanges.some((r) => idx >= r.start && idx < r.end);
   const BT = String.fromCharCode(96);
   const chars = raw.split("");
   const styleChunks = [];
@@ -4290,7 +4553,7 @@ function extractStyleRegions(raw, isSvelte = false, isMarkupSfc = false, ext = "
   };
   const maskHexSelectorKeys = (str) =>
     String(str || "").replace(
-      /(^|[{,;]\\s*)(\\[\\s*)?(["'\\x60])((?:\\\\.|(?!\\3)[^\\\\\\n])*)\\3(\\s*\\])?(?=\\s*:\\s*\\{)/g,
+      /(^|[{,;]\\s*)(\\[\\s*)?(["'\\x60])((?:\\\\.|(?!\\3)[^\\\\\\n])*)\\3(\\s*\\])?(?=\\s*:\\s*(?:\\{|\\[|\\(|(?:async\\s+)?(?:function\\b|[A-Za-z_$][\\w$]*\\s*=>)|[A-Za-z_$][\\w$.]*(?:\\s*<[^\\n>]*>)?\\s*\\x60|(?:(?:typeof\\s+|!\\s*)*[A-Za-z_$][\\w$.?()\\[\\]]*(?:\\s*(?:===?|!==?|<=?|>=?)\\s*[^,;}\\n?]+)?\\s*(?:\\?|&&|\\|\\||\\?\\?))))/g,
       (full, pre, ob, q, body, cb) => {
         if (Boolean(ob) !== Boolean(cb)) return full;
         return pre + (ob || "") + q + body.replace(/#[0-9a-fA-F]{3,8}\\b/g, (h) => " ".repeat(h.length)) + q + (cb || "");
@@ -4317,32 +4580,7 @@ function extractStyleRegions(raw, isSvelte = false, isMarkupSfc = false, ext = "
   const rawRegions = computeMarkupRegions(raw, isMarkupSfc, ext);
   const inRawJsStr = (idx) => rawRegions.strSpans.some(([s0, e0]) => idx >= s0 && idx < e0);
   const inRawProse = (idx) => rawRegions.proseSpans.some(([s0, e0]) => idx >= s0 && idx < e0);
-  const findOpenStyleTagEnd = (src, tagStart) => {
-    const allowStyleTagBraceExprs = isSvelte || lowerExt === ".astro" || !isMarkupSfc;
-    let k = tagStart + 6;
-    let q = null;
-    while (k < src.length) {
-      const c = src[k];
-      if (q) {
-        if (c === q) q = null;
-        k++;
-        continue;
-      }
-      if (c === '"' || c === "'") { q = c; k++; continue; }
-      if (allowStyleTagBraceExprs && c === "{") {
-        const be = findBalancedBraceEnd(src, k);
-        if (be !== -1) { k = be + 1; continue; }
-      }
-      if (c === ">") {
-        let p = k - 1;
-        while (p > tagStart && /\\s/.test(src[p])) p--;
-        return { tagEnd: k + 1, selfClosing: src[p] === "/" };
-      }
-      if (c === "<") return null;
-      k++;
-    }
-    return null;
-  };
+  const allowStyleTagBraceExprs = isSvelte || lowerExt === ".astro" || !isMarkupSfc;
   const extractDangerouslySetInnerHtml = (openTagStr) => {
     const srcTag = String(openTagStr || "");
     let idx = 0;
@@ -4439,11 +4677,9 @@ function extractStyleRegions(raw, isSvelte = false, isMarkupSfc = false, ext = "
           return { chunks: [{ css: decodeSingleQuotedJsLit(expr), fromTpl: false, lineDelta: baseDelta, collectCssWaivers: true }], cssWaivers: [] };
         }
         const cssWaivers = [];
-        const dChunks = extractJsStringChunks(expr, true, (rawCss, cssCmts, ld) => {
-          cssWaivers.push({ rawCss, cssCmts, lineDelta: baseDelta + ld });
-        });
+        const dChunks = extractJsStringChunks(expr, true, null, true, { preserveRawTemplates: true, allowRawLitWaivers: false });
         return dChunks.length > 0
-          ? { chunks: dChunks.map((ch) => ({ css: ch.text, fromTpl: false, lineDelta: baseDelta + ch.lineDelta, collectCssWaivers: false })), cssWaivers }
+          ? { chunks: dChunks.map((ch) => ({ css: ch.text, fromTpl: Boolean(ch.isRawTpl), lineDelta: baseDelta + ch.lineDelta, collectCssWaivers: Boolean(ch.isRawTpl && ch.allowTplWaiver) })), cssWaivers }
           : null;
       }
       idx++;
@@ -4457,21 +4693,21 @@ function extractStyleRegions(raw, isSvelte = false, isMarkupSfc = false, ext = "
     const strippedBlk = stripTokenBlocks(cssText, isScssTag || fromTpl, fromTpl, onCssCmt);
     if (collectCssWaivers && cssCmts.length > 0) mergeWaivedFromCss(cssText, cssCmts, baseLine);
     const nonVarBlk = stripCssCustomPropDefs(strippedBlk, false, fromTpl);
-    const nestedCssCb = collectCssWaivers ? (rc, cc, ld) => mergeWaivedFromCss(rc, cc, baseLine + ld) : null;
     const maskedBlk = fromTpl
-      ? extractColorsFromTplCss(maskCssNonColorHashes(nonVarBlk, true), nestedCssCb)
+      ? extractColorsFromTplCss(maskCssNonColorHashes(nonVarBlk, true), null)
       : maskCssNonColorHashes(maskCssQuotedStrings(nonVarBlk), false);
     pushStyleChunk(maskedBlk, baseLine);
-    pushImpChunk(fromTpl ? extractImportantFromTplCss(nonVarBlk) : maskCssQuotedStrings(nonVarBlk), baseLine);
+    const onImpNested = collectCssWaivers ? (rc, cc, ld) => mergeWaivedFromCss(rc, cc, baseLine + ld) : null;
+    pushImpChunk(fromTpl ? extractImportantFromTplCss(nonVarBlk, onImpNested) : maskCssQuotedStrings(nonVarBlk), baseLine);
   };
   const openStyleRe = isHtmlOnly ? /<style(?=[\\s>/])/gi : /<style(?=[\\s>/])/g;
   let osm;
   while ((osm = openStyleRe.exec(raw)) !== null) {
-    if (inRawJsStr(osm.index) || inRawProse(osm.index)) {
+    if (inRawJsStr(osm.index) || inRawProse(osm.index) || inPreSvg(osm.index)) {
       openStyleRe.lastIndex = osm.index + 6;
       continue;
     }
-    const openInfo = findOpenStyleTagEnd(raw, osm.index);
+    const openInfo = findOpenStyleTagEnd(raw, osm.index, allowStyleTagBraceExprs);
     if (!openInfo) continue;
     const openTagRaw = raw.slice(osm.index, openInfo.tagEnd);
     const isScssTag = /\\blang\\s*=\\s*["']s[ca]ss["']/i.test(openTagRaw);
@@ -4562,7 +4798,7 @@ function extractStyleRegions(raw, isSvelte = false, isMarkupSfc = false, ext = "
                   const rawLit = exprClean.slice(ei, ej + 1);
                   const decodedLit = decodeSingleQuotedJsLit(rawLit);
                   const litLine = exprBaseLine + lineAtSrc(exprClean, ei) - 1;
-                  pushStyleTagCss(decodedLit, isScssTag, false, litLine, true);
+                  pushStyleTagCss(decodedLit, isScssTag, false, litLine, false);
                   eLastSig = ec;
                   ei = ej + 1;
                   continue;
@@ -4613,10 +4849,10 @@ function extractStyleRegions(raw, isSvelte = false, isMarkupSfc = false, ext = "
         !t.exprSpans.some(([es, ee]) => idx >= es && idx < ee)
     );
   let taggedCursor = 0;
-  for (const m of afterStyleTags.matchAll(/\\b(?:styled(?:\\.[a-zA-Z0-9_]+|\\()|(?:css|createGlobalStyle|keyframes)\\b)/g)) {
-    if (m.index < taggedCursor || inJsStr(m.index) || inProse(m.index)) continue;
+  for (const m of afterStyleTags.matchAll(/\\b(?:styled(?:\\s*\\.\\s*[a-zA-Z0-9_$]+|\\s*\\(|\\s*\\[\\s*(?:"[^"\\n]*"|'[^'\\n]*')\\s*\\])|(?:css|createGlobalStyle|keyframes)\\b)/g)) {
+    if (m.index < taggedCursor || inJsStr(m.index) || inProse(m.index) || inPreSvg(m.index)) continue;
     let pos = m.index + m[0].length;
-    if (m[0] === "styled(") {
+    if (/^styled\\s*\\($/.test(m[0])) {
       const pEnd = findBalancedParenEnd(afterStyleTags, pos - 1);
       if (pEnd === -1) continue;
       pos = pEnd + 1;
@@ -4664,10 +4900,13 @@ function extractStyleRegions(raw, isSvelte = false, isMarkupSfc = false, ext = "
       if (tplCmts.length > 0) mergeWaivedFromCss(innerCss, tplCmts, tplBaseLine);
       const nonVarTpl = stripCssCustomPropDefs(strippedTpl, false, true);
       pushStyleChunk(
-        extractColorsFromTplCss(maskCssNonColorHashes(nonVarTpl, true), (rc, cc, ld) => mergeWaivedFromCss(rc, cc, tplBaseLine + ld)),
+        extractColorsFromTplCss(maskCssNonColorHashes(nonVarTpl, true), null),
         tplBaseLine
       );
-      pushImpChunk(extractImportantFromTplCss(nonVarTpl), tplBaseLine);
+      pushImpChunk(
+        extractImportantFromTplCss(nonVarTpl, (rc, cc, ld) => mergeWaivedFromCss(rc, cc, tplBaseLine + ld)),
+        tplBaseLine
+      );
       maskRange(chars, m.index, btEnd + 1);
       taggedCursor = btEnd + 1;
       continue;
@@ -4679,14 +4918,33 @@ function extractStyleRegions(raw, isSvelte = false, isMarkupSfc = false, ext = "
       if (isBareHelper && /^(?:\\s*:\\s*[^{;=]+)?\\s*\\{/.test(postCall)) continue;
       const callInner = afterStyleTags.slice(afterGen + 1, callEnd);
       const callBaseLine = lineAtSrc(afterStyleTags, afterGen + 1);
-      const cleanedCall = stripCssCustomPropDefs(stripTokenBlocks(stripComments(callInner, false, true, true, false), true, true), true, true);
-      const cleanedCallNoId = maskHexSelectorKeys(cleanedCall);
-      for (const ch of extractJsStringChunks(cleanedCallNoId, true, (rc, cc, ld) => mergeWaivedFromCss(rc, cc, callBaseLine + ld))) {
-        const extractedCh = stripCssCustomPropDefs(stripTokenBlocks(ch.text, true, false), false, false);
-        if (extractedCh) {
-          const chLine = callBaseLine + ch.lineDelta;
-          pushStyleChunk(maskCssUrls(maskCssQuotedStrings(maskCssNonColorHashes(extractedCh, false))), chLine);
-          pushImpChunk(maskCssQuotedStrings(extractedCh), chLine);
+      const cleanedCall = stripComments(callInner, false, true, true, false);
+      const cleanedCallNoId = maskHexSelectorKeys(stripCssCustomPropDefs(cleanedCall, true, true));
+      for (const ch of extractJsStringChunks(
+        cleanedCallNoId,
+        true,
+        null,
+        true,
+        { preserveRawTemplates: true, allowRawLitWaivers: false, allowObjPropTemplates: true }
+      )) {
+        const chLine = callBaseLine + ch.lineDelta;
+        if (ch.isRawTpl) {
+          const tplCmts2 = [];
+          const onTplCmt2 = ch.allowTplWaiver
+            ? (k, s0, e0, t0) => tplCmts2.push({ kind: k, start: s0, end: e0, text: t0 })
+            : null;
+          const strippedTpl2 = stripTokenBlocks(ch.text, true, true, onTplCmt2);
+          if (ch.allowTplWaiver && tplCmts2.length > 0) mergeWaivedFromCss(ch.text, tplCmts2, chLine);
+          const nonVarTpl2 = stripCssCustomPropDefs(strippedTpl2, false, true);
+          pushStyleChunk(maskCssUrls(extractColorsFromTplCss(maskCssNonColorHashes(nonVarTpl2, true), null)), chLine);
+          const onImpNested2 = ch.allowTplWaiver ? (rc, cc, ld) => mergeWaivedFromCss(rc, cc, chLine + ld) : null;
+          pushImpChunk(extractImportantFromTplCss(nonVarTpl2, onImpNested2), chLine);
+        } else {
+          const extractedCh = stripCssCustomPropDefs(stripTokenBlocks(ch.text, true, false), false, false);
+          if (extractedCh) {
+            pushStyleChunk(maskCssUrls(maskCssQuotedStrings(maskCssNonColorHashes(extractedCh, false))), chLine);
+            pushImpChunk(maskCssQuotedStrings(extractedCh), chLine);
+          }
         }
       }
       maskRange(chars, m.index, callEnd + 1);
@@ -4696,23 +4954,39 @@ function extractStyleRegions(raw, isSvelte = false, isMarkupSfc = false, ext = "
 
   const afterStyled = chars.join("");
   for (const m of afterStyled.matchAll(/(?<![-\\w])(style|css|sx)\\s*=\\s*\\{/g)) {
-    if (inJsStr(m.index) || !inRealOpenTagAttrPos(m.index)) continue;
+    if (inJsStr(m.index) || !inRealOpenTagAttrPos(m.index) || inPreSvg(m.index)) continue;
     const attrName = m[1];
     const firstBrace = afterStyled.indexOf("{", m.index);
     const endBrace = findBalancedBraceEnd(afterStyled, firstBrace);
     if (firstBrace !== -1 && endBrace !== -1) {
       const innerRaw = afterStyled.slice(firstBrace + 1, endBrace);
       const attrBaseLine = lineAtSrc(afterStyled, firstBrace + 1);
+      const attrJsCmts = [];
+      const cleanedAttrJs = stripComments(innerRaw, false, true, true, false, (kd, s0, e0, t0) => attrJsCmts.push({ kind: kd, start: s0, end: e0, text: t0 }), 0);
+      if (attrJsCmts.length > 0) mergeWaivedFromCss(innerRaw, attrJsCmts, attrBaseLine);
       const strippedStyle =
         isSvelte && attrName === "style"
-          ? stripSvelteCssPropDecls(innerRaw)
+          ? stripSvelteCssPropDecls(cleanedAttrJs)
           : lowerExt === ".astro" && attrName === "style"
-          ? stripCssCustomPropDefs(stripSvelteCssPropDecls(innerRaw), true)
-          : stripCssCustomPropDefs(stripComments(innerRaw, false, true, true, false), true);
-      for (const ch of extractJsStringChunks(maskHexSelectorKeys(strippedStyle), true, (rc, cc, ld) => mergeWaivedFromCss(rc, cc, attrBaseLine + ld))) {
+          ? stripCssCustomPropDefs(stripSvelteCssPropDecls(cleanedAttrJs), true)
+          : stripCssCustomPropDefs(cleanedAttrJs, true);
+      const onAttrCssChunk = (rawCss, cssCmts, ld) => mergeWaivedFromCss(rawCss, cssCmts, attrBaseLine + ld);
+      for (const ch of extractJsStringChunks(maskHexSelectorKeys(strippedStyle), true, onAttrCssChunk, true, { preserveRawTemplates: true, allowRawLitWaivers: false, allowObjPropTemplates: true })) {
         const chLine = attrBaseLine + ch.lineDelta;
-        pushStyleChunk(maskCssUrls(maskCssQuotedStrings(ch.text)), chLine);
-        pushImpChunk(maskCssQuotedStrings(ch.text), chLine);
+        if (ch.isRawTpl) {
+          const tplCmtsAttr = [];
+          const onTplCmtAttr = ch.allowTplWaiver ? (k, s0, e0, t0) => tplCmtsAttr.push({ kind: k, start: s0, end: e0, text: t0 }) : null;
+          const strippedTplAttr = stripTokenBlocks(ch.text, true, true, onTplCmtAttr);
+          if (ch.allowTplWaiver && tplCmtsAttr.length > 0) mergeWaivedFromCss(ch.text, tplCmtsAttr, chLine);
+          const nonVarTplAttr = stripCssCustomPropDefs(strippedTplAttr, false, true);
+          pushStyleChunk(maskCssUrls(extractColorsFromTplCss(maskCssNonColorHashes(nonVarTplAttr, true), null)), chLine);
+          const onImpNestedAttr = ch.allowTplWaiver ? (rc, cc, ld) => mergeWaivedFromCss(rc, cc, chLine + ld) : null;
+          pushImpChunk(extractImportantFromTplCss(nonVarTplAttr, onImpNestedAttr), chLine);
+        } else {
+          const styleClean = stripCssCustomPropDefs(stripTokenBlocks(ch.text, false), false, false);
+          pushStyleChunk(maskCssNonColorHashes(maskCssUrls(maskCssQuotedStrings(styleClean)), false), chLine);
+          pushImpChunk(maskCssQuotedStrings(styleClean), chLine);
+        }
       }
       maskRange(chars, m.index, endBrace + 1);
     }
@@ -4729,6 +5003,7 @@ function extractStyleRegions(raw, isSvelte = false, isMarkupSfc = false, ext = "
 
   const collectSvelteQuotedWaivers = (attrStr, baseLn) => {
     const s = String(attrStr || "");
+    const combinedCmts = [];
     let last = 0;
     let k = 0;
     while (k < s.length) {
@@ -4737,16 +5012,23 @@ function extractStyleRegions(raw, isSvelte = false, isMarkupSfc = false, ext = "
         if (eb !== -1) {
           if (k > last) {
             const cssSeg = s.slice(last, k);
-            const cssCmts = [];
-            stripComments(cssSeg, true, false, false, false, (kd, s0, e0, t0) => cssCmts.push({ kind: kd, start: s0, end: e0, text: t0 }), 0);
-            if (cssCmts.length > 0) mergeWaivedFromCss(cssSeg, cssCmts, baseLn + lineAtSrc(s, last) - 1);
+            stripComments(
+              cssSeg,
+              true,
+              false,
+              false,
+              false,
+              (kd, s0, e0, t0) => combinedCmts.push({ kind: kd, start: last + s0, end: last + e0, text: t0 }),
+              0
+            );
           }
           const jsSeg = s.slice(k + 1, eb);
           const jsBaseLn = baseLn + lineAtSrc(s, k + 1) - 1;
           const jsCmts = [];
           const jsClean = stripComments(jsSeg, false, true, true, false, (kd, s0, e0, t0) => jsCmts.push({ kind: kd, start: s0, end: e0, text: t0 }), 0);
-          if (jsCmts.length > 0) mergeWaivedFromCss(jsSeg, jsCmts, jsBaseLn);
-          extractJsStringChunks(jsClean, true, (rc, cc, ld) => mergeWaivedFromCss(rc, cc, jsBaseLn + ld));
+          for (const jc of jsCmts) {
+            combinedCmts.push({ kind: jc.kind, start: k + 1 + jc.start, end: k + 1 + jc.end, text: jc.text });
+          }
           k = eb + 1;
           last = k;
           continue;
@@ -4756,10 +5038,17 @@ function extractStyleRegions(raw, isSvelte = false, isMarkupSfc = false, ext = "
     }
     if (last < s.length) {
       const cssSeg = s.slice(last);
-      const cssCmts = [];
-      stripComments(cssSeg, true, false, false, false, (kd, s0, e0, t0) => cssCmts.push({ kind: kd, start: s0, end: e0, text: t0 }), 0);
-      if (cssCmts.length > 0) mergeWaivedFromCss(cssSeg, cssCmts, baseLn + lineAtSrc(s, last) - 1);
+      stripComments(
+        cssSeg,
+        true,
+        false,
+        false,
+        false,
+        (kd, s0, e0, t0) => combinedCmts.push({ kind: kd, start: last + s0, end: last + e0, text: t0 }),
+        0
+      );
     }
+    if (combinedCmts.length > 0) mergeWaivedFromCss(s, combinedCmts, baseLn);
   };
 
   if (isSvelte) {
@@ -4767,7 +5056,7 @@ function extractStyleRegions(raw, isSvelte = false, isMarkupSfc = false, ext = "
     const svelteDirRe = /(?<![-\\w])style:([-\\w]+)(\\|important)?(?:\\s*=\\s*)?/g;
     let m;
     while ((m = svelteDirRe.exec(afterStyledSvelte)) !== null) {
-      if (inJsStr(m.index)) continue;
+      if (inJsStr(m.index) || inPreSvg(m.index)) continue;
       const propName = m[1];
       const hasImpMod = Boolean(m[2]);
       const hasAssign = m[0].includes("=");
@@ -4813,14 +5102,41 @@ function extractStyleRegions(raw, isSvelte = false, isMarkupSfc = false, ext = "
           const dirCmts = [];
           const dirClean = stripComments(rawVal, false, true, true, false, (kd, s0, e0, t0) => dirCmts.push({ kind: kd, start: s0, end: e0, text: t0 }), 0);
           if (dirCmts.length > 0) mergeWaivedFromCss(rawVal, dirCmts, dirValBaseLine);
-          const dirChunks = extractJsStringChunks(dirClean, true, (rc, cc, ld) => mergeWaivedFromCss(rc, cc, dirValBaseLine + ld));
+          const onDirCssChunk = (rawCss, cssCmts, ld) => mergeWaivedFromCss(rawCss, cssCmts, dirValBaseLine + ld);
+          const dirChunks = extractJsStringChunks(dirClean, true, onDirCssChunk, true, {
+            preserveRawTemplates: true,
+            allowRawLitWaivers: false,
+            allowObjPropTemplates: true,
+          });
           let emittedImp = false;
           for (const ch of dirChunks) {
             const chLine = dirValBaseLine + ch.lineDelta;
-            pushStyleChunk(propName + ": " + maskCssUrls(maskCssQuotedStrings(ch.text)) + ";", chLine);
-            const impText = propName + ": " + maskCssQuotedStrings(ch.text) + (hasImpMod && !emittedImp ? " !important" : "") + ";";
-            if (hasImpMod && !emittedImp) emittedImp = true;
-            pushImpChunk(impText, chLine);
+            if (ch.isRawTpl) {
+              const tplCmtsDir = [];
+              const onTplCmtDir = ch.allowTplWaiver
+                ? (k, s0, e0, t0) => tplCmtsDir.push({ kind: k, start: s0, end: e0, text: t0 })
+                : null;
+              const strippedTplDir = stripTokenBlocks(ch.text, true, true, onTplCmtDir);
+              if (ch.allowTplWaiver && tplCmtsDir.length > 0) mergeWaivedFromCss(ch.text, tplCmtsDir, chLine);
+              pushStyleChunk(
+                propName + ": " + maskCssUrls(extractColorsFromTplCss(maskCssNonColorHashes(strippedTplDir, true), null)) + ";",
+                chLine
+              );
+              const onImpNestedDir = ch.allowTplWaiver ? (rc, cc, ld) => mergeWaivedFromCss(rc, cc, chLine + ld) : null;
+              const impTplDir = extractImportantFromTplCss(strippedTplDir, onImpNestedDir);
+              pushImpChunk(propName + ": " + impTplDir + (hasImpMod && !emittedImp ? " !important" : "") + ";", chLine);
+              if (hasImpMod && !emittedImp) emittedImp = true;
+            } else {
+              const dirCssClean = stripTokenBlocks(ch.text, false);
+              pushStyleChunk(
+                propName + ": " + maskCssNonColorHashes(maskCssUrls(maskCssQuotedStrings(dirCssClean)), false) + ";",
+                chLine
+              );
+              const impText =
+                propName + ": " + maskCssQuotedStrings(dirCssClean) + (hasImpMod && !emittedImp ? " !important" : "") + ";";
+              if (hasImpMod && !emittedImp) emittedImp = true;
+              pushImpChunk(impText, chLine);
+            }
           }
           if (hasImpMod && !emittedImp) {
             pushImpChunk(propName + ": var(--_) !important;", dirBaseLine);
@@ -4850,13 +5166,13 @@ function extractStyleRegions(raw, isSvelte = false, isMarkupSfc = false, ext = "
   }
 
   const afterJsx = chars.join("");
-  const styleAttrRe = /(?<![-\\w])style\\s*=\\s*(?=["'])/g;
+  const styleAttrRe = isHtmlOnly ? /(?<![-\\w])style\\s*=\\s*(?=["'])/gi : /(?<![-\\w])style\\s*=\\s*(?=["'])/g;
   let sm;
   while ((sm = styleAttrRe.exec(afterJsx)) !== null) {
     const valPos = sm.index + sm[0].length;
     const tag = findContainingOpenTag(sm.index);
     const sp = tag ? tag.attrStrSpans.find(([as]) => as === valPos) : null;
-    if (inJsStr(sm.index) || !sp) {
+    if (inJsStr(sm.index) || !sp || inPreSvg(sm.index)) {
       styleAttrRe.lastIndex = sm.index + 5;
       continue;
     }
@@ -4884,10 +5200,23 @@ function extractStyleRegions(raw, isSvelte = false, isMarkupSfc = false, ext = "
       strippedAttr = stripCssCustomPropDefs(maskCssQuotedStrings(noStaticCmts), false, false);
     }
     if (isBoundObj) {
-      for (const ch of extractJsStringChunks(maskHexSelectorKeys(strippedAttr), true, (rc, cc, ld) => mergeWaivedFromCss(rc, cc, attrBaseLine + ld))) {
+      const onBoundCssChunk = (rawCss, cssCmts, ld) => mergeWaivedFromCss(rawCss, cssCmts, attrBaseLine + ld);
+      for (const ch of extractJsStringChunks(maskHexSelectorKeys(strippedAttr), true, onBoundCssChunk, true, { preserveRawTemplates: true, allowRawLitWaivers: false, allowObjPropTemplates: true })) {
         const chLine = attrBaseLine + ch.lineDelta;
-        pushStyleChunk(maskCssUrls(maskCssQuotedStrings(ch.text)), chLine);
-        pushImpChunk(maskCssQuotedStrings(ch.text), chLine);
+        if (ch.isRawTpl) {
+          const tplCmtsBound = [];
+          const onTplCmtBound = ch.allowTplWaiver ? (k, s0, e0, t0) => tplCmtsBound.push({ kind: k, start: s0, end: e0, text: t0 }) : null;
+          const strippedTplBound = stripTokenBlocks(ch.text, true, true, onTplCmtBound);
+          if (ch.allowTplWaiver && tplCmtsBound.length > 0) mergeWaivedFromCss(ch.text, tplCmtsBound, chLine);
+          const nonVarTplBound = stripCssCustomPropDefs(strippedTplBound, false, true);
+          pushStyleChunk(maskCssUrls(extractColorsFromTplCss(maskCssNonColorHashes(nonVarTplBound, true), null)), chLine);
+          const onImpNestedBound = ch.allowTplWaiver ? (rc, cc, ld) => mergeWaivedFromCss(rc, cc, chLine + ld) : null;
+          pushImpChunk(extractImportantFromTplCss(nonVarTplBound, onImpNestedBound), chLine);
+        } else {
+          const styleClean = stripCssCustomPropDefs(stripTokenBlocks(ch.text, false), false, false);
+          pushStyleChunk(maskCssNonColorHashes(maskCssUrls(maskCssQuotedStrings(styleClean)), false), chLine);
+          pushImpChunk(maskCssQuotedStrings(styleClean), chLine);
+        }
       }
     } else {
       const colorAttr = isSvelte && attrCss.includes("{") ? extractColorsFromSvelteQuoted(strippedAttr) : strippedAttr;
@@ -5060,7 +5389,7 @@ function stripHtmlSource(rawHtml, isSvelte = false, isVue = false, isAstro = fal
         i++;
         continue;
       }
-      const isScript = candOpenM[1].toLowerCase() === "script";
+      const isScript = isHtmlOnlySrc ? candOpenM[1].toLowerCase() === "script" : candOpenM[1] === "script";
       const isStyleTag = isHtmlOnlySrc ? candOpenM[1].toLowerCase() === "style" : candOpenM[1] === "style";
       let j = i + candOpenM[0].length;
       let q = null;
@@ -5074,11 +5403,11 @@ function stripHtmlSource(rawHtml, isSvelte = false, isVue = false, isAstro = fal
         const c = rawHtml[j];
         if (q) {
           if (inBrackQ && c === "\\\\" && j + 1 < len) { j += 2; continue; }
-          if ((isSvelte || isAstro) && !inBrackQ && c === "{") {
-            const bEnd = findBalancedBraceEnd(rawHtml, j, isAstro);
+          if (isSvelte && !inBrackQ && c === "{") {
+            const bEnd = findBalancedBraceEnd(rawHtml, j, false);
             if (bEnd !== -1) {
               tagParts.push(rawHtml.slice(segStart, j));
-              tagParts.push("{" + stripComments(rawHtml.slice(j + 1, bEnd), false, true, true, isAstro, onComment, j + 1) + "}");
+              tagParts.push("{" + stripComments(rawHtml.slice(j + 1, bEnd), false, true, true, false, onComment, j + 1) + "}");
               j = bEnd + 1;
               segStart = j;
               continue;
@@ -5219,20 +5548,8 @@ let svgColors = 0;
 let swatchColors = 0;
 const findings = [];
 
-let rootLst = null;
-try {
-  rootLst = lstatSync(root);
-} catch (err) {
-  if (err?.code === "ENOENT") {
-    console.error("Error: target path not found: " + root);
-    process.exit(2);
-  }
-  throw err;
-}
 let targets = [];
-if (rootLst.isSymbolicLink() && !existsSync(root)) {
-  targets = [];
-} else {
+{
   const realRoot = safeReal(root);
   const realCwd = safeReal(process.cwd());
   const rawArgRel = relative(realCwd, realRoot).replace(/\\\\/g, "/");
@@ -5299,7 +5616,7 @@ function extractTailwindClassAnalysis(remainder, styleChunksOrSurface, isMarkupS
   const inJsStr = (idx) => regions.strSpans.some(([s0, e0]) => idx >= s0 && idx < e0);
   const lowerExt = String(ext || "").toLowerCase();
   const isSvelte = lowerExt === ".svelte";
-  const isAstro = lowerExt === ".astro";
+  const isHtmlOnly = lowerExt === ".html" || lowerExt === ".htm";
   const lineAtOff = (srcText, off) => {
     let ln = 1;
     for (let li = 0; li < off && li < srcText.length; li++) if (srcText[li] === "\\n") ln++;
@@ -5318,7 +5635,7 @@ function extractTailwindClassAnalysis(remainder, styleChunksOrSurface, isMarkupS
     const cmts = [];
     const clean = stripComments(exprSrc, false, true, true, false, (kd, s0, e0, t0) => cmts.push({ kind: kd, start: s0, end: e0, text: t0 }), 0);
     if (cmts.length > 0) deferredTwWaivers.push({ src: exprSrc, comments: cmts, baseLine: baseLn });
-    for (const ch of extractJsStringChunks(clean, false, (rc, cc, ld) => deferredTwWaivers.push({ src: rc, comments: cc, baseLine: baseLn + ld }))) {
+    for (const ch of extractJsStringChunks(clean, false)) {
       pushTwChunk(ch.text, baseLn + ch.lineDelta);
     }
   };
@@ -5340,10 +5657,14 @@ function extractTailwindClassAnalysis(remainder, styleChunksOrSurface, isMarkupS
       !t.attrStrSpans.some(([as, ae]) => absIdx >= as && absIdx < ae) &&
       !t.exprSpans.some(([es, ee]) => absIdx >= es && absIdx < ee);
 
-    for (const m of tagSlice.matchAll(/(?<=[\\s}"'\\/])(className|class|:class|v-bind:class|class:list)\\s*=\\s*/g)) {
+    const classAttrRe = isHtmlOnly
+      ? /(?<=[\\s}"'\\/])(className|class|:class|v-bind:class|class:list)\\s*=\\s*/gi
+      : /(?<=[\\s}"'\\/])(className|class|:class|v-bind:class|class:list)\\s*=\\s*/g;
+    for (const m of tagSlice.matchAll(classAttrRe)) {
       const absIdx = t.start + m.index;
       if (!inTop(absIdx)) continue;
       const attrName = m[1];
+      const attrLower = attrName.toLowerCase();
       const valPos = absIdx + m[0].length;
       const sp = t.attrStrSpans.find(([as]) => as === valPos);
       if (sp) {
@@ -5351,9 +5672,9 @@ function extractTailwindClassAnalysis(remainder, styleChunksOrSurface, isMarkupS
         coveredRanges.push([sp[0], sp[1]]);
         const inner = s.slice(sp[0] + 1, sp[1] - 1);
         const spBaseLine = lineAtOff(s, sp[0] + 1);
-        if (attrName === ":class" || attrName === "v-bind:class") {
+        if (attrLower === ":class" || attrLower === "v-bind:class") {
           scanTwExprWithWaivers(inner, spBaseLine);
-        } else if ((isSvelte || isAstro) && inner.includes("{")) {
+        } else if (isSvelte && inner.includes("{")) {
           let p = 0;
           let last = 0;
           while (p < inner.length) {
@@ -5464,7 +5785,7 @@ const lineAtOff = (str, off) => {
   }
   return ln;
 };
-function collectWaivedReflexLines(rawSrc, commentsList) {
+function collectWaivedReflexLines(rawSrc, commentsList, allowJsxBrace = false, isAstroSfc = false) {
   const waivedByRule = new Map();
   if (!commentsList || commentsList.length === 0) return waivedByRule;
   const cleanChars = rawSrc.split("");
@@ -5473,14 +5794,61 @@ function collectWaivedReflexLines(rawSrc, commentsList) {
       if (cleanChars[k] !== "\\n") cleanChars[k] = " ";
     }
   }
-  const cleanLines = cleanChars.join("").split("\\n");
+  const cleanStr = cleanChars.join("");
+  const cleanLines = cleanStr.split("\\n");
+  const sortedTokens = [...commentsList].sort((a, b) => a.start - b.start);
+  const jsxCleanChars = [...cleanChars];
+  const singleLineContainers = [];
+  const multiLineContainers = [];
+  const tokenToMultiContainer = new Map();
+  const multiContainerLineSet = new Set();
+  const singleContainerLineSet = new Set();
+
+  if (allowJsxBrace) {
+    const seenPairs = new Set();
+    for (const tok of sortedTokens) {
+      if (tok.kind !== "block" && tok.kind !== "line") continue;
+      let oPos = tok.start - 1;
+      while (oPos >= 0 && /\\s/.test(cleanStr[oPos])) oPos--;
+      let cPos = tok.end;
+      while (cPos < cleanStr.length && /\\s/.test(cleanStr[cPos])) cPos++;
+      if (oPos < 0 || cPos >= cleanStr.length || cleanStr[oPos] !== "{" || cleanStr[cPos] !== "}") continue;
+      const pairKey = oPos + ":" + cPos;
+      const openLineIdx = lineAtOff(rawSrc, oPos) - 1;
+      const closeLineIdx = lineAtOff(rawSrc, cPos) - 1;
+      if (seenPairs.has(pairKey)) continue;
+      seenPairs.add(pairKey);
+      const enclosed = sortedTokens.filter((t) => t.start > oPos && t.end <= cPos);
+      if (enclosed.length === 0) continue;
+      const container = { openPos: oPos, closePos: cPos, openLineIdx, closeLineIdx, enclosed, validJsx: false, targetIdx: -1 };
+      if (openLineIdx === closeLineIdx) {
+        if (enclosed.every((t) => t.kind === "block")) singleLineContainers.push(container);
+      } else {
+        multiLineContainers.push(container);
+      }
+    }
+    for (const c of singleLineContainers) {
+      jsxCleanChars[c.openPos] = " ";
+      jsxCleanChars[c.closePos] = " ";
+      singleContainerLineSet.add(c.openLineIdx);
+    }
+  }
+
+  const preJsxCleanLines = jsxCleanChars.join("").split("\\n");
   const blockRe = /^\\/\\*\\s*dsaf-ignore\\s+([a-z0-9/_-]+)(?:\\s+--\\s*([\\s\\S]*?))?\\s*\\*\\/$/i;
   const htmlRe = /^<!--\\s*dsaf-ignore\\s+([a-z0-9/_-]+)(?:\\s+--\\s*([\\s\\S]*?))?\\s*-->$/i;
   const lineRe = /^\\/\\/\\s*dsaf-ignore\\s+([a-z0-9/_-]+)(?:\\s+--\\s*([^\\r\\n]*?))?\\s*$/i;
+  const anyCommentLineSet = new Set();
+  for (const tok of sortedTokens) {
+    const ts = lineAtOff(rawSrc, tok.start) - 1;
+    const te = lineAtOff(rawSrc, Math.max(tok.start, tok.end - 1)) - 1;
+    for (let li = ts; li <= te; li++) anyCommentLineSet.add(li);
+  }
   const standaloneLines = new Set();
-  const isBareConnectorLine = (ln) => String(ln || "").replace(/&&|\\|\\||[{}?:(]/g, "").trim().length === 0;
-  const dirs = [];
-  for (const tok of commentsList) {
+  const isBareConnectorLine = (ln) => String(ln || "").replace(/&&|\\|\\||[{?:(]/g, "").trim().length === 0;
+  const parsedToks = [];
+
+  for (const tok of sortedTokens) {
     const trimmed = tok.text.trim();
     const m = tok.kind === "block" ? blockRe.exec(trimmed) : tok.kind === "html" ? htmlRe.exec(trimmed) : lineRe.exec(trimmed);
     if (!m) continue;
@@ -5489,16 +5857,172 @@ function collectWaivedReflexLines(rawSrc, commentsList) {
     const reason = (m[2] ?? "").replace(/\\s+/g, " ").trim();
     const startIdx = lineAtOff(rawSrc, tok.start) - 1;
     const endIdx = lineAtOff(rawSrc, Math.max(tok.start, tok.end - 1)) - 1;
-    const startHasCode = !isBareConnectorLine(cleanLines[startIdx]);
-    const endHasCode = endIdx !== startIdx && !isBareConnectorLine(cleanLines[endIdx]);
-    const isInline = startHasCode || endHasCode;
-    let prevNonEmptyIdx = startIdx - 1;
-    while (prevNonEmptyIdx >= 0 && (cleanLines[prevNonEmptyIdx] || "").trim() === "") {
-      prevNonEmptyIdx--;
+    parsedToks.push({ tok, ruleId, reason, startIdx, endIdx });
+    const prelimStartHasCode = !isBareConnectorLine(preJsxCleanLines[startIdx]);
+    const prelimEndHasCode = endIdx !== startIdx && !isBareConnectorLine(preJsxCleanLines[endIdx]);
+    if (!prelimStartHasCode && !prelimEndHasCode) {
+      for (let li = startIdx; li <= endIdx; li++) standaloneLines.add(li);
     }
-    const prevTrim = prevNonEmptyIdx >= 0 ? (cleanLines[prevNonEmptyIdx] || "").trim() : "";
-    const curHasOpenBraceBefore = (cleanLines[startIdx] || "").includes("{");
-    const hasJsxBraceOpen = (tok.kind === "block" || tok.kind === "line") && !isInline && (curHasOpenBraceBefore || prevTrim === "{");
+  }
+
+  if (allowJsxBrace) {
+    const isCommentOnlySingleLine = (idx) => singleContainerLineSet.has(idx) && (preJsxCleanLines[idx] || "").trim() === "";
+    const jsxChildBraceStarts = new Set();
+    if (multiLineContainers.length > 0) {
+      if (!isAstroSfc) {
+        createJsxChildrenCursor([cleanStr], (pos) => jsxChildBraceStarts.add(pos))();
+      } else {
+        const BT = String.fromCharCode(96);
+        let bodyStart = 0;
+        const fmOpenM = /^(?:\\uFEFF)?[ \\t\\r\\n]*---(?=[ \\t]*(?:\\r?\\n|$))/.exec(cleanStr);
+        if (fmOpenM) {
+          const afterOpenNl = cleanStr.indexOf("\\n", fmOpenM[0].length);
+          if (afterOpenNl !== -1) {
+            let fq = null;
+            let fk = afterOpenNl + 1;
+            const fmTplDepth = [];
+            while (fk < cleanStr.length) {
+              const fc = cleanStr[fk];
+              if (fq) {
+                if (fc === "\\\\" && fk + 1 < cleanStr.length) { fk += 2; continue; }
+                if (fq === BT && fc === "$" && cleanStr[fk + 1] === "{") { fmTplDepth.push(1); fq = null; fk += 2; continue; }
+                if (fc === fq || (fq !== BT && fc === "\\n")) fq = null;
+                fk++;
+                continue;
+              }
+              if (fmTplDepth.length === 0 && (fk === afterOpenNl + 1 || cleanStr[fk - 1] === "\\n")) {
+                const fmCloseM = /^---(?=[ \\t]*(?:\\r?\\n|$))/.exec(cleanStr.slice(fk));
+                if (fmCloseM) {
+                  bodyStart = fk + 3;
+                  break;
+                }
+              }
+              if (fc === '"' || fc === "'" || fc === BT) { fq = fc; fk++; continue; }
+              if (fmTplDepth.length > 0) {
+                if (fc === "{") fmTplDepth[fmTplDepth.length - 1]++;
+                else if (fc === "}") {
+                  fmTplDepth[fmTplDepth.length - 1]--;
+                  if (fmTplDepth[fmTplDepth.length - 1] === 0) { fmTplDepth.pop(); fq = BT; }
+                }
+              }
+              fk++;
+            }
+          }
+        }
+        const astroTail = cleanStr
+          .slice(bodyStart)
+          .replace(/<script\\b[^>]*>[\\s\\S]*?<\\/script\\s*>|<style\\b[^>]*>[\\s\\S]*?<\\/style\\s*>/gi, (m) =>
+            m.replace(/[^\\n]/g, " ")
+          );
+        createJsxChildrenCursor(["<>" + astroTail], (pos) => {
+          if (pos >= 2) jsxChildBraceStarts.add(bodyStart + pos - 2);
+        })();
+      }
+    }
+    const lineRanges = [];
+    let lrStart = 0;
+    for (let k = 0; k < rawSrc.length; k++) {
+      if (rawSrc[k] === "\\n") {
+        lineRanges.push({ start: lrStart, end: k });
+        lrStart = k + 1;
+      }
+    }
+    lineRanges.push({ start: lrStart, end: rawSrc.length });
+    const liveLine = (idx) =>
+      idx >= 0 && idx < lineRanges.length ? jsxCleanChars.slice(lineRanges[idx].start, lineRanges[idx].end).join("") : "";
+    const beforeOkContainers = [];
+    multiLineContainers.sort((a, b) => a.openPos - b.openPos);
+    for (const c of multiLineContainers) {
+      if (jsxChildBraceStarts.has(c.openPos)) {
+        c.beforeOk = true;
+        beforeOkContainers.push(c);
+        continue;
+      }
+      let bPos = c.openPos - 1;
+      while (bPos >= 0) {
+        while (bPos >= 0 && /\\s/.test(jsxCleanChars[bPos])) bPos--;
+        if (bPos < 0) break;
+        let skipped = false;
+        for (let ci = beforeOkContainers.length - 1; ci >= 0; ci--) {
+          const pc = beforeOkContainers[ci];
+          if (bPos >= pc.openPos && bPos <= pc.closePos) {
+            bPos = pc.openPos - 1;
+            skipped = true;
+            break;
+          }
+        }
+        if (!skipped) break;
+      }
+      if (bPos < 0) {
+        c.beforeOk = true;
+        beforeOkContainers.push(c);
+        continue;
+      }
+      const prevLineBegin = rawSrc.lastIndexOf("\\n", bPos) + 1;
+      const beforeTokTrim = jsxCleanChars.slice(prevLineBegin, bPos + 1).join("").trim();
+      if (!beforeTokTrim || beforeTokTrim === "---" || /(?:&&|\\|\\||[>({[?:,;]|=>|\\breturn)$/.test(beforeTokTrim)) {
+        c.beforeOk = true;
+        beforeOkContainers.push(c);
+      }
+    }
+    multiLineContainers.sort((a, b) => b.openPos - a.openPos);
+    for (const c of multiLineContainers) {
+      if (!c.beforeOk) continue;
+      const closeLineEnd = c.closeLineIdx < lineRanges.length ? lineRanges[c.closeLineIdx].end : rawSrc.length;
+      const afterSameLine = jsxCleanChars.slice(c.closePos + 1, closeLineEnd).join("").trim();
+      if (afterSameLine !== "") {
+        if (/^[<{]/.test(afterSameLine)) {
+          c.validJsx = true;
+          c.targetIdx = c.closeLineIdx;
+          jsxCleanChars[c.openPos] = " ";
+          jsxCleanChars[c.closePos] = " ";
+          for (let li = c.openLineIdx; li <= c.closeLineIdx; li++) {
+            if (liveLine(li).trim() === "") multiContainerLineSet.add(li);
+          }
+          for (const t of c.enclosed) tokenToMultiContainer.set(t, c);
+        }
+        continue;
+      }
+      let afterIdx = c.closeLineIdx + 1;
+      while (
+        afterIdx < preJsxCleanLines.length &&
+        (standaloneLines.has(afterIdx) ||
+          multiContainerLineSet.has(afterIdx) ||
+          isCommentOnlySingleLine(afterIdx) ||
+          /^\\s*$/.test(liveLine(afterIdx)))
+      ) {
+        afterIdx++;
+      }
+      const afterCloseTrim = afterIdx < lineRanges.length ? liveLine(afterIdx).trim() : "";
+      if (afterCloseTrim && /^[<{]/.test(afterCloseTrim)) {
+        c.validJsx = true;
+        c.targetIdx = afterIdx;
+        jsxCleanChars[c.openPos] = " ";
+        jsxCleanChars[c.closePos] = " ";
+        for (let li = c.openLineIdx; li <= c.closeLineIdx; li++) {
+          if (liveLine(li).trim() === "") multiContainerLineSet.add(li);
+        }
+        for (const t of c.enclosed) tokenToMultiContainer.set(t, c);
+      }
+    }
+  }
+
+  const finalCleanLines = jsxCleanChars.join("").split("\\n");
+  standaloneLines.clear();
+  const commentOnlyLines = new Set();
+  for (let li = 0; li < finalCleanLines.length; li++) {
+    if ((anyCommentLineSet.has(li) || singleContainerLineSet.has(li) || multiContainerLineSet.has(li)) && (finalCleanLines[li] || "").trim() === "") {
+      commentOnlyLines.add(li);
+    }
+  }
+
+  const dirs = [];
+  for (const pt of parsedToks) {
+    const { tok, ruleId, reason, startIdx, endIdx } = pt;
+    const multiC = tokenToMultiContainer.get(tok) || null;
+    const startHasCode = !isBareConnectorLine(finalCleanLines[startIdx]);
+    const endHasCode = endIdx !== startIdx && !isBareConnectorLine(finalCleanLines[endIdx]);
+    const isInline = startHasCode || endHasCode;
     if (!isInline) {
       for (let li = startIdx; li <= endIdx; li++) standaloneLines.add(li);
     }
@@ -5509,22 +6033,21 @@ function collectWaivedReflexLines(rawSrc, commentsList) {
       ruleId,
       endLine: endIdx + 1,
       isInline,
-      hasJsxBraceOpen,
+      multiContainer: multiC,
       targetLine: isInline ? (!startHasCode && endHasCode ? endIdx + 1 : startIdx + 1) : endIdx + 2,
     });
   }
   for (const d of dirs) {
     if (!d.isInline) {
-      let nextIdx = d.endLine;
-      while (nextIdx < cleanLines.length && standaloneLines.has(nextIdx)) nextIdx++;
-      if (d.hasJsxBraceOpen) {
-        while (nextIdx < cleanLines.length && /^\\s*$/.test(cleanLines[nextIdx] || "")) nextIdx++;
-        if (nextIdx < cleanLines.length && /^\\s*\\}\\s*$/.test(cleanLines[nextIdx] || "")) {
+      if (d.multiContainer?.validJsx && d.multiContainer.targetIdx >= 0) {
+        d.targetLine = d.multiContainer.targetIdx + 1;
+      } else {
+        let nextIdx = d.endLine;
+        while (nextIdx < finalCleanLines.length && (standaloneLines.has(nextIdx) || commentOnlyLines.has(nextIdx))) {
           nextIdx++;
-          while (nextIdx < cleanLines.length && standaloneLines.has(nextIdx)) nextIdx++;
         }
+        d.targetLine = nextIdx + 1;
       }
-      d.targetLine = nextIdx + 1;
     }
     let set = waivedByRule.get(d.ruleId);
     if (!set) {
@@ -5582,17 +6105,32 @@ if (isStyle) {
     const cleanRaw = isMarkupSfc
       ? stripHtmlSource(raw, lowerRel.endsWith(".svelte"), lowerRel.endsWith(".vue"), lowerRel.endsWith(".astro"), onRawCmt)
       : stripComments(raw, false, true, true, fileExt === ".tsx" || fileExt === ".jsx", onRawCmt, 0);
-    const waivedByRule = collectWaivedReflexLines(raw, rawComments);
-    const { styleSurface, styleChunks, importantChunks, deferredCssWaivers, remainder } = extractStyleRegions(cleanRaw, lowerRel.endsWith(".svelte"), isMarkupSfc, fileExt);
+    const waivedByRule = collectWaivedReflexLines(
+      raw,
+      rawComments,
+      fileExt === ".tsx" || fileExt === ".jsx" || fileExt === ".astro",
+      fileExt === ".astro"
+    );
+    const preSvgRanges = findSvgBlockRanges(cleanRaw, isMarkupSfc, fileExt);
+    const { styleSurface, styleChunks, importantChunks, deferredCssWaivers, remainder } = extractStyleRegions(
+      cleanRaw,
+      lowerRel.endsWith(".svelte"),
+      isMarkupSfc,
+      fileExt,
+      preSvgRanges
+    );
     for (const dw of deferredCssWaivers || []) {
       const localWaived = collectWaivedReflexLines(dw.src, dw.comments);
+      const maxLocalLine = dw.src.split("\\n").length;
       for (const [rid, lns] of localWaived) {
         let tgt = waivedByRule.get(rid);
         if (!tgt) {
           tgt = new Set();
           waivedByRule.set(rid, tgt);
         }
-        for (const ln of lns) tgt.add(ln + (dw.baseLine || 1) - 1);
+        for (const ln of lns) {
+          if (ln >= 1 && ln <= maxLocalLine) tgt.add(ln + (dw.baseLine || 1) - 1);
+        }
       }
     }
     const nonTwStyleChunks = ${checkTailwind}
@@ -5609,20 +6147,24 @@ if (isStyle) {
       : { twSurface: "", twChunks: [], deferredTwWaivers: [], maskTwInRemainder: () => remainder };
     for (const dw of twAnalysis.deferredTwWaivers || []) {
       const localWaived = collectWaivedReflexLines(dw.src, dw.comments);
+      const maxLocalLine = dw.src.split("\\n").length;
       for (const [rid, lns] of localWaived) {
         let tgt = waivedByRule.get(rid);
         if (!tgt) {
           tgt = new Set();
           waivedByRule.set(rid, tgt);
         }
-        for (const ln of lns) tgt.add(ln + (dw.baseLine || 1) - 1);
+        for (const ln of lns) {
+          if (ln >= 1 && ln <= maxLocalLine) tgt.add(ln + (dw.baseLine || 1) - 1);
+        }
       }
     }
     const noTwRemainder = twAnalysis.maskTwInRemainder(${checkTailwind});
     const remChars = noTwRemainder.split("");
     for (const r of findSvgBlockRanges(noTwRemainder, isMarkupSfc, fileExt)) {
       const seg = noTwRemainder.slice(r.start, r.end);
-      svgHits += (seg.match(HEX_RE) || []).length;
+      const cleanSvgSeg = stripCommentsInSvgStyleTags(seg, lowerRel.endsWith(".svelte"), isMarkupSfc, fileExt);
+      svgHits += (cleanSvgSeg.match(HEX_RE) || []).length;
       maskRange(remChars, r.start, r.end);
     }
     const afterSvgBlocks = remChars.join("");
@@ -7701,12 +8243,20 @@ export const Logo = () => (
     writeFileSync(
       r34M4TsxOk,
       [
-        "{/* dsaf-ignore dsaf/tailwind-arbitrary -- third-party portal z-offset workaround */}",
-        'export const C = () => <div className="bg-[#ff00aa]" />;',
-        "{",
-        "  /* dsaf-ignore dsaf/important-override -- override legacy portal style rule */",
-        "}",
-        'export const D = () => <div style={{ color: "red !important" }} />;',
+        "export const C = () => (",
+        "  <>",
+        "    {/* dsaf-ignore dsaf/tailwind-arbitrary -- third-party portal z-offset workaround */}",
+        '    <div className="bg-[#ff00aa]" />',
+        "  </>",
+        ");",
+        "export const D = () => (",
+        "  <>",
+        "    {",
+        "      /* dsaf-ignore dsaf/important-override -- override legacy portal style rule */",
+        "    }",
+        '    <div style={{ color: "red !important" }} />',
+        "  </>",
+        ");",
       ].join("\n") + "\n"
     );
     assert.equal(runGate(checker, r34M4TsxOk).status, 0, "R34 A3-M4: JSX {/* ... */} and wrapped { /* ... */ } Reflex waivers must pass");
@@ -8034,7 +8584,7 @@ export const Logo = () => (
       join(r40WaiversDir, "Dir.svelte"),
       [
         '<div style:color="/* dsaf-ignore dsaf/hardcoded-color -- brand legacy gradient fallback */ #ff00aa" />',
-        '<div style:color={\'/* dsaf-ignore dsaf/hardcoded-color -- brand legacy gradient fallback */ #ff00aa\'} />',
+        '<div style:color={/* dsaf-ignore dsaf/hardcoded-color -- brand legacy gradient fallback */ \'#ff00aa\'} />',
         '<div class="p-2 {/* dsaf-ignore dsaf/tailwind-arbitrary -- custom hero layout grid */ \'w-[317px]\'}" />',
       ].join("\n") + "\n"
     );
@@ -8084,6 +8634,666 @@ export const Logo = () => (
     const r40BackfillRun = runGate(checker, r40Backfill, { DSAF_MAX_SVG_COLORS: "0" });
     assert.equal(r40BackfillRun.status, 0, `R40 A3-L2: backfill/data-fill must not match SVG_PROP_HEX_RE (svgColors=0): ${r40BackfillRun.stdout}`);
     assert.match(r40BackfillRun.stdout, /svgColors=0\b/);
+
+    // Round 41 (R40-A3-H1 JSX prop expression attr false positive, R40-A3-H2 CSS custom prop unquoted escape,
+    // R40-A3-M1 SVG JSX expression apostrophe, R40-A3-M2 Svelte quoted style inline waiver, R40-A3-M3 PascalCase <Script> tag):
+    const r41JsxExpr = join(appDir, "R41JsxExpr.tsx");
+    writeFileSync(
+      r41JsxExpr,
+      [
+        "export const C = () => (",
+        '  <div title={(() => { let t = "\\\" /*"; return t; })()}>',
+        '    <span style={{ color: "#ff00aa" }}>bad</span>',
+        "  </div>",
+        ");",
+      ].join("\n") + "\n"
+    );
+    assert.equal(runGate(checker, r41JsxExpr).status, 1, "R41 A3-H1: string inside JSX prop expression must not become multiline attr and swallow /*");
+
+    const r41CssEsc = join(appDir, "R41CssEsc.css");
+    writeFileSync(
+      r41CssEsc,
+      [
+        ".ok { --x: \\{; --note: \\\"; }",
+        ".bad { color: #ff00aa; }",
+      ].join("\n") + "\n"
+    );
+    assert.equal(runGate(checker, r41CssEsc).status, 1, "R41 A3-H2: escaped brace/quote in unquoted CSS custom prop value must not swallow next rule");
+
+    const r41SvgJsx = join(appDir, "R41SvgJsx.tsx");
+    writeFileSync(
+      r41SvgJsx,
+      [
+        "export const Icon = ({ show }: { show: boolean }) => (",
+        "  <div>",
+        "    <svg>{show && <text>Don't panic</text>}</svg>",
+        '    <div style={{ color: "#ff00aa" }}>real</div>',
+        "  </div>",
+        ");",
+      ].join("\n") + "\n"
+    );
+    assert.equal(runGate(checker, r41SvgJsx).status, 1, "R41 A3-M1: apostrophe inside SVG JSX expression must not swallow following component style violation");
+
+    const r41SvelteWaiver = join(appDir, "R41SvelteWaiver.svelte");
+    writeFileSync(
+      r41SvelteWaiver,
+      [
+        '<div style="/* dsaf-ignore dsaf/hardcoded-color -- approved brand swatch token */ {ok ? \'color: #ff00aa\' : \'\'}" />',
+        '<div style="color: #abcdef" />',
+      ].join("\n") + "\n"
+    );
+    const r41SvRes = runGate(checker, r41SvelteWaiver);
+    assert.equal(r41SvRes.status, 1, "R41 A3-M2: inline Svelte style waiver before {...} must waive line 1 ONLY, leaving line 2 active");
+    assert.match(r41SvRes.stdout, /styleColors=1\b/);
+
+    for (const [fname, content] of [
+      ["R41Script.svelte", '<Script>\n<div style="color: #ff00aa" />\n</Script>\n'],
+      ["R41Script.vue", '<template><Script><div style="color: #ff00aa" /></Script></template>\n'],
+      ["R41Script.astro", '<Script><div style="color: #ff00aa" /></Script>\n'],
+    ]) {
+      const fp = join(appDir, fname);
+      writeFileSync(fp, content);
+      assert.equal(runGate(checker, fp).status, 1, `R41 A3-M3: PascalCase <Script> in ${fname} must not suppress inner markup violation`);
+    }
+
+    // Round 42 (R41-A3-H1 .astro quoted attrs, R41-A3-H2 call-form regex/', R41-A3-M1 <svg> bracket depth, R41-A3-M2 uppercase HTML STYLE/CLASS):
+    const r42AstroOpen = join(appDir, "R42AstroOpen.astro");
+    writeFileSync(r42AstroOpen, '---\n---\n<div data-a="open { //" style="color: #ff00aa" />\n');
+    const r42AstroOpenRes = runGate(checker, r42AstroOpen);
+    assert.equal(r42AstroOpenRes.status, 1, "R42 A3-H1: literal { // inside .astro double-quoted attr must not suppress style attr");
+    assert.match(r42AstroOpenRes.stdout, /styleColors=1\b/);
+
+    const r42AstroFakeWaive = join(appDir, "R42AstroFakeWaive.astro");
+    writeFileSync(
+      r42AstroFakeWaive,
+      '---\n---\n<div title="x {/* dsaf-ignore dsaf/hardcoded-color -- fake string */}" style="color: #ff00aa" />\n<div class="bg-[#ff00aa] {ok}" />\n'
+    );
+    const r42AstroFakeRes = runGate(checker, r42AstroFakeWaive);
+    assert.equal(r42AstroFakeRes.status, 1, "R42 A3-H1: fake comment inside .astro quoted attr must not waive & literal bg-[#ff00aa] must catch");
+    assert.match(r42AstroFakeRes.stdout, /styleColors=1\b.*twArbitrary=1\b/);
+
+    const r42StyledRegexWaived = join(appDir, "R42StyledRegexOk.ts");
+    writeFileSync(
+      r42StyledRegexWaived,
+      [
+        'import styled from "styled-components";',
+        "export const Box = styled.div((p: any) => /'/.test(p.x) ? `",
+        "  /* dsaf-ignore dsaf/hardcoded-color -- approved brand swatch tint */",
+        "  color: #ff00aa;",
+        '` : "");',
+      ].join("\n") + "\n"
+    );
+    assert.equal(
+      runGate(checker, r42StyledRegexWaived).status,
+      0,
+      "R42 A3-H2: regex literal /'/ inside call-form styled.div() must not hide template waiver"
+    );
+
+    const r42StyledRegexBad = join(appDir, "R42StyledRegexBad.ts");
+    writeFileSync(
+      r42StyledRegexBad,
+      [
+        'import styled from "styled-components";',
+        'export const Box = styled.div((p: any) => /\'/.test(p.x) ? `color: #ff00aa;` : "");',
+      ].join("\n") + "\n"
+    );
+    assert.equal(runGate(checker, r42StyledRegexBad).status, 1, "R42 A3-H2: unwaived color after regex literal /'/ must still fail");
+
+    const r42SvgBrack = join(appDir, "R42SvgBrack.svelte");
+    writeFileSync(
+      r42SvgBrack,
+      '<svg class:[&>path]:hidden={ok} color="#ff00aa" />\n<svg class:[&>path]:hidden={ok}><path fill="#112233" /></svg>\n'
+    );
+    assert.equal(runGate(checker, r42SvgBrack).status, 0, "R42 A3-M1: <svg class:[&>path]:hidden> must not close <svg> tag early at >");
+
+    const r42HtmlUpper = join(appDir, "R42Upper.html");
+    writeFileSync(r42HtmlUpper, '<div STYLE="color: #ff00aa" CLASS="bg-[#112233]">hi</div>\n');
+    const r42HtmlUpperRes = runGate(checker, r42HtmlUpper);
+    assert.equal(r42HtmlUpperRes.status, 1, "R42 A3-M2: uppercase STYLE/CLASS in .html must fail both checks");
+    assert.match(r42HtmlUpperRes.stdout, /styleColors=1\b.*twArbitrary=1\b/);
+
+    // Round 43 (R42-A3-H1 string waiver spoofing, R42-A3-H2 SVG style/attr classification, R42-A3-M3 whitespace/bracket styled, R42-A3-M4 CSS brace waiver boundary):
+    const r43SpoofTw = join(appDir, "R43SpoofTw.tsx");
+    writeFileSync(
+      r43SpoofTw,
+      'export const A = () => <div className={ok ? "/* dsaf-ignore dsaf/tailwind-arbitrary -- spoof */ bg-[#112233]" : ""} />;\n'
+    );
+    assert.equal(runGate(checker, r43SpoofTw).status, 1, "R43 A3-H1: string literal inside className expression must NOT waive");
+
+    const r43SpoofStyleObj = join(appDir, "R43SpoofStyle.tsx");
+    writeFileSync(
+      r43SpoofStyleObj,
+      'export const B = () => <div style={{ color: "/* dsaf-ignore dsaf/hardcoded-color -- spoof */ #ff00aa" }} />;\n'
+    );
+    assert.equal(runGate(checker, r43SpoofStyleObj).status, 1, "R43 A3-H1: string literal inside JSX style={} must NOT waive");
+
+    const r43SpoofStyledObj = join(appDir, "R43SpoofStyledObj.ts");
+    writeFileSync(
+      r43SpoofStyledObj,
+      'import styled from "styled-components";\nexport const C = styled.div({ color: "/* dsaf-ignore dsaf/hardcoded-color -- spoof */ #ff00aa" });\n'
+    );
+    assert.equal(runGate(checker, r43SpoofStyledObj).status, 1, "R43 A3-H1: property value string inside styled.div({}) must NOT waive");
+
+    const r43SpoofSvelteDir = join(appDir, "R43SpoofDir.svelte");
+    writeFileSync(
+      r43SpoofSvelteDir,
+      "<div style:color={'/* dsaf-ignore dsaf/hardcoded-color -- spoof */ #ff00aa'} />\n"
+    );
+    assert.equal(runGate(checker, r43SpoofSvelteDir).status, 1, "R43 A3-H1: string literal inside Svelte style:color={} must NOT waive");
+
+    const r43SvgStyle = join(appDir, "R43SvgStyle.html");
+    writeFileSync(
+      r43SvgStyle,
+      '<svg viewBox="0 0 10 10"><style>.icon{fill:#ff00aa}</style><rect style="fill:#112233" width="10" height="10"/></svg>\n'
+    );
+    const r43SvgRes = runGate(checker, r43SvgStyle);
+    assert.equal(r43SvgRes.status, 0, "R43 A3-H2: <svg><style> and inline SVG style= must be classified as svgColors, not styleColors");
+    assert.match(r43SvgRes.stdout, /styleColors=0\b/);
+
+    const r43StyledForms = join(appDir, "R43StyledForms.ts");
+    writeFileSync(
+      r43StyledForms,
+      'import styled from "styled-components";\nexport const A = styled .div`color: #ff00aa;`;\nexport const B = styled["button"]`background: #112233;`;\nexport const C = styled (Base)`border-color: #223344;`;\n'
+    );
+    const r43StyledFormsRes = runGate(checker, r43StyledForms);
+    assert.equal(r43StyledFormsRes.status, 1, "R43 A3-M3: styled .div / styled['button'] / styled (Base) must be detected");
+    assert.match(r43StyledFormsRes.stdout, /styleColors=3\b/);
+
+    const r43CssBrace = join(appDir, "R43CssBrace.css");
+    writeFileSync(
+      r43CssBrace,
+      ".a {\n/* dsaf-ignore dsaf/hardcoded-color -- should not cross closing brace */\n}\n.b { color: #ff00aa; }\n"
+    );
+    assert.equal(runGate(checker, r43CssBrace).status, 1, "R43 A3-M4: CSS block comment followed by closing brace must NOT waive next rule");
+
+    // Round 44 (R43-A3-H1 embedded JS string waivers, R43-A3-M2 brace inline comment, R43-A3-M3 css() custom prop interpolation, R43-A3-L4 svg style comments):
+    const r44SpoofTplExpr = join(appDir, "R44SpoofTplExpr.tsx");
+    writeFileSync(
+      r44SpoofTplExpr,
+      [
+        'import styled from "styled-components";',
+        'export const A = styled.div`',
+        '  ${(p: any) => (p.ok ? "/* dsaf-ignore dsaf/hardcoded-color -- spoof */" : "")}',
+        '  color: #ff00aa;',
+        '`;',
+      ].join("\n") + "\n"
+    );
+    assert.equal(runGate(checker, r44SpoofTplExpr).status, 1, "R44 A3-H1: string inside styled-components ${} must NOT waive");
+
+    const r44SpoofCallLocal = join(appDir, "R44SpoofCallLocal.tsx");
+    writeFileSync(
+      r44SpoofCallLocal,
+      [
+        'import styled from "styled-components";',
+        'export const B = styled.div(() => {',
+        '  const fake = "/* dsaf-ignore dsaf/hardcoded-color -- spoof local */";',
+        '  const fakeTpl = `/* dsaf-ignore dsaf/hardcoded-color -- spoof local tpl */`;',
+        '  return { color: "#ff00aa" };',
+        '});',
+      ].join("\n") + "\n"
+    );
+    assert.equal(runGate(checker, r44SpoofCallLocal).status, 1, "R44 A3-H1: local var string/template inside call-form styled must NOT waive");
+
+    const r44SpoofDanger = join(appDir, "R44SpoofDanger.tsx");
+    writeFileSync(
+      r44SpoofDanger,
+      [
+        'export const D = ({ s }: any) => (',
+        '  <style dangerouslySetInnerHTML={{',
+        '    __html: `${s} "/* dsaf-ignore dsaf/hardcoded-color -- spoof */" color: #ff00aa;`',
+        '  }} />',
+        ');',
+      ].join("\n") + "\n"
+    );
+    assert.equal(runGate(checker, r44SpoofDanger).status, 1, "R44 A3-H1: string inside dangerouslySetInnerHTML expression must NOT waive");
+
+    const r44BraceInline = join(appDir, "R44BraceInline.css");
+    writeFileSync(r44BraceInline, ".a { color: inherit; } /* dsaf-ignore dsaf/hardcoded-color -- inline on closing brace */\n.b { color: #ff00aa; }\n");
+    assert.equal(runGate(checker, r44BraceInline).status, 1, "R44 A3-M2: comment on line with '}' must NOT waive next rule");
+
+    const r44CallCustomProp = join(appDir, "R44CallCustomProp.ts");
+    writeFileSync(
+      r44CallCustomProp,
+      'import { css } from "@emotion/react";\nexport const A = (ok: boolean) => css(`--accent: ${ok ? "#112233" : "#445566"};`);\n'
+    );
+    const r44CustomPropRes = runGate(checker, r44CallCustomProp);
+    assert.equal(r44CustomPropRes.status, 0, "R44 A3-M3: call-form css() custom property interpolation must not fail");
+    assert.match(r44CustomPropRes.stdout, /styleColors=0\b/);
+
+    const r44SvgCmt = join(appDir, "R44SvgStyleCmt.html");
+    writeFileSync(r44SvgCmt, '<svg><style>/* #123456 */ path { fill: #abcdef; }</style></svg>\n');
+    const r44SvgCmtRes = runGate(checker, r44SvgCmt);
+    assert.equal(r44SvgCmtRes.status, 0);
+    assert.match(r44SvgCmtRes.stdout, /svgColors=1\b/);
+
+    // Round 45 (Astro {/* dsaf-ignore */}, <svg><style> embedded </style>, JSX prose inside ${}, @supports selector(#id)):
+    const r45AstroSingle = join(appDir, "R45AstroSingle.astro");
+    writeFileSync(
+      r45AstroSingle,
+      "---\n---\n{/* dsaf-ignore dsaf/tailwind-arbitrary -- custom hero grid track width */}\n<div class=\"w-[317px]\" />\n"
+    );
+    assert.equal(runGate(checker, r45AstroSingle).status, 0, "R45 A3-M1: Astro single-line {/* dsaf-ignore */} must waive next element");
+
+    const r45AstroMulti = join(appDir, "R45AstroMulti.astro");
+    writeFileSync(
+      r45AstroMulti,
+      "---\n---\n{\n  /* dsaf-ignore dsaf/tailwind-arbitrary -- custom hero grid track width */\n}\n<div class=\"w-[317px]\" />\n"
+    );
+    assert.equal(runGate(checker, r45AstroMulti).status, 0, "R45 A3-M1: Astro multiline { /* dsaf-ignore */ } must waive next element");
+
+    const r45SvgTsx = join(appDir, "R45SvgEmbed.tsx");
+    writeFileSync(r45SvgTsx, 'export const I = () => <svg><style>{`/* </style> #111111 */`}</style></svg>;\n');
+    const r45SvgTsxRes = runGate(checker, r45SvgTsx, { DSAF_MAX_SVG_COLORS: "0" });
+    assert.equal(r45SvgTsxRes.status, 0, "R45 A3-M2: TSX <svg><style> embedded </style> comment must be stripped");
+    assert.match(r45SvgTsxRes.stdout, /svgColors=0\b/);
+
+    const r45SvgVue = join(appDir, "R45SvgEmbed.vue");
+    writeFileSync(r45SvgVue, '<template><svg><style>.a { content: "</style>"; } /* #111111 */ path { fill: #abcdef; }</style></svg></template>\n');
+    const r45SvgVueRes = runGate(checker, r45SvgVue);
+    assert.equal(r45SvgVueRes.status, 0);
+    assert.match(r45SvgVueRes.stdout, /svgColors=1\b/, "R45 A3-M2: Vue <svg><style> string </style> must skip comment while counting real fill hex");
+
+    const r45JsxTplProse = join(appDir, "R45JsxTplProse.tsx");
+    writeFileSync(
+      r45JsxTplProse,
+      [
+        'const ok1 = `${<div>12" {/* dsaf-ignore dsaf/hardcoded-color -- valid screen size label */}<span style={{ color: "#ff00aa" }} /></div>}`;',
+        'const ok2 = `${<div>12" {/* <span style={{ color: "#ff00aa" }} /> */}</div>}`;',
+      ].join("\n") + "\n"
+    );
+    const r45JsxTplRes = runGate(checker, r45JsxTplProse, { DSAF_MAX_SWATCH_COLORS: "0" });
+    assert.equal(r45JsxTplRes.status, 0, "R45 A3-L1: JSX prose quote inside ${<div>...</div>} must not swallow comments or waivers");
+
+    const r45Supports = join(appDir, "R45Supports.css");
+    writeFileSync(
+      r45Supports,
+      "@supports selector(#abcdef) { .a { color: var(--fg); } }\n"
+    );
+    assert.equal(runGate(checker, r45Supports).status, 0, "R45 A3-L2: @supports selector(#abcdef) must not flag ID as hardcoded hex");
+    const r45SupportsColor = join(appDir, "R45SupportsColor.css");
+    writeFileSync(r45SupportsColor, "@supports (color: #abcdef) { .a { color: var(--fg); } }\n");
+    assert.equal(runGate(checker, r45SupportsColor).status, 1, "R45 A3-L2: @supports (color: #abcdef) outside selector() must still flag hardcoded hex");
+
+    // Round 46 (A3-H2 nested template waivers, A3-M3 call-form object-prop css`` waivers, A3-M4 non-JSX block }, A2-M3 TW arb color/light-dark):
+    const r46CondTpl = join(appDir, "R46CondTpl.tsx");
+    writeFileSync(
+      r46CondTpl,
+      [
+        'import styled from "styled-components";',
+        "export const Box = styled.div`",
+        "  color: var(--fg);",
+        '  ${(p: any) => (p.active ? `/* dsaf-ignore dsaf/hardcoded-color -- active brand pill surface */ background: #ff00aa;` : "")}',
+        '  ${(p: any) => (p.force ? `/* dsaf-ignore dsaf/important-override -- override third-party tooltip */ color: red !important;` : "")}',
+        "`;",
+      ].join("\n") + "\n"
+    );
+    const r46CondRes = runGate(checker, r46CondTpl);
+    assert.equal(r46CondRes.status, 0, "R46 A3-H2: waivers inside conditional nested template literals must waive styleColors and important");
+
+    const r46ObjProp = join(appDir, "R46ObjPropCss.tsx");
+    writeFileSync(
+      r46ObjProp,
+      [
+        'import styled, { css } from "styled-components";',
+        "export const Box = styled.div({",
+        '  "&:hover": css`',
+        "    /* dsaf-ignore dsaf/hardcoded-color -- brand hover spotlight color */",
+        "    color: #ff00aa;",
+        "  `,",
+        "});",
+      ].join("\n") + "\n"
+    );
+    assert.equal(runGate(checker, r46ObjProp).status, 0, "R46 A3-M3: call-form styled({...}) object-property css`` waiver must pass");
+
+    const r46NonJsxBlk = join(appDir, "R46NonJsxBlock.tsx");
+    writeFileSync(
+      r46NonJsxBlk,
+      [
+        'import styled from "styled-components";',
+        "{",
+        "  /* dsaf-ignore dsaf/hardcoded-color -- dead standalone block before styled def */",
+        "}",
+        "const S = styled.div`color: #ff00aa;`;",
+        "export const App = () => <S />;",
+      ].join("\n") + "\n"
+    );
+    assert.equal(runGate(checker, r46NonJsxBlk).status, 1, "R46 A3-M4: non-JSX block } must NOT waive following const statement");
+
+    const r46IfNewline = join(appDir, "R46IfNewline.tsx");
+    writeFileSync(
+      r46IfNewline,
+      [
+        'import styled from "styled-components";',
+        "if (true)",
+        "{",
+        "  /* dsaf-ignore dsaf/hardcoded-color -- inside dead if block */",
+        "}",
+        "const S = styled.div`color: #ff00aa;`;",
+        "export const App = () => <S />;",
+      ].join("\n") + "\n"
+    );
+    assert.equal(runGate(checker, r46IfNewline).status, 1, "R46 A3-M4: if-block } must NOT waive following const statement");
+
+    const r46TwArb = join(appDir, "R46TwArb.tsx");
+    writeFileSync(
+      r46TwArb,
+      'export const A = () => <div className="bg-[color(display-p3_1_0.2_0.1)] bg-[light-dark(red,blue)]" />;\n'
+    );
+    const r46TwArbRes = runGate(checker, r46TwArb);
+    assert.equal(r46TwArbRes.status, 1, "R46 A2-M3: guardrail TW_ARB_RE must flag color() and light-dark()");
+    assert.match(r46TwArbRes.stdout, /twArbitrary=2\b/);
+
+    // Round 47 (A3-H1 svg<style>, A3-H2 unspaced keyword'str', A3-M3 css={`/* dsaf-ignore */`}, A3-L4 long-comment regex, A4-M2/M3 waiver parity):
+    const r47SvgStyle = join(appDir, "R47SvgStyle.tsx");
+    writeFileSync(
+      r47SvgStyle,
+      [
+        "export const Icon = () => (",
+        "  <svg>",
+        '    <style>{"/* </svg> */ .x { content: \\"</svg>\\"; } /* { */"}</style>',
+        '    <path fill="#ff00aa" />',
+        "  </svg>",
+        ");",
+      ].join("\n") + "\n"
+    );
+    assert.equal(runGate(checker, r47SvgStyle).status, 0, "R47 A3-H1: <style> inside <svg> must not break SVG range boundaries");
+
+    const r47UnspacedKw = join(appDir, "R47UnspacedKw.tsx");
+    writeFileSync(
+      r47UnspacedKw,
+      [
+        "import'react';",
+        "export const A = ({ k }: { k: string }) => {",
+        "  switch (k) {",
+        "    case'x': return <div style={{ color: '#ff00aa' }} />;",
+        "    default: return <p>Someone else's card</p>;",
+        "  }",
+        "};",
+      ].join("\n") + "\n"
+    );
+    const r47UnspacedRes = runGate(checker, r47UnspacedKw);
+    assert.equal(r47UnspacedRes.status, 1, "R47 A3-H2: import'react'/case'x' must not be misparsed as apostrophes");
+    assert.match(r47UnspacedRes.stdout, /styleColors=1\b/);
+
+    const r47CssAttr = join(appDir, "R47CssAttrWaiver.tsx");
+    writeFileSync(
+      r47CssAttr,
+      [
+        "export const Ok = () => (",
+        "  <div",
+        "    css={`",
+        "      /* dsaf-ignore dsaf/hardcoded-color -- brand gradient fallback for canvas */",
+        "      color: #ff00aa;",
+        "    `}",
+        "  />",
+        ");",
+      ].join("\n") + "\n"
+    );
+    assert.equal(runGate(checker, r47CssAttr).status, 0, "R47 A3-M3: CSS waiver inside css={`...`} template attribute must waive");
+
+    const r47CssSpoof = join(appDir, "R47CssAttrSpoof.tsx");
+    writeFileSync(
+      r47CssSpoof,
+      'export const Bad = () => <div style={{ color: "/* dsaf-ignore dsaf/hardcoded-color -- spoof */ #ff00aa" }} />;\n'
+    );
+    assert.equal(runGate(checker, r47CssSpoof).status, 1, "R47 A3-M3: quoted string inside style={{}} must NOT waive");
+
+    const r47LongCmtRe = join(appDir, "R47LongCommentRegex.tsx");
+    writeFileSync(
+      r47LongCmtRe,
+      [
+        "export const fn = () => { return /* comment exceeding 24 characters before regex literal */ /'/; };",
+        'export const B = () => <div style={{ color: "#ff00aa" }} />;',
+      ].join("\n") + "\n"
+    );
+    const r47LongCmtRes = runGate(checker, r47LongCmtRe);
+    assert.equal(r47LongCmtRes.status, 1, "R47 A3-L4: long block comment between return and regex /'/ must still close regex");
+    assert.match(r47LongCmtRes.stdout, /styleColors=1\b/);
+
+    const r47SameLineClose = join(appDir, "R47SameLineClose.tsx");
+    writeFileSync(
+      r47SameLineClose,
+      [
+        "export const C = () => (",
+        "  <>",
+        "    {",
+        "      /* dsaf-ignore dsaf/hardcoded-color -- same-line brand gradient accent */",
+        '    } <span style={{ color: "#ff00aa" }} />',
+        "  </>",
+        ");",
+      ].join("\n") + "\n"
+    );
+    assert.equal(runGate(checker, r47SameLineClose).status, 0, "R47 A4-M2: multiline { /* dsaf-ignore */ } <span /> on close line must waive");
+
+    const r47ObjAfterClose = join(appDir, "R47ObjAfterClose.tsx");
+    writeFileSync(
+      r47ObjAfterClose,
+      [
+        "const xs = [",
+        "  {",
+        "    /* dsaf-ignore dsaf/hardcoded-color -- object literal, not JSX */",
+        "  },",
+        "];",
+        'export const D = () => <span style={{ color: "#ff00aa" }} />;',
+      ].join("\n") + "\n"
+    );
+    assert.equal(runGate(checker, r47ObjAfterClose).status, 1, "R47 A4-M2: JS object literal }, must NOT waive later JSX");
+
+    const r47Intervening = join(appDir, "R47Intervening.css");
+    writeFileSync(
+      r47Intervening,
+      [
+        "/* dsaf-ignore dsaf/hardcoded-color -- brand gradient fallback for canvas */",
+        "/* regular comment explaining reason */",
+        ".a { color: #ff00aa; }",
+      ].join("\n") + "\n"
+    );
+    assert.equal(runGate(checker, r47Intervening).status, 0, "R47 A4-M3: intervening regular comment between dsaf-ignore and target must waive");
+
+    // Round 48 (A3-M1, A3-M2, A3-M3, A3-L1, A4-M1):
+    const r48Dir = join(scratch, "r48-tests");
+    mkdirSync(r48Dir, { recursive: true });
+    // A3-M1: token blocks, custom prop defs & #id headers masked inside JSX style/css & Vue :style
+    const r48JsxCssAttr = join(r48Dir, "R48JsxCssAttr.tsx");
+    writeFileSync(
+      r48JsxCssAttr,
+      [
+        'export const A = () => <div css=":root { --a: #ff00aa; } #hero { color: var(--fg); }" style={{ "--x": "#112233 !important" }} />;',
+      ].join("\n") + "\n"
+    );
+    const r48M1JsxRes = runGate(checker, r48JsxCssAttr);
+    assert.equal(r48M1JsxRes.status, 0, "R48 A3-M1: token block, custom prop def, and #hero header inside JSX css/style must not flag");
+    assert.match(r48M1JsxRes.stdout, /styleColors=0\b.*important=0\b|important=0\b.*styleColors=0\b/);
+
+    const r48VueBoundStyle = join(r48Dir, "R48VueBoundStyle.vue");
+    writeFileSync(
+      r48VueBoundStyle,
+      '<template><div :style="\':root { --a: #ff00aa; } #card { --b: #112233 !important; color: var(--fg); }\'" /></template>\n'
+    );
+    assert.equal(runGate(checker, r48VueBoundStyle).status, 0, "R48 A3-M1: Vue bound :style token/custom-prop/#id masking");
+
+    // A3-M2: waiver immediately before ${expr} inside styled template preserves following expr target
+    const r48TplBeforeExpr = join(r48Dir, "R48TplBeforeExpr.tsx");
+    writeFileSync(
+      r48TplBeforeExpr,
+      [
+        'import styled from "styled-components";',
+        'const prop = "color";',
+        'export const Box = styled.div`',
+        '  /* dsaf-ignore dsaf/hardcoded-color -- approved dynamic palette swatch */',
+        '  ${prop}: #ff00aa;',
+        '`;',
+      ].join("\n") + "\n"
+    );
+    const r48M2Res = runGate(checker, r48TplBeforeExpr);
+    assert.equal(r48M2Res.status, 0, "R48 A3-M2: waiver directly before ${prop}: #ff00aa must waive following line");
+    assert.match(r48M2Res.stdout, /styleColors=0\b/);
+
+    // A3-M3: stray '{' in .html/.vue <svg> and {{ "</svg>" }} Vue mustache inside <svg>
+    const r48HtmlSvg = join(r48Dir, "R48HtmlSvg.html");
+    writeFileSync(r48HtmlSvg, '<svg><text>{literal</text></svg><div style="color: #ff00aa" />\n');
+    const r48M3HtmlRes = runGate(checker, r48HtmlSvg);
+    assert.equal(r48M3HtmlRes.status, 1, "R48 A3-M3: stray '{' in HTML <svg> must not swallow following <div style>");
+    assert.match(r48M3HtmlRes.stdout, /styleColors=1\b/);
+
+    const r48VueSvg = join(r48Dir, "R48VueSvg.vue");
+    writeFileSync(r48VueSvg, '<template><svg><text>{literal {{ a < b ? "</svg>" : "" }}</text></svg><div style="color: #ff00aa" /></template>\n');
+    const r48M3VueRes = runGate(checker, r48VueSvg);
+    assert.equal(r48M3VueRes.status, 1, "R48 A3-M3: Vue <svg> stray '{' and mustache '</svg>' must close properly");
+    assert.match(r48M3VueRes.stdout, /styleColors=1\b/);
+
+    // A3-L1: comparison 'a <b && <div style=...>' with space before '<' must still detect JSX element
+    const r48CmpJsx = join(r48Dir, "R48CmpJsx.tsx");
+    writeFileSync(r48CmpJsx, 'export const C = ({ a, b }: any) => (a <b && <div style={{ color: "#ff00aa" }} />);\n');
+    const r48L1Res = runGate(checker, r48CmpJsx);
+    assert.equal(r48L1Res.status, 1, "R48 A3-L1: 'a <b && <div style=...>' must parse JSX attribute");
+    assert.match(r48L1Res.stdout, /styleColors=1\b/);
+
+    // A4-M1: stacked multiline JSX comment containers & JSX text/{expr} before container
+    const r48StackedJsx = join(r48Dir, "R48StackedJsx.tsx");
+    writeFileSync(
+      r48StackedJsx,
+      [
+        'export const S = ({ title }: any) => (',
+        '  <div>',
+        '    Hello {title}',
+        '    {',
+        '      /* dsaf-ignore dsaf/important-override -- first stacked rationale */',
+        '    }',
+        '    {',
+        '      /* dsaf-ignore dsaf/hardcoded-color -- second stacked rationale */',
+        '    }',
+        '    <span style={{ color: "#ff00aa !important" }} />',
+        '  </div>',
+        ');',
+      ].join("\n") + "\n"
+    );
+    const r48M1StackRes = runGate(checker, r48StackedJsx);
+    assert.equal(r48M1StackRes.status, 0, "R48 A4-M1: stacked multiline JSX containers after JSX text/{title} must waive following element");
+    assert.match(r48M1StackRes.stdout, /styleColors=0\b.*important=0\b/);
+
+    // Round 49 (A3-M2 ++/! before <, A3-M3 style/css/sx/:style templates, A3-M4 Svelte <svg> {expr}, A3-L1 #hex keys before []/arrow, A4-M1 closing line code):
+    for (const [label, src] of [
+      ["r49-m2-pp", 'export const F = (i: number, n: number) => i++ <n && n > 0;\n/* <div style={{ color: "#ff00aa" }} /> */\n'],
+      ["r49-m2-bang", 'export const F = (count: number | undefined, max: number) => count! <max && max > 0;\n/* <div style={{ color: "#ff00aa" }} /> */\n'],
+    ]) {
+      const f = join(r48Dir, `${label}.tsx`);
+      writeFileSync(f, src);
+      assert.equal(runGate(checker, f).status, 0, `R49 A3-M2: ${label} must not trigger comment leak`);
+    }
+    const r49M2Fn = join(r48Dir, "R49M2Fn.tsx");
+    writeFileSync(
+      r49M2Fn,
+      'export const F = (i: number, n: number) => { if (i++ <n && n > 0) return null; };\nexport const Bad = styled.div`color: #ff00aa;`;\n'
+    );
+    const r49M2FnRes = runGate(checker, r49M2Fn);
+    assert.equal(r49M2FnRes.status, 1, "R49 A3-M2: ++ < must not swallow downstream styled.div");
+    assert.match(r49M2FnRes.stdout, /styleColors=1\b/);
+
+    for (const [label, fname, src] of [
+      ["jsx-css-var", "R49M3CssVar.tsx", 'export const A = ({ c }: any) => <div css={`--accent: ${c || "#112233"}; color: var(--accent);`} />;\n'],
+      ["jsx-css-theme", "R49M3CssTheme.tsx", 'export const A = ({ c }: any) => <div css={`@theme { --a: ${c || "#112233"}; }`} />;\n'],
+      ["jsx-css-url", "R49M3CssUrl.tsx", 'export const A = ({ s }: any) => <div css={`background: url(${s}#add);`} />;\n'],
+      ["vue-style-url", "R49M3VueUrl.vue", '<template><div :style="`background: url(${s}#add)`" /></template>\n'],
+      ["svelte-style-url", "R49M3SvelteUrl.svelte", '<div style={`background: url(${s}#add)`} />\n'],
+    ]) {
+      const f = join(r48Dir, fname);
+      writeFileSync(f, src);
+      assert.equal(runGate(checker, f).status, 0, `R49 A3-M3: ${label} template must pass styleColors=0`);
+    }
+
+    for (const [label, fname, src] of [
+      ["svelte-svg-sc", "R49M4Sc.svelte", '<svg class="p-4 {ok ? "/>" : ""}" style="color: #ff00aa" />\n'],
+      ["svelte-svg-gt", "R49M4Gt.svelte", '<svg class="p-4 {ok ? ">" : ""}" style="fill: #ff00aa" />\n'],
+    ]) {
+      const f = join(r48Dir, fname);
+      writeFileSync(f, src);
+      const res = runGate(checker, f);
+      assert.equal(res.status, 0, `R49 A3-M4: ${label} must stay in svgColors (styleColors=0)`);
+      assert.match(res.stdout, /styleColors=0\b.*svgColors=1\b|svgColors=1\b.*styleColors=0\b/);
+    }
+
+    for (const [label, fname, src] of [
+      ["arr", "R49L1Arr.ts", 'export const S = css({ "#feed": ["var(--fg)"] });\n'],
+      ["nested-arr", "R49L1NestedArr.tsx", 'export const S = styled.div({ "& #feed": [{ color: "var(--fg)" }] });\n'],
+      ["arrow-fn", "R49L1Arrow.ts", 'export const S = styled.div({ "#feed": (t: any) => ({ color: t.fg }) });\n'],
+      ["sx-arr", "R49L1Sx.tsx", 'export const C = () => <div sx={{ "& #feed": [{ color: "var(--fg)" }] }} />;\n'],
+    ]) {
+      const f = join(r48Dir, fname);
+      writeFileSync(f, src);
+      assert.equal(runGate(checker, f).status, 0, `R49 A3-L1: ${label} selector key must be masked`);
+    }
+    const r49L1Neg = join(r48Dir, "R49L1Neg.ts");
+    writeFileSync(r49L1Neg, 'export const S = styled.div({ "#feed": (t: any) => ({ color: "#ff00aa" }) });\n');
+    assert.equal(runGate(checker, r49L1Neg).status, 1, "R49 A3-L1: real hex inside arrow body must still trigger");
+
+    const r49StackedSameLine = join(r48Dir, "R49StackedSameLine.tsx");
+    writeFileSync(
+      r49StackedSameLine,
+      [
+        'export const S = () => (',
+        '  <div>',
+        '    {',
+        '      /* dsaf-ignore dsaf/important-override -- first valid rationale */',
+        '    }',
+        '    {',
+        '      /* dsaf-ignore dsaf/hardcoded-color -- second valid rationale */',
+        '    } <div style={{ color: "#ff00aa !important" }} />',
+        '  </div>',
+        ');',
+      ].join("\n") + "\n"
+    );
+    assert.equal(runGate(checker, r49StackedSameLine).status, 0, "R49 A4-M1: stacked multiline container before same-line JSX must waive");
+
+    // Round 50 regressions (R50-A3-M1..M3 & R50-A3-L1):
+    for (const [label, fname, src] of [
+      ["tagged-tpl-val", "R50M1Tpl.ts", 'export const S = css({ "#ace": css`color: var(--ink);` });\n'],
+      ["ternary-val", "R50M1Tern.tsx", 'export const S = styled.div({ "#bad": p.ok ? { color: "var(--ink)" } : {} });\n'],
+      ["logic-val", "R50M1Logic.tsx", 'export const S = styled.div({ "#cab": ok && { color: "var(--ink)" } });\n'],
+      ["parens-val", "R50M1Paren.tsx", 'export const S = styled.div({ "#dab": (ok ? { color: "var(--ink)" } : {}) });\n'],
+    ]) {
+      const f = join(r48Dir, fname);
+      writeFileSync(f, src);
+      const res = runGate(checker, f);
+      assert.equal(res.status, 0, `R50 A3-M1: ${label} selector key must be masked`);
+      assert.match(res.stdout, /styleColors=0\b/);
+    }
+    const r50M1Neg = join(r48Dir, "R50M1Neg.tsx");
+    writeFileSync(r50M1Neg, 'export const S = styled.div({ color: p.ok ? "#ff00aa" : "var(--ink)" });\n');
+    assert.equal(runGate(checker, r50M1Neg).status, 1, "R50 A3-M1: ternary CSS color value must still trigger");
+
+    for (const [label, fname, src] of [
+      ["svelte-tpl", "R50M2.svelte", '<div style={`/* dsaf-ignore dsaf/hardcoded-color -- valid waiver */ color: #ff00aa;`} />\n'],
+      ["astro-tpl", "R50M2.astro", '<div style={`/* dsaf-ignore dsaf/hardcoded-color -- valid waiver */ color: #ff00aa;`} />\n'],
+      ["vue-tpl", "R50M2.vue", '<template><div :style="`/* dsaf-ignore dsaf/hardcoded-color -- valid waiver */ color: #ff00aa;`"></div></template>\n'],
+    ]) {
+      const f = join(r48Dir, fname);
+      writeFileSync(f, src);
+      const res = runGate(checker, f);
+      assert.equal(res.status, 0, `R50 A3-M2: ${label} dsaf-ignore inside template literal must waive`);
+      assert.match(res.stdout, /styleColors=0\b/);
+    }
+
+    const r50M3Ok = join(r48Dir, "R50M3Ok.svelte");
+    writeFileSync(
+      r50M3Ok,
+      '<div style:filter={`url(${id}#fade)`} style:color={`/* dsaf-ignore dsaf/hardcoded-color -- valid waiver */ #ff00aa`} />\n'
+    );
+    const r50M3OkRes = runGate(checker, r50M3Ok);
+    assert.equal(r50M3OkRes.status, 0, "R50 A3-M3: Svelte style:prop={tpl} must mask url(${id}#fade) and honor template waiver");
+    assert.match(r50M3OkRes.stdout, /styleColors=0\b/);
+
+    const r50M3Neg = join(r48Dir, "R50M3Neg.svelte");
+    writeFileSync(r50M3Neg, '<div style:background={`url(${id}#fade) #112233`} />\n');
+    const r50M3NegRes = runGate(checker, r50M3Neg);
+    assert.equal(r50M3NegRes.status, 1, "R50 A3-M3: Svelte style:prop={tpl} must still flag real hex outside url()");
+    assert.match(r50M3NegRes.stdout, /styleColors=1\b/);
+
+    const r50L1Svg = join(r48Dir, "R50L1Svg.tsx");
+    writeFileSync(r50L1Svg, 'export const Icon = () => <svg><style>{css`path { fill: #ff00aa; }`}</style></svg>;\n');
+    const r50L1Res = runGate(checker, r50L1Svg);
+    assert.equal(r50L1Res.status, 0, "R50 A3-L1: tagged css inside <svg><style> must classify under svgColors (styleColors=0)");
+    assert.match(r50L1Res.stdout, /styleColors=0\b.*svgColors=1\b|svgColors=1\b.*styleColors=0\b/);
 
     // Check generated syntax across all stacks (css, react, tailwind)
     for (const st of ["css", "react", "tailwind"]) {

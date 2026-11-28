@@ -268,6 +268,9 @@ export function collectForbiddenPackProbes(repoRoot = REPO_ROOT) {
     "fixtures",
     "scripts",
     "examples",
+    ".github",
+    ".github/workflows",
+    "action.yml",
   ]);
   const walk = (absDir) => {
     if (!existsSync(absDir)) return;
@@ -281,9 +284,10 @@ export function collectForbiddenPackProbes(repoRoot = REPO_ROOT) {
       if (e.isDirectory()) walk(full);
     }
   };
-  for (const top of ["docs", "fixtures", "scripts", "examples"]) {
+  for (const top of ["docs", "fixtures", "scripts", "examples", ".github"]) {
     walk(join(repoRoot, top));
   }
+  if (existsSync(join(repoRoot, "action.yml"))) probes.add("action.yml");
   return [...probes];
 }
 
@@ -304,7 +308,7 @@ export function isPackageFilesSafe(entries, forbiddenProbes = collectForbiddenPa
     if (!entry) return false;
     hasPositive = true;
     if (/(?:^|\/)\.\.(?:\/|$)/.test(entry)) return false;
-    if (/(?:^|[/,{])(?:\.?evolve|docs|fixtures|scripts|examples)(?:[/,}]|$)/i.test(entry)) return false;
+    if (/(?:^|[/,{])(?:\.?evolve|docs|fixtures|scripts|examples|\.github|action\.yml)(?:[/,}]|$)/i.test(entry)) return false;
     if (forbiddenProbes.some((p) => globEntryMatchesPath(entry, p))) return false;
   }
   return hasPositive;
@@ -472,6 +476,8 @@ function main() {
     "d{?,*}(o)cs/**",
     "d[a-{]cs/**/[.-}]*",
     "d[${o,]cs/**/*[a-z}]",
+    ".github/**",
+    "action.yml",
   ];
   if (
     !isPackageFilesSafe(["bin/", "skill/", "*.md"], forbiddenPackProbes) ||
@@ -484,6 +490,29 @@ function main() {
     isPackageFilesSafe(["bin/", "skill/", 123], forbiddenPackProbes)
   ) {
     console.error("ERROR: package.json#files glob matcher regression detected");
+    process.exit(1);
+  }
+  const packRes = spawnSync("npm", ["pack", "--dry-run", "--json"], { cwd: REPO_ROOT, encoding: "utf8" });
+  if (packRes.status !== 0) {
+    console.error(`ERROR: npm pack --dry-run --json failed: ${packRes.stderr || packRes.stdout}`);
+    process.exit(1);
+  }
+  let packedFiles = [];
+  try {
+    const arr = JSON.parse(packRes.stdout || "[]");
+    packedFiles = Array.isArray(arr) && arr[0] && Array.isArray(arr[0].files) ? arr[0].files.map((f) => String(f.path || "")) : [];
+  } catch (err) {
+    console.error(`ERROR: invalid JSON from npm pack --dry-run --json: ${err instanceof Error ? err.message : String(err)}`);
+    process.exit(1);
+  }
+  if (packedFiles.length === 0) {
+    console.error("ERROR: npm pack --dry-run --json produced an empty file list");
+    process.exit(1);
+  }
+  const packForbiddenRe = /^(?:docs|fixtures|scripts|examples|\.github)(?:\/|$)|^action\.yml$|(^|\/)(?:\.?evolve(?:\/|$)|\.DS_Store$)/i;
+  const leakedPackPaths = packedFiles.filter((p) => packForbiddenRe.test(p));
+  if (leakedPackPaths.length > 0) {
+    console.error(`ERROR: non-publishable repo path(s) leaked into npm tarball: ${leakedPackPaths.join(", ")}`);
     process.exit(1);
   }
 

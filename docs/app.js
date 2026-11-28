@@ -83,8 +83,14 @@
           panel.setAttribute("hidden", "until-found");
         }
       }
-      if (scroll) {
-        nextTab.scrollIntoView({ block: "nearest", inline: "nearest", container: "nearest" });
+      if (scroll && tablist.scrollWidth > tablist.clientWidth) {
+        const listRect = tablist.getBoundingClientRect();
+        const tabRect = nextTab.getBoundingClientRect();
+        if (tabRect.left < listRect.left) {
+          tablist.scrollLeft -= listRect.left - tabRect.left + 8;
+        } else if (tabRect.right > listRect.right) {
+          tablist.scrollLeft += tabRect.right - listRect.right + 8;
+        }
       }
       if (focus) nextTab.focus();
     }
@@ -140,8 +146,10 @@
   }
 
   /* Copy buttons */
+  const copyStatus = document.getElementById("copy-status");
   for (const btn of document.querySelectorAll("[data-copy-target]")) {
     const orig = btn.textContent;
+    const labelCtx = (btn.getAttribute("aria-label") || "snippet").replace(/^Copy\s+/i, "");
     let timerId = null;
     btn.addEventListener("click", async () => {
       const targetEl = document.getElementById(btn.getAttribute("data-copy-target"));
@@ -158,6 +166,17 @@
         copied = fallbackCopyText(text);
       }
       btn.textContent = copied ? "Copied" : "Copy failed";
+      if (copyStatus) {
+        const statusMsg = copied ? `Copied ${labelCtx} to clipboard.` : `Failed to copy ${labelCtx}.`;
+        copyStatus.textContent = "";
+        if (typeof requestAnimationFrame === "function") {
+          requestAnimationFrame(() => {
+            copyStatus.textContent = statusMsg;
+          });
+        } else {
+          copyStatus.textContent = statusMsg;
+        }
+      }
       clearTimeout(timerId);
       timerId = setTimeout(() => {
         btn.textContent = orig;

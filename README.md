@@ -31,7 +31,7 @@ npx @zintaen/dsaf audit . --html audit-report.html --out ./audit-output
 
 ### 2. Install AI Agent Skill & MCP Server (Zero Config Edits)
 
-Installs the portable `dsaf` skill into Claude, Cursor, Codex, Antigravity, or generic `.agents` clients, and wires the 8-tool MCP server (`dsaf mcp`, read-only unless `dsaf_audit` receives `outDir`) cleanly into Claude, Cursor, Codex, and Antigravity:
+Installs the portable `dsaf` skill into Claude, Cursor, Codex, Antigravity, or generic `.agents` clients, and wires the 8-tool MCP server (`dsaf mcp`, read-only on project files unless `dsaf_audit` receives `outDir`; `dsaf_doctor` caches npm freshness in `~/.dsaf/update-check.json` unless `offline: true` or `DSAF_NO_UPDATE_CHECK=1`) cleanly into Claude, Cursor, Codex, and Antigravity:
 
 ```bash
 npx @zintaen/dsaf setup --agent claude

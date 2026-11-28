@@ -69,6 +69,20 @@ export function renderHtmlReport(summary, opts = {}) {
   const compliance = typeof rawComp === "number" && Number.isFinite(rawComp) ? rawComp : "N/A";
   const statusLabel = s.passed ? "PASS" : "FAIL";
   const statusClass = s.passed ? "pill--pass" : "pill--fail";
+  const regDiff = s.regressionDiff && typeof s.regressionDiff === "object" && !Array.isArray(s.regressionDiff) ? s.regressionDiff : null;
+  const regBanner = regDiff
+    ? (() => {
+        const regPass = Boolean(regDiff.passed);
+        const firstLine = String(regDiff.output || "")
+          .split(/\r?\n/)
+          .map((l) => l.trim())
+          .find(Boolean);
+        return `<section class="panel-box" aria-label="Regression Diff" style="margin:0 0 20px;padding:12px 16px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;">
+      <div><strong>Regression Diff</strong>${firstLine ? `<span class="sub-line" style="margin-left:10px;">${esc(firstLine)}</span>` : ""}</div>
+      <span class="pill ${regPass ? "pill--pass" : "pill--fail"}">${regPass ? "PASS" : "FAIL"}</span>
+    </section>`;
+      })()
+    : "";
   const safePreviewHref = sanitizePreviewHref(o.previewHref);
   const previewLink = safePreviewHref ? `<a class="btn" href="${esc(safePreviewHref)}">Open Preview Shell</a>` : "";
 
@@ -571,6 +585,7 @@ export function renderHtmlReport(summary, opts = {}) {
         <p class="stat-val">${esc(personas.length)}</p>
       </div>
     </section>
+    ${regBanner}
 
     <div class="tabs">
       <div role="tablist" class="tablist" focusgroup="tablist nomemory" aria-label="Audit report sections">
@@ -913,6 +928,16 @@ function runSelfTest() {
   assert.ok(!r33ReportHtml.includes(">NaN<") && !r33ReportHtml.includes(">bad<"), "R33 A4-L5: malformed numbers must sanitize cleanly");
   assert.match(r33ReportHtml, /class="pill pill--fail">Floor</, "R33 A4-L5: uppercase tier FLOOR must render Floor badge");
   assert.match(r33ReportHtml, />1 issue</, "R33 A4-L5: invalid impactedCount must fall back to findingRules.length");
+
+  // Round 43 (R42-A3-H11 regressionDiff status visibility):
+  const r43RegHtml = renderHtmlReport({
+    target: "/workspace/my-dsaf-app",
+    passed: false,
+    regressionDiff: { passed: false, output: "Scorecard regressed: before.total dropped by 12.0" },
+  });
+  assert.match(r43RegHtml, /Regression Diff/);
+  assert.match(r43RegHtml, /Scorecard regressed: before\.total dropped by 12\.0/);
+  assert.ok(!nullHtml.includes("Regression Diff"), "Default HTML report without regressionDiff must omit Regression Diff banner");
 
   console.log("HTML_REPORT_SELF_TEST_PASSED (offline editorial report + XSS escaping + accessible tabs/table)");
   return 0;

@@ -71,10 +71,12 @@ export function getDefaultCachePath() {
 export function shouldSuppressUpdateCheck({ command = "", argv = [], env = process.env } = {}) {
   if (env.DSAF_NO_UPDATE_CHECK === "1" || env.DSAF_NO_UPDATE_CHECK === "true") return true;
   if (env.CI === "true" || env.CI === "1") return true;
-  if (["mcp", "hook", "integrity", "verify", "version", "update", "upgrade", "doctor", "help"].includes(String(command || "").toLowerCase())) {
+  const cmdLow = String(command || "").toLowerCase();
+  if (["mcp", "hook", "integrity", "verify", "version", "update", "upgrade", "doctor", "help", "recon"].includes(cmdLow)) {
     return true;
   }
   const args = Array.isArray(argv) ? argv : [];
+  let explicitFormat = null;
   for (let i = 0; i < args.length; i++) {
     const low = String(args[i]).toLowerCase();
     if (
@@ -91,6 +93,11 @@ export function shouldSuppressUpdateCheck({ command = "", argv = [], env = proce
     }
     if (low === "--format=json" || low === "--format=sarif") return true;
     if (low === "--format" && ["json", "sarif"].includes(String(args[i + 1] || "").toLowerCase())) return true;
+    if (low.startsWith("--format=")) explicitFormat = low.slice(9);
+    else if (low === "--format" && i + 1 < args.length) explicitFormat = String(args[i + 1] || "").toLowerCase();
+  }
+  if (cmdLow === "figma-diff" && (!explicitFormat || explicitFormat === "json" || explicitFormat === "sarif")) {
+    return true;
   }
   return false;
 }
@@ -396,6 +403,10 @@ async function runSelfTest() {
     assert.equal(shouldSuppressUpdateCheck({ command: "help", argv: [], env: {} }), true, "R33 A5-M1: help command suppresses update check");
     assert.equal(shouldSuppressUpdateCheck({ command: "check", argv: ["--help"], env: {} }), true, "R34 A1-L1: --help flag suppresses update check");
     assert.equal(shouldSuppressUpdateCheck({ command: "check", argv: ["-h"], env: {} }), true, "R34 A1-L1: -h flag suppresses update check");
+    assert.equal(shouldSuppressUpdateCheck({ command: "recon", argv: ["."], env: {} }), true, "R46 A1-L1: recon suppresses update check");
+    assert.equal(shouldSuppressUpdateCheck({ command: "figma-diff", argv: ["--tokens", "t"], env: {} }), true, "R46 A1-L1: figma-diff default json suppresses update check");
+    assert.equal(shouldSuppressUpdateCheck({ command: "figma-diff", argv: ["--format=json"], env: {} }), true, "R46 A1-L1: figma-diff --format=json suppresses update check");
+    assert.equal(shouldSuppressUpdateCheck({ command: "figma-diff", argv: ["--format", "markdown"], env: {} }), false, "R46 A1-L1: figma-diff markdown mode allows update check");
 
     console.log("UPDATE_CHECK_SELF_TEST_PASSED (semver + suppression + 24h cache + offline fail-open + stderr notice)");
     return 0;

@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 /**
  * DSAF v0.9.3 — Zero-Dependency Stdio MCP Server & Client Config Installer (`dsaf mcp`).
- * Exposes 8 audit & dry-run preview tools (read-only unless `dsaf_audit` receives optional `outDir`) over JSON-RPC 2.0 stdio (Content-Length & NDJSON),
+ * Exposes 8 audit & dry-run preview tools (read-only for project files unless `dsaf_audit` receives optional `outDir`;
+ * `dsaf_doctor` may update `~/.dsaf/update-check.json` unless `offline: true` or `DSAF_NO_UPDATE_CHECK=1`) over JSON-RPC 2.0 stdio (Content-Length & NDJSON),
  * plus `dsaf mcp install` to wire Claude, Cursor, Codex, or Antigravity MCP JSON.
  */
 
@@ -364,23 +365,53 @@ function executeTool(name, args = {}) {
   }
 }
 
+function isValidJsonRpcId(id) {
+  return typeof id === "string" || (typeof id === "number" && Number.isFinite(id));
+}
+
 export function createMcpDispatcher() {
-  return function dispatchMessage(msg) {
+  function dispatchSingle(msg) {
     if (!msg || typeof msg !== "object" || Array.isArray(msg) || msg.jsonrpc !== "2.0" || typeof msg.method !== "string" || !msg.method) {
       return {
         jsonrpc: "2.0",
-        id: msg?.id ?? null,
+        id: !Array.isArray(msg) && isValidJsonRpcId(msg?.id) ? msg.id : null,
         error: { code: -32600, message: "Invalid JSON-RPC 2.0 request" },
       };
     }
 
     const hasId = Object.prototype.hasOwnProperty.call(msg, "id") && msg.id !== undefined;
+    if (hasId && !isValidJsonRpcId(msg.id)) {
+      return {
+        jsonrpc: "2.0",
+        id: null,
+        error: { code: -32600, message: "Invalid JSON-RPC 2.0 request id: expected string or finite number" },
+      };
+    }
+    const hasInvalidObjectParams =
+      Object.prototype.hasOwnProperty.call(msg, "params") &&
+      msg.params !== undefined &&
+      (!msg.params || typeof msg.params !== "object" || Array.isArray(msg.params));
+
     if (msg.method === "notifications/initialized" || msg.method === "notifications/cancelled") {
+      if (hasId) {
+        return {
+          jsonrpc: "2.0",
+          id: msg.id,
+          error: { code: -32600, message: "Notifications must not include an id" },
+        };
+      }
       return null;
     }
 
     if (msg.method === "initialize") {
       if (!hasId) return null;
+      if (hasInvalidObjectParams) {
+        return {
+          jsonrpc: "2.0",
+          id: msg.id,
+          error: { code: -32602, message: "Invalid params: expected object" },
+        };
+      }
       return {
         jsonrpc: "2.0",
         id: msg.id,
@@ -393,11 +424,26 @@ export function createMcpDispatcher() {
     }
 
     if (msg.method === "ping") {
-      return hasId ? { jsonrpc: "2.0", id: msg.id, result: {} } : null;
+      if (!hasId) return null;
+      if (hasInvalidObjectParams) {
+        return {
+          jsonrpc: "2.0",
+          id: msg.id,
+          error: { code: -32602, message: "Invalid params: expected object" },
+        };
+      }
+      return { jsonrpc: "2.0", id: msg.id, result: {} };
     }
 
     if (msg.method === "tools/list") {
       if (!hasId) return null;
+      if (hasInvalidObjectParams) {
+        return {
+          jsonrpc: "2.0",
+          id: msg.id,
+          error: { code: -32602, message: "Invalid params: expected object" },
+        };
+      }
       return {
         jsonrpc: "2.0",
         id: msg.id,
@@ -459,6 +505,37 @@ export function createMcpDispatcher() {
       id: msg.id,
       error: { code: -32601, message: `Method not found: ${msg.method}` },
     };
+  }
+
+  return function dispatchMessage(msg) {
+    if (Array.isArray(msg)) {
+      if (msg.length === 0) {
+        return {
+          jsonrpc: "2.0",
+          id: null,
+          error: { code: -32600, message: "Invalid JSON-RPC 2.0 request: empty batch" },
+        };
+      }
+      const batchOut = [];
+      for (const item of msg) {
+        try {
+          const resp = dispatchSingle(item);
+          if (resp !== null) batchOut.push(resp);
+        } catch (err) {
+          const itemHasId =
+            item && typeof item === "object" && !Array.isArray(item) && Object.prototype.hasOwnProperty.call(item, "id") && item.id !== undefined;
+          if (itemHasId) {
+            batchOut.push({
+              jsonrpc: "2.0",
+              id: isValidJsonRpcId(item.id) ? item.id : null,
+              error: { code: -32603, message: err instanceof Error ? err.message : "Internal error" },
+            });
+          }
+        }
+      }
+      return batchOut.length > 0 ? batchOut : null;
+    }
+    return dispatchSingle(msg);
   };
 }
 
@@ -514,13 +591,211 @@ export function createFrameReader(onMessage, onError) {
   let resyncOversizeEmitted = false;
   let discardingOversizedHeader = false;
   let discardingOversizedLine = false;
+  let discardingOversizedLineMayBeHeader = false;
+  let discardingOversizedLineSawColon = false;
   let discardingOversizedArray = false;
+  let arrayStack = [];
+  let arrayInStr = false;
+  let arrayEsc = false;
+  let arrayInvalid = false;
   let discardLineHasColon = false;
   let discardLinePrefixNonEmpty = false;
-  let discardLineDroppedBytes = false;
   let discardLineTrimEmpty = true;
 
   const isBoundaryByte = (b) => b === 0x0d || b === 0x0a || b === 0x7d || b === 0x5d;
+  const resetArrayDiscard = () => {
+    discardingOversizedArray = false;
+    arrayStack = [];
+    arrayInStr = false;
+    arrayEsc = false;
+    arrayInvalid = false;
+  };
+  const completeArrayValueOnTop = () => {
+    if (arrayStack.length === 0) return;
+    const parent = arrayStack[arrayStack.length - 1];
+    if (parent.kind === "[") {
+      parent.expectSep = true;
+    } else if (parent.kind === "{") {
+      parent.phase = parent.phase === "key-or-close" ? "colon" : "comma-or-close";
+    }
+  };
+  const canStartArrayLineByte = (b) => {
+    if (arrayInvalid || arrayInStr || arrayStack.length === 0) return false;
+    const top = arrayStack[arrayStack.length - 1];
+    if (top.inPrim) {
+      if (top.kind === "[") return true;
+      return true;
+    }
+    if (top.kind === "[") {
+      if (top.expectSep) return b === 0x2c || b === 0x5d;
+      if (b === 0x2c && arrayStack.length === 1 && !top.sawLeadingComma) return true;
+      return (
+        b === 0x5d ||
+        b === 0x5b ||
+        b === 0x7b ||
+        b === 0x22 ||
+        b === 0x2d ||
+        (b >= 0x30 && b <= 0x39) ||
+        b === 0x74 ||
+        b === 0x66 ||
+        b === 0x6e
+      );
+    }
+    if (top.phase === "key-or-close") return b === 0x22 || b === 0x7d;
+    if (top.phase === "colon") return b === 0x3a;
+    if (top.phase === "value") {
+      return (
+        b === 0x5b ||
+        b === 0x7b ||
+        b === 0x22 ||
+        b === 0x2d ||
+        (b >= 0x30 && b <= 0x39) ||
+        b === 0x74 ||
+        b === 0x66 ||
+        b === 0x6e
+      );
+    }
+    return b === 0x2c || b === 0x7d;
+  };
+  const scanArrayBytes = (slice, startIdx = 0) => {
+    const canAcceptValue = (top) =>
+      (top.kind === "[" && !top.expectSep) || (top.kind === "{" && top.phase === "value");
+    for (let i = startIdx; i < slice.length; i++) {
+      if (arrayInvalid) return { done: true, closed: false, endOffset: i };
+      const b = slice[i];
+      if (arrayInStr) {
+        if (arrayEsc) {
+          arrayEsc = false;
+        } else if (b === 0x5c) {
+          arrayEsc = true;
+        } else if (b === 0x0a || b === 0x0d) {
+          arrayInvalid = true;
+          return { done: true, closed: false, endOffset: i };
+        } else if (b === 0x22) {
+          arrayInStr = false;
+          completeArrayValueOnTop();
+        }
+        continue;
+      }
+      if (arrayStack.length === 0) {
+        if (b === 0x5b) {
+          arrayStack.push({ kind: "[", expectSep: false, inPrim: false, sawLeadingComma: false });
+          continue;
+        }
+        arrayInvalid = true;
+        return { done: true, closed: false, endOffset: i };
+      }
+      const top = arrayStack[arrayStack.length - 1];
+      if (top.inPrim) {
+        if (
+          (b >= 0x30 && b <= 0x39) ||
+          (b >= 0x61 && b <= 0x7a) ||
+          b === 0x45 ||
+          b === 0x2e ||
+          b === 0x2b ||
+          b === 0x2d
+        ) {
+          continue;
+        }
+        top.inPrim = false;
+        if (top.kind === "[") top.expectSep = true;
+        else top.phase = "comma-or-close";
+      }
+      if (b === 0x20 || b === 0x09 || b === 0x0d || b === 0x0a) continue;
+      if (b === 0x22) {
+        if (top.kind === "{" && top.phase === "key-or-close") {
+          arrayInStr = true;
+        } else if (canAcceptValue(top)) {
+          arrayInStr = true;
+        } else {
+          arrayInvalid = true;
+          return { done: true, closed: false, endOffset: i };
+        }
+        continue;
+      }
+      if (b === 0x5b || b === 0x7b) {
+        if (!canAcceptValue(top) || arrayStack.length >= 4096) {
+          arrayInvalid = true;
+          return { done: true, closed: false, endOffset: i };
+        }
+        arrayStack.push(
+          b === 0x5b
+            ? { kind: "[", expectSep: false, inPrim: false, sawLeadingComma: false }
+            : { kind: "{", phase: "key-or-close", inPrim: false }
+        );
+        continue;
+      }
+      if (b === 0x5d) {
+        if (top.kind !== "[") {
+          arrayInvalid = true;
+          return { done: true, closed: false, endOffset: i };
+        }
+        arrayStack.pop();
+        if (arrayStack.length === 0) {
+          return { done: true, closed: true, endOffset: i + 1 };
+        }
+        completeArrayValueOnTop();
+        continue;
+      }
+      if (b === 0x7d) {
+        if (top.kind !== "{" || (top.phase !== "key-or-close" && top.phase !== "comma-or-close")) {
+          arrayInvalid = true;
+          return { done: true, closed: false, endOffset: i };
+        }
+        arrayStack.pop();
+        if (arrayStack.length === 0) {
+          arrayInvalid = true;
+          return { done: true, closed: false, endOffset: i };
+        }
+        completeArrayValueOnTop();
+        continue;
+      }
+      if (b === 0x2c) {
+        if (top.kind === "[") {
+          if (top.expectSep) {
+            top.expectSep = false;
+          } else if (arrayStack.length === 1 && !top.sawLeadingComma) {
+            top.sawLeadingComma = true;
+          } else {
+            arrayInvalid = true;
+            return { done: true, closed: false, endOffset: i };
+          }
+        } else if (top.phase === "comma-or-close") {
+          top.phase = "key-or-close";
+        } else {
+          arrayInvalid = true;
+          return { done: true, closed: false, endOffset: i };
+        }
+        continue;
+      }
+      if (b === 0x3a) {
+        if (top.kind === "{" && top.phase === "colon") {
+          top.phase = "value";
+        } else {
+          arrayInvalid = true;
+          return { done: true, closed: false, endOffset: i };
+        }
+        continue;
+      }
+      if (
+        (b >= 0x30 && b <= 0x39) ||
+        b === 0x2d ||
+        b === 0x74 ||
+        b === 0x66 ||
+        b === 0x6e
+      ) {
+        if (!canAcceptValue(top)) {
+          arrayInvalid = true;
+          return { done: true, closed: false, endOffset: i };
+        }
+        top.inPrim = true;
+        continue;
+      }
+      arrayInvalid = true;
+      return { done: true, closed: false, endOffset: i };
+    }
+    return { done: false, closed: false, endOffset: slice.length };
+  };
 
   const rejectContentLengthHeader = (err, keepDiscardingHeader = false, nextOffset = -1) => {
     if (nextOffset >= 0) {
@@ -528,7 +803,6 @@ export function createFrameReader(onMessage, onError) {
       buf = buf.subarray(nextOffset);
       discardLineHasColon = false;
       discardLinePrefixNonEmpty = false;
-      discardLineDroppedBytes = false;
       discardLineTrimEmpty = true;
     } else if (keepDiscardingHeader) {
       const lastNl = buf.lastIndexOf(0x0a);
@@ -537,16 +811,13 @@ export function createFrameReader(onMessage, onError) {
       discardLineTrimEmpty = tailLine.toString("latin1").trim() === "";
       if (discardLineHasColon) {
         discardLinePrefixNonEmpty = tailLine.toString("latin1").trim().length > 0;
-        discardLineDroppedBytes = buf.length > 3;
         buf = buf.subarray(Math.max(0, buf.length - 3));
       } else if (tailLine.length > 256) {
         const dropLen = tailLine.length - 256;
         discardLinePrefixNonEmpty = tailLine.subarray(0, dropLen).toString("latin1").trim().length > 0;
-        discardLineDroppedBytes = true;
         buf = Buffer.from(tailLine.subarray(dropLen));
       } else {
         discardLinePrefixNonEmpty = false;
-        discardLineDroppedBytes = false;
         buf = Buffer.from(tailLine);
       }
       resyncAtBoundary = true;
@@ -554,7 +825,6 @@ export function createFrameReader(onMessage, onError) {
       buf = Buffer.alloc(0);
       discardLineHasColon = false;
       discardLinePrefixNonEmpty = false;
-      discardLineDroppedBytes = false;
       discardLineTrimEmpty = true;
       resyncAtBoundary = true;
     }
@@ -607,39 +877,99 @@ export function createFrameReader(onMessage, onError) {
       if (discardingOversizedLine) {
         const nlIdx = buf.indexOf(0x0a);
         if (nlIdx === -1) {
+          if (discardingOversizedArray) {
+            scanArrayBytes(buf);
+            if (arrayInvalid || arrayStack.length === 0) resetArrayDiscard();
+          } else if (discardingOversizedLineMayBeHeader && buf.includes(0x3a)) {
+            discardingOversizedLineSawColon = true;
+          }
           buf = Buffer.alloc(0);
           resyncAtBoundary = false;
           break;
         }
-        const lineTrimmed = buf.subarray(0, nlIdx).toString("latin1").trim();
+        if (discardingOversizedArray) {
+          discardingOversizedLineMayBeHeader = false;
+          discardingOversizedLineSawColon = false;
+          const res = scanArrayBytes(buf.subarray(0, nlIdx + 1));
+          if (res.closed) {
+            buf = buf.subarray(res.endOffset);
+            resetArrayDiscard();
+            discardingOversizedLine = false;
+            resyncAtBoundary = true;
+            continue;
+          }
+          buf = buf.subarray(nlIdx + 1);
+          discardingOversizedLine = false;
+          resyncAtBoundary = true;
+          if (arrayInvalid || arrayStack.length === 0) resetArrayDiscard();
+          continue;
+        }
+        const wasHeaderCandidate = discardingOversizedLineMayBeHeader;
+        const tailHasColon = discardingOversizedLineSawColon || buf.subarray(0, nlIdx).includes(0x3a);
+        discardingOversizedLineMayBeHeader = false;
+        discardingOversizedLineSawColon = false;
         buf = buf.subarray(nlIdx + 1);
         discardingOversizedLine = false;
         resyncAtBoundary = true;
-        if (discardingOversizedArray && lineTrimmed.endsWith("]")) {
-          discardingOversizedArray = false;
+        if (wasHeaderCandidate && tailHasColon) {
+          discardingOversizedHeader = true;
+          awaitingHeaderResync = true;
+          resyncOversizeEmitted = false;
+          discardLineHasColon = false;
+          discardLinePrefixNonEmpty = false;
+          discardLineTrimEmpty = true;
         }
         continue;
       }
       if (discardingOversizedArray) {
         const latinHead = buf.subarray(0, Math.min(buf.length, 64)).toString("latin1");
         if (/^[ \t]*Content-(?:Length|Type)[ \t]*:/i.test(latinHead) && (resyncAtBoundary || /^[ \t]+/.test(latinHead))) {
-          discardingOversizedArray = false;
+          resetArrayDiscard();
         } else {
-          const nlIdx = buf.indexOf(0x0a);
-          if (nlIdx === -1) {
+          let wsIdx = 0;
+          while (wsIdx < buf.length && (buf[wsIdx] === 0x20 || buf[wsIdx] === 0x09 || buf[wsIdx] === 0x0d)) {
+            wsIdx++;
+          }
+          if (wsIdx === buf.length) {
             if (buf.length > MAX_FRAME_BYTES) {
-              resyncAtBoundary = buf.length > 0 && isBoundaryByte(buf[buf.length - 1]);
               buf = Buffer.alloc(0);
+              resyncAtBoundary = false;
               discardingOversizedLine = true;
             }
             break;
           }
-          const lineTrimmed = buf.subarray(0, nlIdx).toString("latin1").trim();
+          if (buf[wsIdx] === 0x0a) {
+            scanArrayBytes(buf.subarray(0, wsIdx + 1));
+            buf = buf.subarray(wsIdx + 1);
+            resyncAtBoundary = true;
+            if (arrayInvalid || arrayStack.length === 0) resetArrayDiscard();
+            continue;
+          }
+          if (!canStartArrayLineByte(buf[wsIdx])) {
+            resetArrayDiscard();
+            continue;
+          }
+          const nlIdx = buf.indexOf(0x0a);
+          if (nlIdx === -1) {
+            if (buf.length > MAX_FRAME_BYTES) {
+              scanArrayBytes(buf);
+              resyncAtBoundary = buf.length > 0 && isBoundaryByte(buf[buf.length - 1]);
+              buf = Buffer.alloc(0);
+              discardingOversizedLine = true;
+              if (arrayInvalid || arrayStack.length === 0) resetArrayDiscard();
+            }
+            break;
+          }
+          const res = scanArrayBytes(buf.subarray(0, nlIdx + 1));
+          if (res.closed) {
+            buf = buf.subarray(res.endOffset);
+            resetArrayDiscard();
+            resyncAtBoundary = true;
+            continue;
+          }
           buf = buf.subarray(nlIdx + 1);
           resyncAtBoundary = true;
-          if (lineTrimmed.endsWith("]")) {
-            discardingOversizedArray = false;
-          }
+          if (arrayInvalid || arrayStack.length === 0) resetArrayDiscard();
           continue;
         }
       }
@@ -652,7 +982,7 @@ export function createFrameReader(onMessage, onError) {
           const lineStr = lineSlice.toString("latin1").replace(/\r$/, "");
           const trimmedStart = lineStr.trimStart();
           if (!discardLineHasColon) {
-            if (!discardLineDroppedBytes && !discardLinePrefixNonEmpty && (trimmedStart[0] === "{" || trimmedStart[0] === "[")) {
+            if (!discardLinePrefixNonEmpty && (trimmedStart[0] === "{" || trimmedStart[0] === "[")) {
               buf = buf.subarray(pos);
               discardingOversizedHeader = false;
               resyncAtBoundary = true;
@@ -665,7 +995,6 @@ export function createFrameReader(onMessage, onError) {
             if (hasColon) {
               discardLineHasColon = true;
               discardLinePrefixNonEmpty = discardLinePrefixNonEmpty || lineStr.trim().length > 0;
-              discardLineDroppedBytes = discardLineDroppedBytes || buf.length - pos > 3;
               discardLineTrimEmpty = false;
               buf = buf.subarray(Math.max(pos, buf.length - 3));
             } else {
@@ -674,7 +1003,6 @@ export function createFrameReader(onMessage, onError) {
               if (avail > keep) {
                 const droppedStr = lineSlice.subarray(0, avail - keep).toString("latin1");
                 if (droppedStr.trim().length > 0) discardLinePrefixNonEmpty = true;
-                discardLineDroppedBytes = true;
               }
               discardLineTrimEmpty = discardLineTrimEmpty && lineStr.trim() === "";
               buf = buf.subarray(buf.length - keep);
@@ -700,7 +1028,6 @@ export function createFrameReader(onMessage, onError) {
           pos = nlIdx + 1;
           discardLineHasColon = false;
           discardLinePrefixNonEmpty = false;
-          discardLineDroppedBytes = false;
           discardLineTrimEmpty = true;
         }
         if (!ended && discardingOversizedHeader) {
@@ -791,9 +1118,17 @@ export function createFrameReader(onMessage, onError) {
         const firstNl = buf.indexOf("\n");
         if (firstNl === -1) {
           if (buf.length > MAX_FRAME_BYTES) {
+            if (firstByte === 0x5b) {
+              resetArrayDiscard();
+              scanArrayBytes(buf, peek);
+              if (!arrayInvalid && arrayStack.length > 0) {
+                discardingOversizedArray = true;
+              } else {
+                resetArrayDiscard();
+              }
+            }
             buf = Buffer.alloc(0);
             discardingOversizedLine = true;
-            if (firstByte === 0x5b) discardingOversizedArray = true;
             const err = new Error("NDJSON frame exceeded 10MB limit");
             if (onError) onError(err, detectedMode || "ndjson");
             else throw err;
@@ -801,12 +1136,17 @@ export function createFrameReader(onMessage, onError) {
           break;
         }
         if (firstNl > MAX_FRAME_BYTES) {
-          const lineTrimmed = buf.subarray(0, firstNl).toString("latin1").trim();
+          if (firstByte === 0x5b) {
+            resetArrayDiscard();
+            const res = scanArrayBytes(buf.subarray(peek, firstNl + 1), 0);
+            if (!res.closed && !arrayInvalid && arrayStack.length > 0) {
+              discardingOversizedArray = true;
+            } else {
+              resetArrayDiscard();
+            }
+          }
           buf = buf.subarray(firstNl + 1);
           resyncAtBoundary = true;
-          if (firstByte === 0x5b && !lineTrimmed.endsWith("]")) {
-            discardingOversizedArray = true;
-          }
           const err = new Error("NDJSON frame exceeded 10MB limit");
           if (onError) onError(err, detectedMode || "ndjson");
           else throw err;
@@ -841,10 +1181,17 @@ export function createFrameReader(onMessage, onError) {
         const blockText = buf.subarray(0, Math.min(hdrEnd, MAX_FRAME_BYTES)).toString("utf8").replace(/\r/g, "");
         const hasCoreHeaderInBlock = /(?:^|\n)Content-(?:Length|Type)[ \t]*:/im.test(blockText);
         const hasJsonLineInBlock = /(?:^|\n)[ \t]*[\[{]/.test(blockText);
+        const firstNlOversize = buf.indexOf(0x0a);
+        const hasOversizedFirstHeaderLine =
+          firstNlOversize > MAX_HEADER_BYTES &&
+          firstNlOversize <= Math.min(hdrEnd, MAX_FRAME_BYTES) &&
+          /^[A-Za-z]/.test(head) &&
+          buf.subarray(0, firstNlOversize).includes(0x3a);
         const previewLooksHeader =
           detectedMode === "content-length" ||
           /^Content-(?:Length|Type)[ \t]*:/i.test(head) ||
-          ((isPotentialIncompleteHeaderBlock(headerPreview) || isLooseIncompleteHeaderBlock(headerPreview)) && detectedMode !== "ndjson") ||
+          ((isPotentialIncompleteHeaderBlock(headerPreview) || isLooseIncompleteHeaderBlock(headerPreview) || hasOversizedFirstHeaderLine) &&
+            detectedMode !== "ndjson") ||
           (hasCoreHeaderInBlock && !hasJsonLineInBlock);
         if (previewLooksHeader) {
           const stop = findOversizedHeaderStop(buf, hdrEnd + sepLen);
@@ -862,7 +1209,21 @@ export function createFrameReader(onMessage, onError) {
         const hasJsonLine = /(?:^|\n)[ \t]*[\[{]/.test(bufTextForJson);
         const startsWithCoreHeader = /^Content-(?:Length|Type)[ \t]*:/i.test(head);
         const hasCoreHeader = startsWithCoreHeader || /(?:^|\n)Content-(?:Length|Type)[ \t]*:/im.test(bufTextForJson);
-        if (!hasJsonLine && (detectedMode === "content-length" || startsWithCoreHeader || hasCoreHeader || isLooseIncompleteHeaderBlock(oversizePreview))) {
+        const firstNlPreview = buf.indexOf(0x0a);
+        const hasOversizedHeaderLine =
+          firstNlPreview !== -1 &&
+          firstNlPreview <= MAX_FRAME_BYTES &&
+          /^[A-Za-z]/.test(head) &&
+          buf.subarray(0, firstNlPreview).includes(0x3a);
+        if (
+          (!hasJsonLine &&
+            (detectedMode === "content-length" ||
+              startsWithCoreHeader ||
+              hasCoreHeader ||
+              hasOversizedHeaderLine ||
+              isLooseIncompleteHeaderBlock(oversizePreview))) ||
+          (detectedMode !== "ndjson" && hasOversizedHeaderLine && firstNlPreview > MAX_HEADER_BYTES)
+        ) {
           if (rejectOversizedUnseparatedHeader()) continue;
           break;
         }
@@ -907,6 +1268,8 @@ export function createFrameReader(onMessage, onError) {
         const firstNl = buf.indexOf("\n");
         if (firstNl === -1) {
           if (buf.length > MAX_HEADER_BYTES) {
+            discardingOversizedLineMayBeHeader = detectedMode !== "ndjson" && /^[A-Za-z]/.test(head);
+            discardingOversizedLineSawColon = buf.includes(0x3a);
             buf = Buffer.alloc(0);
             discardingOversizedLine = true;
             const err = new Error("Oversized malformed frame before delimiter");
@@ -916,8 +1279,17 @@ export function createFrameReader(onMessage, onError) {
           break;
         }
         if (firstNl > MAX_FRAME_BYTES) {
+          const bigLineHasHeaderColon = detectedMode !== "ndjson" && /^[A-Za-z]/.test(head) && buf.subarray(0, firstNl).includes(0x3a);
           buf = buf.subarray(firstNl + 1);
           resyncAtBoundary = true;
+          if (bigLineHasHeaderColon) {
+            discardingOversizedHeader = true;
+            awaitingHeaderResync = true;
+            resyncOversizeEmitted = false;
+            discardLineHasColon = false;
+            discardLinePrefixNonEmpty = false;
+            discardLineTrimEmpty = true;
+          }
           const err = new Error("Malformed frame exceeded 10MB limit");
           if (onError) onError(err, detectedMode || "ndjson");
           else throw err;
@@ -965,7 +1337,7 @@ export function createFrameReader(onMessage, onError) {
         rejectContentLengthHeader(new Error("Duplicate Content-Length header"), false, hdrEnd + sepLen);
         continue;
       }
-      const rawLen = clMatches[0][1].trim();
+      const rawLen = clMatches[0][1].replace(/^[ \t]+|[ \t]+$/g, "");
       const bodyLen = /^\d+$/.test(rawLen) ? Number.parseInt(rawLen, 10) : Number.NaN;
       if (!Number.isSafeInteger(bodyLen) || bodyLen < 0 || bodyLen > MAX_FRAME_BYTES) {
         rejectContentLengthHeader(new Error(`Invalid Content-Length: ${rawLen}`), false, hdrEnd + sepLen);
@@ -1190,11 +1562,12 @@ function runStdioServer() {
           process.stdout.write(formatMcpResponse(res, mode));
         }
       } catch (err) {
-        const hasId = msg && typeof msg === "object" && Object.prototype.hasOwnProperty.call(msg, "id") && msg.id !== undefined;
+        const hasId =
+          msg && typeof msg === "object" && !Array.isArray(msg) && Object.prototype.hasOwnProperty.call(msg, "id") && msg.id !== undefined;
         if (hasId) {
           const errResp = {
             jsonrpc: "2.0",
-            id: msg.id,
+            id: isValidJsonRpcId(msg.id) ? msg.id : null,
             error: { code: -32603, message: err instanceof Error ? err.message : "Internal error" },
           };
           process.stdout.write(formatMcpResponse(errResp, mode));
@@ -2333,6 +2706,239 @@ function runSelfTest() {
       rWsBad(Buffer.from("  " + okFrame40));
       assert.deepEqual(mWsBad, [], "Leading horizontal spaces on actual header line must still reject");
       assert.equal(eWsBad.length, 1);
+    }
+
+    // Round 41 (R40-A1-M1 streaming oversized array discard vs unclosed/nested-array recovery):
+    {
+      const m1 = [], e1 = [];
+      const r1 = createFrameReader((msg) => m1.push(msg.id), (err) => e1.push(err.message));
+      r1(`[${"x".repeat(10 * 1024 * 1024 + 64)}\n`);
+      r1(`{"jsonrpc":"2.0","id":4101,"method":"ping"}\n`);
+      assert.deepEqual(m1, [4101], "Unclosed oversized invalid array line must not blackhole subsequent NDJSON");
+      assert.equal(e1.length, 1);
+
+      const m2 = [], e2 = [];
+      const r2 = createFrameReader((msg) => m2.push(msg.id), (err) => e2.push(err.message));
+      r2(`["${"a".repeat(10 * 1024 * 1024 + 64)}"\n`);
+      r2(`{"jsonrpc":"2.0","id":4102,"method":"ping"}\n`);
+      assert.deepEqual(m2, [4102], "Unclosed array missing comma before NDJSON object must recover next NDJSON frame");
+      assert.equal(e2.length, 1);
+
+      const m3 = [], e3 = [];
+      const r3 = createFrameReader((msg) => m3.push(msg.id), (err) => e3.push(err.message));
+      r3(`[${" ".repeat(10 * 1024 * 1024 + 64)}`);
+      r3(`,\n[1, 2]\n,{"jsonrpc":"2.0","id":4103,"method":"tools/list"}\n]\n{"jsonrpc":"2.0","id":4104,"method":"ping"}\n`);
+      assert.deepEqual(m3, [4104], "Nested [1, 2] line inside oversized multi-line array must not close array early");
+      assert.equal(e3.length, 1);
+
+      const m4 = [], e4 = [];
+      const r4 = createFrameReader((msg) => m4.push(msg.id), (err) => e4.push(err.message));
+      r4(`[${" ".repeat(10 * 1024 * 1024 + 64)},[1,2]\n,{"jsonrpc":"2.0","id":4105,"method":"tools/list"}\n]\n{"jsonrpc":"2.0","id":4106,"method":"ping"}\n`);
+      assert.deepEqual(m4, [4106], "Single oversized line ending in nested ] must continue discarding until outer ]");
+      assert.equal(e4.length, 1);
+    }
+
+    // Round 42 (R41-A1-M1 >16KB header name split before ':' + R41-A1-L1 JSON-RPC id & params validation):
+    {
+      const m1 = [], e1 = [];
+      const r1 = createFrameReader((msg) => m1.push(msg.id), (err) => e1.push(err.message));
+      const smuggled = JSON.stringify({ jsonrpc: "2.0", id: 999, method: "ping" });
+      const longHdr = `X-${"a".repeat(17000)}`;
+      r1(`${longHdr}`);
+      r1(`: v\r\nContent-Length: ${Buffer.byteLength(smuggled)}\r\n\r\n${smuggled}`);
+      const validAfter = JSON.stringify({ jsonrpc: "2.0", id: 4201, method: "ping" });
+      r1(`Content-Length: ${Buffer.byteLength(validAfter)}\r\n\r\n${validAfter}`);
+      assert.deepEqual(m1, [4201], "R42 A1-M1: split >16KB header name before ':' must drop smuggled Content-Length frame and recover");
+      assert.equal(e1.length, 1);
+
+      const m2 = [], e2 = [];
+      const r2 = createFrameReader((msg) => m2.push(msg.id), (err) => e2.push(err.message));
+      r2(`${longHdr}: v\r\nContent-Length: ${Buffer.byteLength(smuggled)}\r\n\r\n${smuggled}Content-Length: ${Buffer.byteLength(validAfter)}\r\n\r\n${validAfter}`);
+      assert.deepEqual(m2, [4201], "R42 A1-M1: single-chunk >16KB header block must drop smuggled frame and recover");
+      assert.equal(e2.length, 1);
+
+      const m3 = [], e3 = [];
+      const r3 = createFrameReader((msg) => m3.push(msg.id), (err) => e3.push(err.message));
+      r3(`${longHdr}: v\r\n`);
+      r3(`Content-Length: ${Buffer.byteLength(smuggled)}\r\n\r\n${smuggled}Content-Length: ${Buffer.byteLength(validAfter)}\r\n\r\n${validAfter}`);
+      assert.deepEqual(m3, [4201], "R42 A1-M1: complete >16KB header line split before Content-Length must drop smuggled frame and recover");
+      assert.equal(e3.length, 1);
+
+      for (const badId of [true, { bad: 1 }, null, Number.NaN]) {
+        const res = dispatch({ jsonrpc: "2.0", id: badId, method: "ping" });
+        assert.equal(res.error.code, -32600, "R42 A1-L1: invalid JSON-RPC request id must return -32600");
+        assert.equal(res.id, null, "R42 A1-L1: invalid JSON-RPC request id must return id: null");
+      }
+      const badMethodAndId = dispatch({ jsonrpc: "2.0", id: { bad: 1 }, method: 123 });
+      assert.equal(badMethodAndId.error.code, -32600);
+      assert.equal(badMethodAndId.id, null, "R42 A1-L1: invalid method error must not echo non-primitive id");
+      assert.equal(dispatch({ jsonrpc: "2.0", id: 1, method: "ping", params: [] }).error.code, -32602);
+      assert.equal(dispatch({ jsonrpc: "2.0", id: 2, method: "initialize", params: "bad" }).error.code, -32602);
+      assert.equal(dispatch({ jsonrpc: "2.0", id: 3, method: "tools/list", params: null }).error.code, -32602);
+      assert.equal(dispatch({ jsonrpc: "2.0", method: "ping", params: [] }), null, "Notification with no id still returns null");
+
+      // Round 43 (R42-A1-M3 notification with id -> -32600, R42-A1-L1 reject non-OWS Content-Length whitespace):
+      const notifWithId = dispatch({ jsonrpc: "2.0", id: 7, method: "notifications/initialized" });
+      assert.equal(notifWithId?.error?.code, -32600, "R43 A1-M3: notifications/initialized with id must return -32600");
+      assert.equal(notifWithId?.id, 7);
+      const vTabErrs = [], vTabMsgs = [];
+      const vTabReader = createFrameReader((msg) => vTabMsgs.push(msg), (err) => vTabErrs.push(err.message));
+      vTabReader(`Content-Length: \v${Buffer.byteLength(validAfter)}\r\n\r\n${validAfter}`);
+      assert.equal(vTabMsgs.length, 0, "R43 A1-L1: Content-Length with vertical tab must be rejected");
+      assert.equal(vTabErrs.length, 1);
+
+      // Round 44 (R43-A1-M1): JSON-RPC 2.0 batch arrays support
+      const emptyBatch = dispatch([]);
+      assert.ok(emptyBatch && !Array.isArray(emptyBatch), "Empty batch must return single error object");
+      assert.equal(emptyBatch.error.code, -32600);
+      assert.equal(emptyBatch.id, null);
+
+      const notifOnlyBatch = dispatch([
+        { jsonrpc: "2.0", method: "notifications/initialized" },
+        { jsonrpc: "2.0", method: "ping" },
+      ]);
+      assert.equal(notifOnlyBatch, null, "Notification-only batch must return null (not [])");
+
+      const mixedBatch = dispatch([
+        { jsonrpc: "2.0", id: 1, method: "ping" },
+        { jsonrpc: "2.0", method: "notifications/initialized" },
+        { jsonrpc: "2.0", id: 2, method: "tools/list" },
+        42,
+        [{ jsonrpc: "2.0", id: 3, method: "ping" }],
+      ]);
+      assert.ok(Array.isArray(mixedBatch) && mixedBatch.length === 4, "Mixed batch must return responses for requests and invalid items");
+      assert.equal(mixedBatch[0].id, 1);
+      assert.deepEqual(mixedBatch[0].result, {});
+      assert.equal(mixedBatch[1].id, 2);
+      assert.ok(Array.isArray(mixedBatch[1].result.tools));
+      assert.equal(mixedBatch[2].id, null);
+      assert.equal(mixedBatch[2].error.code, -32600);
+      assert.equal(mixedBatch[3].id, null);
+      assert.equal(mixedBatch[3].error.code, -32600);
+
+      for (const frameMode of ["ndjson", "content-length"]) {
+        const batchPayload = JSON.stringify([
+          { jsonrpc: "2.0", id: "b1", method: "ping" },
+          { jsonrpc: "2.0", method: "notifications/cancelled" },
+          { jsonrpc: "2.0", id: "b2", method: "tools/list" },
+        ]);
+        const framedOut = [];
+        const bReader = createFrameReader((m, md) => {
+          const out = dispatch(m);
+          if (out) framedOut.push(formatMcpResponse(out, md));
+        });
+        bReader(
+          frameMode === "content-length"
+            ? `Content-Length: ${Buffer.byteLength(batchPayload)}\r\n\r\n${batchPayload}`
+            : `${batchPayload}\n`
+        );
+        assert.equal(framedOut.length, 1);
+        const bodyJson = frameMode === "content-length" ? framedOut[0].split("\r\n\r\n")[1] : framedOut[0].trim();
+        const parsedBatchOut = JSON.parse(bodyJson);
+        assert.equal(parsedBatchOut.length, 2);
+        assert.deepEqual(parsedBatchOut.map((x) => x.id), ["b1", "b2"]);
+      }
+
+      // Round 46 (A1-L2: chunk-boundary parity for >16KB header-like name split before ':' + trailing NDJSON + CL):
+      const r46PingNd = JSON.stringify({ jsonrpc: "2.0", id: 4601, method: "ping" });
+      const r46PingCl = JSON.stringify({ jsonrpc: "2.0", id: 4602, method: "ping" });
+      const r46ClFrame = `Content-Length: ${Buffer.byteLength(r46PingCl)}\r\n\r\n${r46PingCl}`;
+      const r46HugePrefix = `X-${"a".repeat(17000)}`;
+      for (const chunks of [
+        [`${r46HugePrefix}: v\r\n${r46PingNd}\n${r46ClFrame}`],
+        [r46HugePrefix, `: v\r\n${r46PingNd}\n${r46ClFrame}`],
+        [`${r46HugePrefix}: v\r\n${r46PingNd}\n`, r46ClFrame],
+      ]) {
+        const ids = [];
+        const errs = [];
+        const r = createFrameReader((msg) => ids.push(msg.id), (err) => errs.push(err.message));
+        for (const c of chunks) r(c);
+        assert.deepEqual(ids, [4602], "R46 A1-L2: >16KB header + NDJSON + Content-Length must drop NDJSON and recover identically across chunk boundaries");
+        assert.ok(errs.length >= 1);
+      }
+      const r46SeedNd = JSON.stringify({ jsonrpc: "2.0", id: 4600, method: "ping" });
+      for (const chunks of [
+        [`${r46SeedNd}\n${r46HugePrefix}: v\r\n${r46PingNd}\n${r46ClFrame}`],
+        [`${r46SeedNd}\n`, r46HugePrefix, `: v\r\n${r46PingNd}\n${r46ClFrame}`],
+      ]) {
+        const ids = [];
+        const errs = [];
+        const r = createFrameReader((msg) => ids.push(msg.id), (err) => errs.push(err.message));
+        for (const c of chunks) r(c);
+        assert.deepEqual(ids, [4600, 4601, 4602], "R46 A1-L2: once NDJSON mode is established, >16KB bad line must deliver following NDJSON across chunk splits");
+        assert.ok(errs.length >= 1);
+      }
+
+      // Round 47 A1-M1: chunk-split >256 horizontal spaces before indented JSON after >16KB header
+      const r47IndentedJson = JSON.stringify({ jsonrpc: "2.0", id: 4701, method: "ping" });
+      const r47ClBody = JSON.stringify({ jsonrpc: "2.0", id: 4702, method: "ping" });
+      const r47ClNext = `Content-Length: ${Buffer.byteLength(r47ClBody)}\r\n\r\n${r47ClBody}`;
+      const r47SeedBody = JSON.stringify({ jsonrpc: "2.0", id: 4700, method: "ping" });
+      const r47ClSeed = `Content-Length: ${Buffer.byteLength(r47SeedBody)}\r\n\r\n${r47SeedBody}`;
+      for (const chunks of [
+        [`${r46HugePrefix}: v\r\n${" ".repeat(300)}${r47IndentedJson}\n${r47ClNext}`],
+        [`${r46HugePrefix}: v\r\n${" ".repeat(300)}`, `${r47IndentedJson}\n${r47ClNext}`],
+        [`${r46HugePrefix}: v\r\n`, " ".repeat(150), " ".repeat(150), `${r47IndentedJson}\n`, r47ClNext],
+      ]) {
+        const ids = [];
+        const errs = [];
+        const r = createFrameReader((msg) => ids.push(msg.id), (err) => errs.push(err.message));
+        for (const c of chunks) r(c);
+        assert.deepEqual(ids, [4702], "R47 A1-M1: >256 spaces before indented JSON must resync cleanly across chunk boundaries and deliver subsequent Content-Length frame");
+        assert.ok(errs.length >= 1);
+      }
+      {
+        const ids = [];
+        const errs = [];
+        const r = createFrameReader((msg) => ids.push(msg.id), (err) => errs.push(err.message));
+        r(`${r47ClSeed}${r46HugePrefix}: v\r\n${" ".repeat(300)}`);
+        r(`${r47IndentedJson}\n${r47ClNext}`);
+        assert.deepEqual(ids, [4700, 4702], "R47 A1-M1: Content-Length mode with chunk-split >256 spaces before { must resync and deliver next frame");
+        assert.ok(errs.length >= 1);
+      }
+      {
+        const ids = [];
+        const errs = [];
+        const r = createFrameReader((msg) => ids.push(msg.id), (err) => errs.push(err.message));
+        r(`${r47ClSeed}${r46HugePrefix}: v\r\n${"x".repeat(300)}`);
+        r(`${r47IndentedJson}\n${r47ClNext}`);
+        assert.deepEqual(ids, [4700], "R47 A1-M1: non-whitespace prefix before { must still NOT resync");
+        assert.ok(errs.length >= 1);
+      }
+
+      // Round 48 A1-M1: dsaf_hook_check and dsaf_tokens must skip symlinks escaping target root
+      const r48Out = join(scratch, "r48-outside");
+      const r48Repo = join(scratch, "r48-repo");
+      mkdirSync(join(r48Out, "sub"), { recursive: true });
+      mkdirSync(join(r48Repo, "src"), { recursive: true });
+      writeFileSync(join(r48Out, "leak.css"), ".bad:focus { outline: none; color: #ff00aa; }\n");
+      writeFileSync(join(r48Out, "sub/dir-leak.css"), ".dir-bad:focus { outline: none; }\n");
+      writeFileSync(join(r48Out, "leak.tokens.json"), JSON.stringify({ $type: "color", brand: { bad: { $value: "#ff00aa" } } }));
+      writeFileSync(join(r48Repo, "src/ok.css"), ".ok:focus-visible { outline: 2px solid var(--focus); }\n");
+      symlinkSync(join(r48Out, "leak.css"), join(r48Repo, "src/leak-link.css"));
+      symlinkSync(join(r48Out, "sub"), join(r48Repo, "src/ext-dir"));
+      symlinkSync(join(r48Out, "leak.tokens.json"), join(r48Repo, "leak.tokens.json"));
+
+      const r48HookRes = dispatch({
+        jsonrpc: "2.0",
+        id: 4801,
+        method: "tools/call",
+        params: { name: "dsaf_hook_check", arguments: { target: r48Repo, tier: "all" } },
+      });
+      const r48HookData = JSON.parse(r48HookRes.result.content[0].text);
+      assert.equal(r48HookData.filesScanned, 1, "R48 A1-M1: MCP dsaf_hook_check must skip escaping file/dir symlinks");
+      assert.equal(r48HookData.passed, true);
+
+      const r48TokRes = dispatch({
+        jsonrpc: "2.0",
+        id: 4802,
+        method: "tools/call",
+        params: { name: "dsaf_tokens", arguments: { target: r48Repo } },
+      });
+      const r48TokData = JSON.parse(r48TokRes.result.content[0].text);
+      assert.equal(r48TokData.filesScanned.tokenJson, 0, "R48 A1-M1: MCP dsaf_tokens must skip escaping token JSON symlinks");
+      assert.equal(r48TokData.filesScanned.uiAndStyle, 1, "R48 A1-M1: MCP dsaf_tokens must skip escaping UI/style symlinks");
+      assert.equal(r48TokData.drift.hardcodedColorHits, 0);
     }
 
     console.log("DSAF_MCP_SELF_TEST_PASSED (8 tools + Content-Length & NDJSON framing + mcp install)");

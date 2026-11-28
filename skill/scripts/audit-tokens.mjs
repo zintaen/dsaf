@@ -27,12 +27,14 @@ import {
   computeMarkupJsOuterStringSpans,
   extractImportantStyleSurfacePreservingLines,
   extractRealStyleBlocks,
+  findHardcodedColorFunctions,
   findSvelteStyleDirectives,
   findSvgBlockRanges,
   formatGithubAnnotations,
   formatSarif,
   isDirectCliEntry,
   isRealOpenTagAttrPos,
+  isTokenizedColorFn,
   isValidJsObjKeyPos,
   maskCssQuotedStringsPreservingLines,
   maskMarkupProsePreservingLines,
@@ -128,28 +130,29 @@ function hasNestedTokenDescendant(obj) {
   return false;
 }
 
-function lookupRawExtendsGroup(root, rawRef) {
-  if (!root || typeof root !== "object" || Array.isArray(root) || typeof rawRef !== "string") return null;
+function lookupGroupSegTarget(node, seg) {
+  if (!node || typeof node !== "object" || Array.isArray(node) || !Object.prototype.hasOwnProperty.call(node, seg)) {
+    return null;
+  }
+  return node[seg];
+}
+
+function parseExtendsRefSegs(rawRef) {
+  if (typeof rawRef !== "string") return null;
   const trimmed = rawRef.trim();
-  let segs = null;
   if (/^\{[^}]+\}$/.test(trimmed)) {
-    segs = trimmed.slice(1, -1).trim().split(".").filter(Boolean);
-  } else if (trimmed.startsWith("#/")) {
-    segs = trimmed
+    const segs = trimmed.slice(1, -1).trim().split(".").filter(Boolean);
+    return segs.length > 0 ? segs : null;
+  }
+  if (trimmed.startsWith("#/")) {
+    const segs = trimmed
       .slice(2)
       .split("/")
       .filter(Boolean)
       .map((p) => p.replaceAll("~1", "/").replaceAll("~0", "~"));
+    return segs.length > 0 ? segs : null;
   }
-  if (!segs || segs.length === 0) return null;
-  let cur = root;
-  for (const seg of segs) {
-    if (!cur || typeof cur !== "object" || Array.isArray(cur) || !Object.prototype.hasOwnProperty.call(cur, seg)) {
-      return null;
-    }
-    cur = cur[seg];
-  }
-  return cur && typeof cur === "object" && !Array.isArray(cur) ? cur : null;
+  return null;
 }
 
 function isTokenLeafObject(obj) {
@@ -159,8 +162,34 @@ function isTokenLeafObject(obj) {
       !Array.isArray(obj) &&
       (Object.prototype.hasOwnProperty.call(obj, "$value") ||
         Object.prototype.hasOwnProperty.call(obj, "$ref") ||
+        (Boolean(getNodeExtModes(obj)) && !hasNonMetaObjectChild(obj)) ||
         (Object.prototype.hasOwnProperty.call(obj, "value") && !hasNestedTokenDescendant(obj)))
   );
+}
+
+function isMetaOnlyTokenOverride(obj) {
+  if (!obj || typeof obj !== "object" || Array.isArray(obj)) return false;
+  const keys = Object.keys(obj);
+  if (keys.length === 0) return false;
+  const legacyMeta = new Set(["type", "description", "extensions"]);
+  return keys.every((k) => k.startsWith("$") || legacyMeta.has(k));
+}
+
+function mergeExtensionObjects(baseExt, localExt) {
+  const outExt = { ...structuredClone(baseExt), ...structuredClone(localExt) };
+  for (const mk of ["mode", "modes", "com.figma.mode", "org.designtokens.mode"]) {
+    if (
+      baseExt[mk] &&
+      typeof baseExt[mk] === "object" &&
+      !Array.isArray(baseExt[mk]) &&
+      localExt[mk] &&
+      typeof localExt[mk] === "object" &&
+      !Array.isArray(localExt[mk])
+    ) {
+      outExt[mk] = { ...structuredClone(baseExt[mk]), ...structuredClone(localExt[mk]) };
+    }
+  }
+  return outExt;
 }
 
 function mergeResolvedDtcgGroups(baseNode, localNode) {
@@ -179,8 +208,28 @@ function mergeResolvedDtcgGroups(baseNode, localNode) {
       typeof v === "object" &&
       !Array.isArray(v)
     ) {
-      if (isTokenLeafObject(v) && isTokenLeafObject(baseVal)) {
-        const mergedLeaf = { ...baseVal, ...v };
+      if (isTokenLeafObject(baseVal) && (isTokenLeafObject(v) || isMetaOnlyTokenOverride(v))) {
+        const mergedLeaf = { ...structuredClone(baseVal), ...structuredClone(v) };
+        if (
+          baseVal.$extensions &&
+          typeof baseVal.$extensions === "object" &&
+          !Array.isArray(baseVal.$extensions) &&
+          v.$extensions &&
+          typeof v.$extensions === "object" &&
+          !Array.isArray(v.$extensions)
+        ) {
+          mergedLeaf.$extensions = mergeExtensionObjects(baseVal.$extensions, v.$extensions);
+        }
+        if (
+          baseVal.extensions &&
+          typeof baseVal.extensions === "object" &&
+          !Array.isArray(baseVal.extensions) &&
+          v.extensions &&
+          typeof v.extensions === "object" &&
+          !Array.isArray(v.extensions)
+        ) {
+          mergedLeaf.extensions = mergeExtensionObjects(baseVal.extensions, v.extensions);
+        }
         if (Object.prototype.hasOwnProperty.call(v, "$value")) {
           delete mergedLeaf.$ref;
           delete mergedLeaf.value;
@@ -205,38 +254,232 @@ function mergeResolvedDtcgGroups(baseNode, localNode) {
   return out;
 }
 
-export function resolveDtcgExtends(root) {
+const DTCG_EXTENDS_ISSUES = Symbol("dtcgExtendsIssues");
+
+export function resolveDtcgExtends(root, issuesOut = null) {
   if (!root || typeof root !== "object" || Array.isArray(root)) return root;
   const memo = new WeakMap();
-  const resolveGroup = (node, stack = new Set()) => {
+  const partialInherited = new WeakMap();
+  const seenIssueKeys = new Set();
+  const recordExtendsIssue = (type, path, target) => {
+    if (!Array.isArray(issuesOut)) return;
+    const key = `${type}\0${path}\0${target}`;
+    if (seenIssueKeys.has(key)) return;
+    seenIssueKeys.add(key);
+    issuesOut.push({ type, path, target });
+  };
+  const resolveGroupPath = (segs, stack, callerPathSegs = []) => {
+    const resolveRawPath = (candSegs) => {
+      let cur = root;
+      let curResolved = false;
+      let inheritedCur = null;
+      for (let sIdx = 0; sIdx < candSegs.length; sIdx++) {
+        const seg = candSegs[sIdx];
+        if (!cur || typeof cur !== "object" || Array.isArray(cur)) return null;
+        if (stack.has(cur)) {
+          const localChild = lookupGroupSegTarget(cur, seg);
+          const ownInherited = partialInherited.get(cur) || null;
+          const effectiveInheritedParent =
+            inheritedCur && ownInherited && typeof inheritedCur === "object" && typeof ownInherited === "object"
+              ? mergeResolvedDtcgGroups(inheritedCur, ownInherited)
+              : ownInherited || inheritedCur;
+          const inheritedChild = effectiveInheritedParent ? lookupGroupSegTarget(effectiveInheritedParent, seg) : null;
+          if (localChild && stack.has(localChild)) {
+            cur = localChild;
+            inheritedCur =
+              inheritedChild && typeof inheritedChild === "object" && !Array.isArray(inheritedChild)
+                ? inheritedChild
+                : null;
+            curResolved = false;
+            continue;
+          }
+          if (
+            localChild &&
+            inheritedChild &&
+            typeof localChild === "object" &&
+            typeof inheritedChild === "object" &&
+            !Array.isArray(localChild) &&
+            !Array.isArray(inheritedChild)
+          ) {
+            const resLocal = resolveGroup(localChild, stack, candSegs.slice(0, sIdx + 1));
+            if (!isTokenLeafObject(inheritedChild) && !isTokenLeafObject(resLocal)) {
+              cur = mergeResolvedDtcgGroups(inheritedChild, resLocal);
+            } else if (isTokenLeafObject(inheritedChild) && (isTokenLeafObject(resLocal) || isMetaOnlyTokenOverride(resLocal))) {
+              cur = mergeResolvedDtcgGroups({ _: inheritedChild }, { _: resLocal })._;
+            } else {
+              cur = resLocal;
+            }
+            inheritedCur = null;
+            curResolved = true;
+            continue;
+          }
+          if (localChild !== null) {
+            cur = localChild;
+            inheritedCur = null;
+            curResolved = false;
+          } else if (inheritedChild !== null) {
+            cur = inheritedChild;
+            inheritedCur = null;
+            curResolved = true;
+          } else {
+            return null;
+          }
+          continue;
+        }
+        const resolvedCur = curResolved ? cur : resolveGroup(cur, stack, candSegs.slice(0, sIdx));
+        inheritedCur = null;
+        cur = lookupGroupSegTarget(resolvedCur, seg);
+        curResolved = true;
+        if (cur === null) return null;
+      }
+      if (!cur || typeof cur !== "object" || Array.isArray(cur)) return null;
+      return { node: curResolved || stack.has(cur) ? cur : resolveGroup(cur, stack, candSegs), segs: candSegs };
+    };
+    const callerMode =
+      callerPathSegs.length > 0 && /^(?:light|dark)$/i.test(callerPathSegs[0]) ? callerPathSegs[0] : null;
+    if (callerMode && segs.length > 0 && !/^(?:light|dark)$/i.test(segs[0])) {
+      const scopedHit = resolveRawPath([callerMode, ...segs]);
+      if (scopedHit) return scopedHit;
+    }
+    return resolveRawPath(segs);
+  };
+  const resolveGroup = (node, stack = new Set(), pathSegs = []) => {
     if (!node || typeof node !== "object" || Array.isArray(node)) return node;
     if (memo.has(node)) return memo.get(node);
     if (stack.has(node)) return node;
     stack.add(node);
+    let hitCycle = false;
+    let resolvedBase = null;
+    if (typeof node.$extends === "string") {
+      const groupPath = pathSegs.length > 0 ? pathSegs.join(".") : "(root)";
+      const segs = parseExtendsRefSegs(node.$extends);
+      if (!segs) {
+        recordExtendsIssue("unresolved_extends", groupPath, node.$extends);
+      } else {
+        const hit = resolveGroupPath(segs, stack, pathSegs);
+        if (!hit) {
+          recordExtendsIssue("unresolved_extends", groupPath, node.$extends);
+        } else if (stack.has(hit.node)) {
+          hitCycle = true;
+          recordExtendsIssue("circular_extends", groupPath, node.$extends);
+        } else {
+          resolvedBase = resolveGroup(hit.node, stack, hit.segs);
+          partialInherited.set(node, resolvedBase);
+        }
+      }
+    }
     let localCopy = {};
     for (const [k, v] of Object.entries(node)) {
       if (k === "$extends") continue;
       localCopy[k] =
         v && typeof v === "object" && !Array.isArray(v) && !k.startsWith("$")
-          ? resolveGroup(v, stack)
+          ? resolveGroup(v, stack, [...pathSegs, k])
           : v;
     }
-    if (typeof node.$extends === "string") {
-      const target = lookupRawExtendsGroup(root, node.$extends);
-      if (target && !stack.has(target)) {
-        const resolvedBase = resolveGroup(target, stack);
-        localCopy = mergeResolvedDtcgGroups(resolvedBase, localCopy);
+    if (resolvedBase) {
+      if (typeof node.$extensions === "object" && node.$extensions) {
+        localCopy.$extensions = structuredClone(node.$extensions);
       }
+      if (typeof node.extensions === "object" && node.extensions) {
+        localCopy.extensions = structuredClone(node.extensions);
+      }
+      localCopy = mergeResolvedDtcgGroups(resolvedBase, localCopy);
     }
+    partialInherited.delete(node);
     stack.delete(node);
-    memo.set(node, localCopy);
+    if (!hitCycle) memo.set(node, localCopy);
     return localCopy;
   };
-  return resolveGroup(root);
+  return resolveGroup(root, new Set(), []);
 }
 
-function flattenTokens(source) {
-  const expandedSource = resolveDtcgExtends(source);
+function prepareFileTreeForMerge(json) {
+  if (!json || typeof json !== "object" || Array.isArray(json)) return json;
+  const cloned = structuredClone(json);
+  const getOwnType = (n) =>
+    Object.prototype.hasOwnProperty.call(n, "$type") && typeof n.$type === "string"
+      ? n.$type
+      : Object.prototype.hasOwnProperty.call(n, "type") && typeof n.type === "string"
+      ? n.type
+      : null;
+  const materialize = (node, inheritedType, isRoot = false) => {
+    if (!node || typeof node !== "object" || Array.isArray(node)) return;
+    const ownType = getOwnType(node);
+    const nextType = ownType ?? inheritedType;
+    const hasLeaf =
+      Object.prototype.hasOwnProperty.call(node, "$value") ||
+      Object.prototype.hasOwnProperty.call(node, "value") ||
+      Object.prototype.hasOwnProperty.call(node, "$ref") ||
+      Boolean(getNodeExtModes(node) && !hasNonMetaObjectChild(node));
+    if (hasLeaf) {
+      if (!ownType && nextType != null) node.$type = nextType;
+      return;
+    }
+    if (!isRoot && !ownType && nextType != null) {
+      node.$type = nextType;
+    }
+    for (const [k, v] of Object.entries(node)) {
+      if (k === "$root" && v && typeof v === "object" && !Array.isArray(v)) {
+        materialize(v, nextType, false);
+        continue;
+      }
+      if (k.startsWith("$") || k === "extensions") continue;
+      if ((k === "type" || k === "description") && (v == null || typeof v !== "object")) continue;
+      if (v && typeof v === "object" && !Array.isArray(v)) {
+        materialize(v, nextType, false);
+      }
+    }
+  };
+  materialize(cloned, null, true);
+  delete cloned.$type;
+  if (typeof cloned.type === "string") delete cloned.type;
+  return cloned;
+}
+
+function mergeRawDtcgTrees(target, incoming) {
+  if (!incoming || typeof incoming !== "object" || Array.isArray(incoming)) return target;
+  for (const [k, v] of Object.entries(incoming)) {
+    const existing = target[k];
+    if (
+      existing &&
+      typeof existing === "object" &&
+      !Array.isArray(existing) &&
+      v &&
+      typeof v === "object" &&
+      !Array.isArray(v) &&
+      !k.startsWith("$") &&
+      k !== "extensions" &&
+      !isTokenLeafObject(existing) &&
+      !isTokenLeafObject(v)
+    ) {
+      const exType = Object.prototype.hasOwnProperty.call(existing, "$type")
+        ? existing.$type
+        : typeof existing.type === "string"
+        ? existing.type
+        : null;
+      const inType = Object.prototype.hasOwnProperty.call(v, "$type")
+        ? v.$type
+        : typeof v.type === "string"
+        ? v.type
+        : null;
+      if (exType !== inType) {
+        delete existing.$type;
+        if (typeof existing.type === "string") delete existing.type;
+        const cleanV = { ...v };
+        delete cleanV.$type;
+        if (typeof cleanV.type === "string") delete cleanV.type;
+        mergeRawDtcgTrees(existing, cleanV);
+      } else {
+        mergeRawDtcgTrees(existing, v);
+      }
+    } else if (!Object.prototype.hasOwnProperty.call(target, k)) {
+      target[k] = v && typeof v === "object" && !Array.isArray(v) ? structuredClone(v) : v;
+    }
+  }
+  return target;
+}
+
+function flattenTokensFromExpanded(expandedSource, extendsIssues = []) {
   const tokens = [];
   function walk(node, path = [], inheritedType = null) {
     if (!node || typeof node !== "object" || Array.isArray(node)) return;
@@ -290,7 +533,14 @@ function flattenTokens(source) {
     }
   }
   walk(expandedSource);
+  Object.defineProperty(tokens, DTCG_EXTENDS_ISSUES, { value: extendsIssues, enumerable: false, configurable: true });
   return tokens;
+}
+
+function flattenTokens(source) {
+  const extendsIssues = [];
+  const expandedSource = resolveDtcgExtends(source, extendsIssues);
+  return flattenTokensFromExpanded(expandedSource, extendsIssues);
 }
 
 function aliasTarget(value) {
@@ -311,21 +561,86 @@ function pointerTarget(ref, byPath) {
     const candidate = segs.slice(0, i).filter((seg) => seg !== "$root").join(".");
     if (byPath.has(candidate)) return candidate;
   }
-  return segs.join(".");
+  const cleanSegs = segs.filter((seg, idx) => seg !== "$root" && !(idx === segs.length - 1 && idx > 0 && seg === "$value"));
+  return cleanSegs.join(".");
 }
 
-function collectRefsInValue(val, byPath) {
+function collectRefsWithModeHints(val, byPath, inheritedMode = null) {
   const direct = aliasTarget(val);
-  if (direct) return [direct];
-  if (Array.isArray(val)) return val.flatMap((item) => collectRefsInValue(item, byPath));
+  if (direct) return [{ target: direct, modeKey: inheritedMode }];
+  if (typeof val === "string") {
+    const trimmed = val.trim();
+    if (/\{([^{}\s:;,"'()]+)\}/.test(trimmed)) {
+      const outer = /^light-dark\s*\(/i.test(trimmed) ? parseOuterCssCall(trimmed) : null;
+      if (outer?.fn === "light-dark") {
+        const args = splitCssTopLevel(outer.body, ",");
+        if (args.length === 2) {
+          return [
+            ...collectRefsWithModeHints(args[0], byPath, "light"),
+            ...collectRefsWithModeHints(args[1], byPath, "dark"),
+          ];
+        }
+      }
+      const out = [];
+      let masked = trimmed;
+      let cursor = 0;
+      while (cursor < masked.length) {
+        const lm = /\blight-dark\s*\(/i.exec(masked.slice(cursor));
+        if (!lm) break;
+        const absStart = cursor + lm.index;
+        if (absStart > 0 && /[a-zA-Z0-9_-]/.test(masked[absStart - 1])) {
+          cursor = absStart + lm[0].length;
+          continue;
+        }
+        const openP = masked.indexOf("(", absStart);
+        let depth = 0;
+        let closeP = -1;
+        for (let k = openP; k < masked.length; k++) {
+          if (masked[k] === "(") depth++;
+          else if (masked[k] === ")") {
+            depth--;
+            if (depth === 0) {
+              closeP = k;
+              break;
+            }
+          }
+        }
+        if (closeP !== -1) {
+          const innerBody = masked.slice(openP + 1, closeP);
+          const args = splitCssTopLevel(innerBody, ",");
+          if (args.length === 2) {
+            out.push(
+              ...collectRefsWithModeHints(args[0], byPath, "light"),
+              ...collectRefsWithModeHints(args[1], byPath, "dark")
+            );
+            masked = masked.slice(0, absStart) + " ".repeat(closeP + 1 - absStart) + masked.slice(closeP + 1);
+            cursor = closeP + 1;
+            continue;
+          }
+        }
+        cursor = absStart + lm[0].length;
+      }
+      for (const rm of masked.matchAll(/\{([^{}\s:;,"'()]+)\}/g)) {
+        const clean = rm[1].trim().replace(/\.\$root$/i, "");
+        if (clean) out.push({ target: clean, modeKey: inheritedMode });
+      }
+      return out;
+    }
+    return [];
+  }
+  if (Array.isArray(val)) return val.flatMap((item) => collectRefsWithModeHints(item, byPath, inheritedMode));
   if (val && typeof val === "object") {
     const refT = val.$ref ? pointerTarget(val.$ref, byPath) : null;
     const nested = Object.entries(val)
       .filter(([k]) => k !== "$ref")
-      .flatMap(([, item]) => collectRefsInValue(item, byPath));
-    return refT ? [refT, ...nested] : nested;
+      .flatMap(([, item]) => collectRefsWithModeHints(item, byPath, inheritedMode));
+    return refT ? [{ target: refT, modeKey: inheritedMode }, ...nested] : nested;
   }
   return [];
+}
+
+function collectRefsInValue(val, byPath) {
+  return collectRefsWithModeHints(val, byPath, null).map((e) => e.target);
 }
 
 export function validateDtcgTokens(source) {
@@ -335,29 +650,35 @@ export function validateDtcgTokens(source) {
   const refsByPath = new Map();
   const modeNames = new Set();
   const extModeRefsByPath = new Map();
+  let hasLightModeTokens = false;
+  let hasDarkModeTokens = false;
   for (const t of tokens) {
-    const valRefs = collectRefsInValue(t.value, byPath);
+    if (/(?:^|\.)light(?:\.|$)/i.test(t.path)) hasLightModeTokens = true;
+    if (/(?:^|\.)dark(?:\.|$)/i.test(t.path)) hasDarkModeTokens = true;
+    const valRefs = collectRefsWithModeHints(t.value, byPath, null);
     const refT = t.ref ? pointerTarget(t.ref, byPath) : null;
-    const baseRefs = refT ? [...valRefs, refT] : [...valRefs];
+    const baseRefs = refT ? [...valRefs, { target: refT, modeKey: null }] : [...valRefs];
     baseRefsByPath.set(t.path, baseRefs);
     const extMode = getTokenExtModes(t);
     const extModeEntries = [];
     if (extMode) {
       for (const [mk, mv] of Object.entries(extMode)) {
         const mkLow = mk.toLowerCase();
+        if (mkLow === "light") hasLightModeTokens = true;
+        if (mkLow === "dark") hasDarkModeTokens = true;
         modeNames.add(mkLow);
         const modeHint = mkLow === "light" || mkLow === "dark" ? mkLow : null;
-        for (const rTarget of collectRefsInValue(mv, byPath)) {
-          extModeEntries.push({ target: rTarget, modeKey: modeHint });
+        for (const rEntry of collectRefsWithModeHints(mv, byPath, modeHint)) {
+          extModeEntries.push({ target: rEntry.target, modeKey: rEntry.modeKey || modeHint });
         }
       }
     }
     extModeRefsByPath.set(t.path, extModeEntries);
-    refsByPath.set(t.path, [...baseRefs, ...extModeEntries.map((e) => e.target)]);
+    refsByPath.set(t.path, [...baseRefs.map((e) => e.target), ...extModeEntries.map((e) => e.target)]);
   }
 
   const typeByPath = new Map();
-  const issues = [];
+  const issues = [...(Array.isArray(tokens[DTCG_EXTENDS_ISSUES]) ? tokens[DTCG_EXTENDS_ISSUES] : [])];
   const circularSeen = new Set();
 
   const actualModePrefixes = new Set(["light", "dark"]);
@@ -365,52 +686,61 @@ export function validateDtcgTokens(source) {
     const mm = /(?:^|\.)(light|dark)(?:\.|$)/i.exec(k);
     if (mm) actualModePrefixes.add(mm[1]);
   }
-  const resolveRefTargets = (target, callerPath = "", explicitMode = null) => {
+  const collectScopedModeHits = (target, modePrefix) => {
+    const hits = [];
+    const pref = `${modePrefix}.${target}`;
+    if (byPath.has(pref)) hits.push(pref);
+    for (let dotIdx = target.indexOf("."); dotIdx !== -1; dotIdx = target.indexOf(".", dotIdx + 1)) {
+      const mid = `${target.slice(0, dotIdx)}.${modePrefix}.${target.slice(dotIdx + 1)}`;
+      if (byPath.has(mid)) hits.push(mid);
+    }
+    const suf = `${target}.${modePrefix}`;
+    if (byPath.has(suf)) hits.push(suf);
+    return hits;
+  };
+  const collectMatchingModes = (target, wantLower) => {
+    const seen = new Set();
+    const ordered = [...actualModePrefixes].filter((m) => m.toLowerCase() === wantLower);
+    const out = [];
+    for (const mp of ordered) {
+      for (const h of collectScopedModeHits(target, mp)) {
+        if (!seen.has(h)) {
+          seen.add(h);
+          out.push(h);
+        }
+      }
+    }
+    return out;
+  };
+  const resolveRefTargets = (target, callerPath = "", explicitMode = null, requireFullModeParity = false) => {
     if (!target) return [];
     if (/(?:^|\.)(?:light|dark)\./i.test(target)) {
       return byPath.has(target) ? [target] : [];
     }
     const callerModeM = /(?:^|\.)(light|dark)(?:\.|$)/i.exec(String(callerPath || ""));
     const callerMode = explicitMode || (callerModeM ? callerModeM[1] : null);
-    const collectScoped = (modePrefix) => {
-      const hits = [];
-      const pref = `${modePrefix}.${target}`;
-      if (byPath.has(pref)) hits.push(pref);
-      for (let dotIdx = target.indexOf("."); dotIdx !== -1; dotIdx = target.indexOf(".", dotIdx + 1)) {
-        const mid = `${target.slice(0, dotIdx)}.${modePrefix}.${target.slice(dotIdx + 1)}`;
-        if (byPath.has(mid)) hits.push(mid);
-      }
-      const suf = `${target}.${modePrefix}`;
-      if (byPath.has(suf)) hits.push(suf);
-      return hits;
-    };
-    const collectMatchingModes = (wantLower) => {
-      const seen = new Set();
-      const ordered = [...actualModePrefixes].filter((m) => m.toLowerCase() === wantLower);
-      const out = [];
-      for (const mp of ordered) {
-        for (const h of collectScoped(mp)) {
-          if (!seen.has(h)) {
-            seen.add(h);
-            out.push(h);
-          }
-        }
-      }
-      return out;
-    };
     if (callerMode) {
-      const exactScoped = collectScoped(callerMode);
-      const fallbackScoped = collectMatchingModes(callerMode.toLowerCase());
+      const exactScoped = collectScopedModeHits(target, callerMode);
+      const fallbackScoped = collectMatchingModes(target, callerMode.toLowerCase());
       const scoped = [...new Set([...exactScoped, ...fallbackScoped])];
       if (scoped.length > 0) return scoped;
       return byPath.has(target) ? [target] : [];
     }
     if (byPath.has(target)) return [target];
-    return [...new Set([...collectMatchingModes("light"), ...collectMatchingModes("dark")])];
+    const lightHits = collectMatchingModes(target, "light");
+    const darkHits = collectMatchingModes(target, "dark");
+    if (
+      requireFullModeParity &&
+      ((hasLightModeTokens && lightHits.length === 0) || (hasDarkModeTokens && darkHits.length === 0))
+    ) {
+      return [];
+    }
+    return [...new Set([...lightHits, ...darkHits])];
   };
 
   function resolveType(tok, stack = []) {
     if (typeByPath.has(tok.path)) return typeByPath.get(tok.path);
+    if (stack.includes(tok.path)) return tok.type ?? null;
     const valRefTarget =
       tok.value && typeof tok.value === "object" && typeof tok.value.$ref === "string"
         ? pointerTarget(tok.value.$ref, byPath)
@@ -418,11 +748,21 @@ export function validateDtcgTokens(source) {
     const target = aliasTarget(tok.value) ?? valRefTarget ?? (tok.ref ? pointerTarget(tok.ref, byPath) : null);
     const targets = target ? resolveRefTargets(target, tok.path) : [];
     const nextTarget = targets.find((rt) => !stack.includes(rt));
-    if (!target || !nextTarget || stack.includes(tok.path)) {
-      typeByPath.set(tok.path, tok.type ?? null);
-      return tok.type ?? null;
+    let resolved = null;
+    if (nextTarget) {
+      resolved = resolveType(byPath.get(nextTarget), [...stack, tok.path]);
+    } else if (tok.type == null && tok.value === null && !tok.ref) {
+      for (const entry of extModeRefsByPath.get(tok.path) ?? []) {
+        const modeTargets = resolveRefTargets(entry.target, tok.path, entry.modeKey);
+        const mt = modeTargets.find((rt) => rt !== tok.path && !stack.includes(rt));
+        if (!mt) continue;
+        const candType = resolveType(byPath.get(mt), [...stack, tok.path]);
+        if (candType) {
+          resolved = candType;
+          break;
+        }
+      }
     }
-    const resolved = resolveType(byPath.get(nextTarget), [...stack, tok.path]);
     const finalType = tok.type ?? resolved ?? null;
     typeByPath.set(tok.path, finalType);
     return finalType;
@@ -432,17 +772,17 @@ export function validateDtcgTokens(source) {
 
   const unresolvedSeen = new Set();
   for (const t of tokens) {
-    for (const target of baseRefsByPath.get(t.path) ?? []) {
-      if (resolveRefTargets(target, t.path).length === 0) {
-        const uk = `${t.path}\0${target}`;
+    for (const entry of baseRefsByPath.get(t.path) ?? []) {
+      if (resolveRefTargets(entry.target, t.path, entry.modeKey, true).length === 0) {
+        const uk = `${t.path}\0${entry.target}`;
         if (!unresolvedSeen.has(uk)) {
           unresolvedSeen.add(uk);
-          issues.push({ type: "unresolved_reference", path: t.path, target });
+          issues.push({ type: "unresolved_reference", path: t.path, target: entry.target });
         }
       }
     }
     for (const entry of extModeRefsByPath.get(t.path) ?? []) {
-      if (resolveRefTargets(entry.target, t.path, entry.modeKey).length === 0) {
+      if (resolveRefTargets(entry.target, t.path, entry.modeKey, false).length === 0) {
         const uk = `${t.path}\0${entry.target}`;
         if (!unresolvedSeen.has(uk)) {
           unresolvedSeen.add(uk);
@@ -468,8 +808,9 @@ export function validateDtcgTokens(source) {
       const fromExtMode = Boolean(extModeOverridePaths && extModeOverridePaths.has(path));
       const callerOwnMode = /(?:^|\.)(light|dark)(?:\.|$)/i.test(path);
       const refMode = fromExtMode ? activeMode : callerOwnMode ? null : activeMode;
-      for (const target of graphRefs.get(path) ?? []) {
-        for (const rt of resolveRefTargets(target, path, refMode)) {
+      for (const entry of graphRefs.get(path) ?? []) {
+        const effMode = entry.modeKey || refMode;
+        for (const rt of resolveRefTargets(entry.target, path, effMode)) {
           detectCycles(rt, [...stack, path]);
         }
       }
@@ -488,7 +829,8 @@ export function validateDtcgTokens(source) {
           const matchedKey = Object.keys(extMode).find((mk) => mk.toLowerCase() === modeName);
           if (matchedKey !== undefined) {
             extModeOverridePaths.add(t.path);
-            return [t.path, collectRefsInValue(extMode[matchedKey], byPath)];
+            const mh = modeName === "light" || modeName === "dark" ? modeName : null;
+            return [t.path, collectRefsWithModeHints(extMode[matchedKey], byPath, mh)];
           }
         }
         return [t.path, baseRefsByPath.get(t.path) ?? []];
@@ -505,7 +847,7 @@ export function validateDtcgTokens(source) {
 
   const aliases = tokens.filter((t) => (refsByPath.get(t.path)?.length ?? 0) > 0);
   const componentScoped = tokens.filter((t) => /(component|button|input|card|dialog|modal|badge|toast|table|nav|tabs)/i.test(t.path));
-  const MODERN_SPACE_RE = /^(oklch|oklab|display-p3|a98-rgb|prophoto-rgb|rec2020|lab|lch|xyz-d50|xyz-d65)$/i;
+  const MODERN_SPACE_RE = /^(oklch|oklab|display-p3|display-p3-linear|a98-rgb|prophoto-rgb|rec2020|lab|lch|xyz-d50|xyz-d65)$/i;
   const modernColors = tokens.filter(
     (t) =>
       (typeof t.value === "string" && /(oklch|display-p3|color\(p3|lab\(|oklab\()/i.test(t.value)) ||
@@ -611,32 +953,36 @@ function linearSrgbChannelToSrgb255(c) {
   return Math.round(clamp01(enc) * 255);
 }
 
-function oklabToSrgb(L, a, b) {
+function oklabToLinSrgb(L, a, b) {
   const l_ = L + 0.3963377774 * a + 0.2158037573 * b;
   const m_ = L - 0.1055613458 * a - 0.0638541728 * b;
   const s_ = L - 0.0894841775 * a - 1.291485548 * b;
   const l = l_ * l_ * l_;
   const m = m_ * m_ * m_;
   const s = s_ * s_ * s_;
-  const lr = +4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s;
-  const lg = -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s;
-  const lb = -0.0041960863 * l - 0.7034186147 * m + 1.707614701 * s;
+  return [
+    +4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s,
+    -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s,
+    -0.0041960863 * l - 0.7034186147 * m + 1.707614701 * s,
+  ];
+}
+
+function oklabToSrgb(L, a, b) {
+  const [lr, lg, lb] = oklabToLinSrgb(L, a, b);
   return [linearSrgbChannelToSrgb255(lr), linearSrgbChannelToSrgb255(lg), linearSrgbChannelToSrgb255(lb)];
 }
 
 function oklchToSrgb(L, C, hueDeg) {
+  const cPos = Math.max(0, Number(C));
   const hRad = (Number(hueDeg) * Math.PI) / 180;
-  return oklabToSrgb(L, C * Math.cos(hRad), C * Math.sin(hRad));
+  return oklabToSrgb(L, cPos * Math.cos(hRad), cPos * Math.sin(hRad));
 }
 
-function hslToSrgb(hDeg, sPct, lPct) {
+function hslToSrgbFloat(hDeg, sPct, lPct) {
   const h = (((Number(hDeg) % 360) + 360) % 360) / 360;
   const s = clamp01(Number(sPct));
   const l = clamp01(Number(lPct));
-  if (s === 0) {
-    const v = Math.round(l * 255);
-    return [v, v, v];
-  }
+  if (s === 0) return [l, l, l];
   const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
   const p = 2 * l - q;
   const hue2rgb = (t) => {
@@ -648,35 +994,69 @@ function hslToSrgb(hDeg, sPct, lPct) {
     if (tt < 2 / 3) return p + (q - p) * (2 / 3 - tt) * 6;
     return p;
   };
-  return [Math.round(hue2rgb(h + 1 / 3) * 255), Math.round(hue2rgb(h) * 255), Math.round(hue2rgb(h - 1 / 3) * 255)];
+  return [hue2rgb(h + 1 / 3), hue2rgb(h), hue2rgb(h - 1 / 3)];
+}
+
+function hslToSrgb(hDeg, sPct, lPct) {
+  return hslToSrgbFloat(hDeg, sPct, lPct).map((c) => Math.round(clamp01(c) * 255));
 }
 
 function parseCssAngleDeg(tok) {
-  const m = /^([-+]?(?:\d+(?:\.\d+)?|\.\d+)(?:[eE][+-]?\d+)?)(deg|rad|grad|turn)?$/i.exec(String(tok || "").trim());
-  if (!m) return null;
-  const val = Number.parseFloat(m[1]);
-  const unit = (m[2] || "deg").toLowerCase();
-  if (unit === "rad") return (val * 180) / Math.PI;
-  if (unit === "grad") return val * 0.9;
-  if (unit === "turn") return val * 360;
-  return val;
+  const s = String(tok || "").trim();
+  const nm = /^([-+]?(?:\d+(?:\.\d+)?|\.\d+)(?:[eE][+-]?\d+)?)(deg|rad|grad|turn)?$/i.exec(s);
+  if (nm) {
+    const val = Number.parseFloat(nm[1]);
+    const unit = (nm[2] || "deg").toLowerCase();
+    if (unit === "rad") return (val * 180) / Math.PI;
+    if (unit === "grad") return val * 0.9;
+    if (unit === "turn") return val * 360;
+    return val;
+  }
+  if (/^(?:calc|min|max|clamp)\s*\(/i.test(s)) {
+    return evalCssNumericExpr(s, null, "angle");
+  }
+  return null;
 }
 
 function parseCssAlpha(tok) {
   const s = String(tok || "").trim();
-  if (/^none$/i.test(s)) return 0;
+  if (/^none$/i.test(s)) return NaN;
   const am = /^[+-]?(?:\d+(?:\.\d+)?|\.\d+)(?:[eE][+-]?\d+)?(%?)$/.exec(s);
-  if (!am) return null;
-  const isPct = am[1] === "%";
-  const n = Number.parseFloat(isPct ? s.slice(0, -1) : s);
-  if (!Number.isFinite(n)) return null;
-  return isPct ? n / 100 : n;
+  if (am) {
+    const isPct = am[1] === "%";
+    const n = Number.parseFloat(isPct ? s.slice(0, -1) : s);
+    return Number.isFinite(n) ? (isPct ? n / 100 : n) : null;
+  }
+  if (/^(?:calc|min|max|clamp)\s*\(/i.test(s)) {
+    return evalCssNumericExpr(s, 1, "scalar");
+  }
+  return null;
+}
+
+function linSrgbChannelToSrgbFloat(c) {
+  const s = c < 0 ? -1 : 1;
+  const a = Math.abs(c);
+  return a > 0.0031308 ? s * (1.055 * Math.pow(a, 1 / 2.4) - 0.055) : 12.92 * c;
+}
+
+function linSrgbToXyzD65(lr, lg, lb) {
+  return [
+    0.4123907992659595 * lr + 0.357584339383878 * lg + 0.1804807884018343 * lb,
+    0.21263900587151036 * lr + 0.715168678767756 * lg + 0.07219231536073371 * lb,
+    0.01933081871559185 * lr + 0.11919477979462599 * lg + 0.9505321522496607 * lb,
+  ];
+}
+
+function xyzD65ToLinSrgb(X, Y, Z) {
+  return [
+    +3.2409699419045213 * X - 1.5373831775700935 * Y - 0.4986107602930033 * Z,
+    -0.9692436362808798 * X + 1.8759675015077206 * Y + 0.0415550574071756 * Z,
+    +0.0556300796969936 * X - 0.2039769588889765 * Y + 1.0569715142428786 * Z,
+  ];
 }
 
 function xyzD65ToSrgb(X, Y, Z) {
-  const lr = +3.2409699419045213 * X - 1.5373831775700935 * Y - 0.4986107602930033 * Z;
-  const lg = -0.9692436362808798 * X + 1.8759675015077206 * Y + 0.0415550574071756 * Z;
-  const lb = +0.0556300796969936 * X - 0.2039769588889765 * Y + 1.0569715142428786 * Z;
+  const [lr, lg, lb] = xyzD65ToLinSrgb(X, Y, Z);
   return [linearSrgbChannelToSrgb255(lr), linearSrgbChannelToSrgb255(lg), linearSrgbChannelToSrgb255(lb)];
 }
 
@@ -694,7 +1074,7 @@ function linSrgbChannelInv(c) {
   return a <= 0.04045 ? c / 12.92 : sgn * Math.pow((a + 0.055) / 1.055, 2.4);
 }
 
-export function labToSrgb(L, a, b) {
+function labToXyzD65(L, a, b) {
   const kappa = 24389 / 27;
   const epsilon = 216 / 24389;
   const fy = (L + 16) / 116;
@@ -703,45 +1083,52 @@ export function labToSrgb(L, a, b) {
   const xr = Math.pow(fx, 3) > epsilon ? Math.pow(fx, 3) : (116 * fx - 16) / kappa;
   const yr = L > kappa * epsilon ? Math.pow((L + 16) / 116, 3) : L / kappa;
   const zr = Math.pow(fz, 3) > epsilon ? Math.pow(fz, 3) : (116 * fz - 16) / kappa;
-  const [x65, y65, z65] = xyzD50ToD65(xr * (0.3457 / 0.3585), yr * 1.0, zr * ((1 - 0.3457 - 0.3585) / 0.3585));
-  return xyzD65ToSrgb(x65, y65, z65);
+  return xyzD50ToD65(xr * (0.3457 / 0.3585), yr * 1.0, zr * ((1 - 0.3457 - 0.3585) / 0.3585));
 }
 
-export function hwbToSrgb(hDeg, wPct, bPct) {
+export function labToSrgb(L, a, b) {
+  return xyzD65ToSrgb(...labToXyzD65(L, a, b));
+}
+
+function hwbToSrgbFloat(hDeg, wPct, bPct) {
   const w = Math.max(0, wPct);
   const b = Math.max(0, bPct);
   if (w + b >= 1) {
-    const v = Math.round(clamp01(w / (w + b)) * 255);
+    const v = clamp01(w / (w + b));
     return [v, v, v];
   }
-  const base = hslToSrgb(hDeg, 1, 0.5);
-  return base.map((c) => Math.round(clamp01((c / 255) * (1 - w - b) + w) * 255));
+  const base = hslToSrgbFloat(hDeg, 1, 0.5);
+  return base.map((c) => clamp01(c * (1 - w - b) + w));
 }
 
-export function colorSpaceComponentsToSrgb(csName, c0, c1, c2) {
+export function hwbToSrgb(hDeg, wPct, bPct) {
+  return hwbToSrgbFloat(hDeg, wPct, bPct).map((c) => Math.round(clamp01(c) * 255));
+}
+
+function colorSpaceComponentsToXyzD65(csName, c0, c1, c2) {
   const cs = String(csName || "srgb").toLowerCase();
   if (cs === "srgb") {
-    return [Math.round(clamp01(c0) * 255), Math.round(clamp01(c1) * 255), Math.round(clamp01(c2) * 255)];
+    return linSrgbToXyzD65(linSrgbChannelInv(c0), linSrgbChannelInv(c1), linSrgbChannelInv(c2));
   }
   if (cs === "srgb-linear") {
-    return [linearSrgbChannelToSrgb255(c0), linearSrgbChannelToSrgb255(c1), linearSrgbChannelToSrgb255(c2)];
+    return linSrgbToXyzD65(c0, c1, c2);
   }
-  if (cs === "display-p3") {
-    const [r, g, b] = [linSrgbChannelInv(c0), linSrgbChannelInv(c1), linSrgbChannelInv(c2)];
-    return xyzD65ToSrgb(
+  if (cs === "display-p3" || cs === "display-p3-linear") {
+    const [r, g, b] = cs === "display-p3-linear" ? [c0, c1, c2] : [linSrgbChannelInv(c0), linSrgbChannelInv(c1), linSrgbChannelInv(c2)];
+    return [
       0.4865709486482162 * r + 0.2656676931690931 * g + 0.1982172852343625 * b,
       0.2289745640697488 * r + 0.6917385218365064 * g + 0.0792869140937450 * b,
-      0.0451133818589026 * g + 1.0439443689009760 * b
-    );
+      0.0451133818589026 * g + 1.0439443689009760 * b,
+    ];
   }
   if (cs === "a98-rgb") {
     const inv = (v) => (v < 0 ? -1 : 1) * Math.pow(Math.abs(v), 563 / 256);
     const [r, g, b] = [inv(c0), inv(c1), inv(c2)];
-    return xyzD65ToSrgb(
+    return [
       0.5766690429101305 * r + 0.1855582379065463 * g + 0.1882286462349947 * b,
       0.2973449752505360 * r + 0.6273635662554661 * g + 0.0752914584939979 * b,
-      0.0270313613864123 * r + 0.0706888525358272 * g + 0.9913375368376388 * b
-    );
+      0.0270313613864123 * r + 0.0706888525358272 * g + 0.9913375368376388 * b,
+    ];
   }
   if (cs === "prophoto-rgb") {
     const inv = (v) => {
@@ -750,12 +1137,11 @@ export function colorSpaceComponentsToSrgb(csName, c0, c1, c2) {
       return a <= 16 / 512 ? v / 16 : s * Math.pow(a, 1.8);
     };
     const [r, g, b] = [inv(c0), inv(c1), inv(c2)];
-    const [x65, y65, z65] = xyzD50ToD65(
+    return xyzD50ToD65(
       0.7977604896723027 * r + 0.1351858371757403 * g + 0.0313493495815248 * b,
       0.2880711282292934 * r + 0.7118432178101014 * g + 0.0000856539606052 * b,
       0.8251046025104601 * b
     );
-    return xyzD65ToSrgb(x65, y65, z65);
   }
   if (cs === "rec2020") {
     const alpha = 1.09929682680944;
@@ -766,111 +1152,737 @@ export function colorSpaceComponentsToSrgb(csName, c0, c1, c2) {
       return a < beta * 4.5 ? v / 4.5 : s * Math.pow((a + alpha - 1) / alpha, 1 / 0.45);
     };
     const [r, g, b] = [inv(c0), inv(c1), inv(c2)];
-    return xyzD65ToSrgb(
+    return [
       0.6369580483012914 * r + 0.1446169035862083 * g + 0.1688809751641721 * b,
       0.2627002120112671 * r + 0.6779980715188708 * g + 0.0593017164698619 * b,
-      0.0280726930490874 * g + 1.0609850577107910 * b
-    );
+      0.0280726930490874 * g + 1.0609850577107910 * b,
+    ];
   }
   if (cs === "xyz" || cs === "xyz-d65") {
-    return xyzD65ToSrgb(c0, c1, c2);
+    return [c0, c1, c2];
   }
   if (cs === "xyz-d50") {
-    const [x65, y65, z65] = xyzD50ToD65(c0, c1, c2);
-    return xyzD65ToSrgb(x65, y65, z65);
+    return xyzD50ToD65(c0, c1, c2);
   }
   return null;
 }
 
-export function parseCssColorToRgba(trimmed) {
-  if (/^transparent$/i.test(trimmed)) return [0, 0, 0, 0];
-  const m = /^(oklch|oklab|rgba?|hsla?|hwb|lab|lch|color)\s*\(([^()]+)\)$/i.exec(trimmed);
-  if (!m) return null;
-  const fn = m[1].toLowerCase();
-  const body = m[2].trim();
-  const slashIdx = body.indexOf("/");
-  let mainStr = body;
-  let alpha = 1;
-  if (slashIdx !== -1) {
-    const aVal = parseCssAlpha(body.slice(slashIdx + 1));
-    if (aVal === null) return null;
-    alpha = clamp01(aVal);
-    mainStr = body.slice(0, slashIdx).trim();
+export function colorSpaceComponentsToLinSrgb(csName, c0, c1, c2) {
+  const cs = String(csName || "srgb").toLowerCase();
+  if (cs === "srgb-linear") return [c0, c1, c2];
+  const xyz = colorSpaceComponentsToXyzD65(cs, c0, c1, c2);
+  return xyz ? xyzD65ToLinSrgb(xyz[0], xyz[1], xyz[2]) : null;
+}
+
+export function colorSpaceInSrgbGamutToRgba(csName, c0, c1, c2, alpha = 1) {
+  const lin = colorSpaceComponentsToLinSrgb(csName, c0, c1, c2);
+  if (!lin) return null;
+  const [lr, lg, lb] = lin;
+  if (lr < -0.005 || lr > 1.005 || lg < -0.005 || lg > 1.005 || lb < -0.005 || lb > 1.005) {
+    return null;
   }
-  const parts = mainStr.includes(",") ? mainStr.split(",").map((p) => p.trim()) : mainStr.split(/\s+/);
+  return [linearSrgbChannelToSrgb255(lr), linearSrgbChannelToSrgb255(lg), linearSrgbChannelToSrgb255(lb), alpha];
+}
+
+export function wideColorInSrgbGamutToRgba(csName, c0, c1, c2, alpha = 1) {
+  const cs = String(csName || "").toLowerCase();
+  if (cs === "lab" || cs === "lch" || cs === "hwb") {
+    let xyz;
+    if (cs === "lab") {
+      xyz = labToXyzD65(c0, c1, c2);
+    } else if (cs === "lch") {
+      const cPos = Math.max(0, c1);
+      const hr = (c2 * Math.PI) / 180;
+      xyz = labToXyzD65(c0, cPos * Math.cos(hr), cPos * Math.sin(hr));
+    } else {
+      const w = c1 / 100;
+      const b = c2 / 100;
+      let sr, sg, sb;
+      if (w + b >= 1) {
+        const v = w / (w + b);
+        sr = sg = sb = v;
+      } else {
+        const base = hslToSrgbFloat(c0, 1, 0.5);
+        sr = base[0] * (1 - w - b) + w;
+        sg = base[1] * (1 - w - b) + w;
+        sb = base[2] * (1 - w - b) + w;
+      }
+      xyz = linSrgbToXyzD65(linSrgbChannelInv(sr), linSrgbChannelInv(sg), linSrgbChannelInv(sb));
+    }
+    const [lr, lg, lb] = xyzD65ToLinSrgb(xyz[0], xyz[1], xyz[2]);
+    if (lr < -0.005 || lr > 1.005 || lg < -0.005 || lg > 1.005 || lb < -0.005 || lb > 1.005) {
+      return null;
+    }
+    return [linearSrgbChannelToSrgb255(lr), linearSrgbChannelToSrgb255(lg), linearSrgbChannelToSrgb255(lb), alpha];
+  }
+  return colorSpaceInSrgbGamutToRgba(cs, c0, c1, c2, alpha);
+}
+
+export function colorSpaceComponentsToSrgb(csName, c0, c1, c2) {
+  const cs = String(csName || "srgb").toLowerCase();
+  if (cs === "srgb") {
+    return [Math.round(clamp01(c0) * 255), Math.round(clamp01(c1) * 255), Math.round(clamp01(c2) * 255)];
+  }
+  const lin = colorSpaceComponentsToLinSrgb(cs, c0, c1, c2);
+  return lin ? [linearSrgbChannelToSrgb255(lin[0]), linearSrgbChannelToSrgb255(lin[1]), linearSrgbChannelToSrgb255(lin[2])] : null;
+}
+
+const CSS_NAMED_COLORS = Object.freeze({
+  aliceblue: "f0f8ff", antiquewhite: "faebd7", aqua: "00ffff", aquamarine: "7fffd4", azure: "f0ffff",
+  beige: "f5f5dc", bisque: "ffe4c4", black: "000000", blanchedalmond: "ffebcd", blue: "0000ff",
+  blueviolet: "8a2be2", brown: "a52a2a", burlywood: "deb887", cadetblue: "5f9ea0", chartreuse: "7fff00",
+  chocolate: "d2691e", coral: "ff7f50", cornflowerblue: "6495ed", cornsilk: "fff8dc", crimson: "dc143c",
+  cyan: "00ffff", darkblue: "00008b", darkcyan: "008b8b", darkgoldenrod: "b8860b", darkgray: "a9a9a9",
+  darkgreen: "006400", darkgrey: "a9a9a9", darkkhaki: "bdb76b", darkmagenta: "8b008b", darkolivegreen: "556b2f",
+  darkorange: "ff8c00", darkorchid: "9932cc", darkred: "8b0000", darksalmon: "e9967a", darkseagreen: "8fbc8f",
+  darkslateblue: "483d8b", darkslategray: "2f4f4f", darkslategrey: "2f4f4f", darkturquoise: "00ced1", darkviolet: "9400d3",
+  deeppink: "ff1493", deepskyblue: "00bfff", dimgray: "696969", dimgrey: "696969", dodgerblue: "1e90ff",
+  firebrick: "b22222", floralwhite: "fffaf0", forestgreen: "228b22", fuchsia: "ff00ff", gainsboro: "dcdcdc",
+  ghostwhite: "f8f8ff", gold: "ffd700", goldenrod: "daa520", gray: "808080", green: "008000",
+  greenyellow: "adff2f", grey: "808080", honeydew: "f0fff0", hotpink: "ff69b4", indianred: "cd5c5c",
+  indigo: "4b0082", ivory: "fffff0", khaki: "f0e68c", lavender: "e6e6fa", lavenderblush: "fff0f5",
+  lawngreen: "7cfc00", lemonchiffon: "fffacd", lightblue: "add8e6", lightcoral: "f08080", lightcyan: "e0ffff",
+  lightgoldenrodyellow: "fafad2", lightgray: "d3d3d3", lightgreen: "90ee90", lightgrey: "d3d3d3", lightpink: "ffb6c1",
+  lightsalmon: "ffa07a", lightseagreen: "20b2aa", lightskyblue: "87cefa", lightslategray: "778899", lightslategrey: "778899",
+  lightsteelblue: "b0c4de", lightyellow: "ffffe0", lime: "00ff00", limegreen: "32cd32", linen: "faf0e6",
+  magenta: "ff00ff", maroon: "800000", mediumaquamarine: "66cdaa", mediumblue: "0000cd", mediumorchid: "ba55d3",
+  mediumpurple: "9370db", mediumseagreen: "3cb371", mediumslateblue: "7b68ee", mediumspringgreen: "00fa9a", mediumturquoise: "48d1cc",
+  mediumvioletred: "c71585", midnightblue: "191970", mintcream: "f5fffa", mistyrose: "ffe4e1", moccasin: "ffe4b5",
+  navajowhite: "ffdead", navy: "000080", oldlace: "fdf5e6", olive: "808000", olivedrab: "6b8e23",
+  orange: "ffa500", orangered: "ff4500", orchid: "da70d6", palegoldenrod: "eee8aa", palegreen: "98fb98",
+  paleturquoise: "afeeee", palevioletred: "db7093", papayawhip: "ffefd5", peachpuff: "ffdab9", peru: "cd853f",
+  pink: "ffc0cb", plum: "dda0dd", powderblue: "b0e0e6", purple: "800080", rebeccapurple: "663399",
+  red: "ff0000", rosybrown: "bc8f8f", royalblue: "4169e1", saddlebrown: "8b4513", salmon: "fa8072",
+  sandybrown: "f4a460", seagreen: "2e8b57", seashell: "fff5ee", sienna: "a0522d", silver: "c0c0c0",
+  skyblue: "87ceeb", slateblue: "6a5acd", slategray: "708090", slategrey: "708090", snow: "fffafa",
+  springgreen: "00ff7f", steelblue: "4682b4", tan: "d2b48c", teal: "008080", thistle: "d8bfd8",
+  tomato: "ff6347", turquoise: "40e0d0", violet: "ee82ee", wheat: "f5deb3", white: "ffffff",
+  whitesmoke: "f5f5f5", yellow: "ffff00", yellowgreen: "9acd32",
+});
+
+function parseOuterCssCall(str) {
+  const s = String(str || "").trim();
+  const m = /^([a-z-]+)\s*\(/i.exec(s);
+  if (!m) return null;
+  const openIdx = s.indexOf("(");
+  let depth = 0;
+  for (let i = openIdx; i < s.length; i++) {
+    if (s[i] === "(") depth++;
+    else if (s[i] === ")") {
+      depth--;
+      if (depth === 0) {
+        if (i !== s.length - 1) return null;
+        return { fn: m[1].toLowerCase(), body: s.slice(openIdx + 1, i).trim() };
+      }
+    }
+  }
+  return null;
+}
+
+export function splitCssTopLevel(str, sep = ",") {
+  const s = String(str || "");
+  const parts = [];
+  let depth = 0;
+  let start = 0;
+  for (let i = 0; i < s.length; i++) {
+    if (s[i] === "(") depth++;
+    else if (s[i] === ")") depth = Math.max(0, depth - 1);
+    else if (depth === 0 && s[i] === sep) {
+      parts.push(s.slice(start, i).trim());
+      start = i + 1;
+    }
+  }
+  parts.push(s.slice(start).trim());
+  return parts;
+}
+
+export function splitCssTopLevelSpaces(str) {
+  const s = String(str || "").trim();
+  if (!s) return [];
+  const parts = [];
+  let depth = 0;
+  let start = -1;
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    if (ch === "(") {
+      if (start === -1) start = i;
+      depth++;
+    } else if (ch === ")") {
+      depth = Math.max(0, depth - 1);
+    } else if (depth === 0 && /\s/.test(ch)) {
+      if (start !== -1) {
+        parts.push(s.slice(start, i));
+        start = -1;
+      }
+    } else if (start === -1) {
+      start = i;
+    }
+  }
+  if (start !== -1) parts.push(s.slice(start));
+  return parts;
+}
+
+export function evalCssNumericExpr(rawExpr, pctScale = 1, kind = "scalar") {
+  const s = String(rawExpr || "").trim();
+  if (!s) return null;
+  const angleMul = { deg: 1, rad: 180 / Math.PI, grad: 0.9, turn: 360 };
+  if (kind === "scalar" && !/[()+\-*/]|^(?:calc|min|max|clamp)\b/i.test(s)) {
+    const pm = /^([-+]?(?:\d+(?:\.\d+)?|\.\d+)(?:[eE][+-]?\d+)?)(%?)$/.exec(s);
+    if (!pm) return null;
+    const n = Number.parseFloat(pm[1]);
+    if (!Number.isFinite(n)) return null;
+    if (pm[2] === "%") return pctScale === null ? null : (n / 100) * pctScale;
+    return n;
+  }
+  const tokens = [];
+  let i = 0;
+  while (i < s.length) {
+    if (/\s/.test(s[i])) {
+      i++;
+      continue;
+    }
+    const ch = s[i];
+    if (ch === "(" || ch === ")" || ch === "," || ch === "+" || ch === "-" || ch === "*" || ch === "/") {
+      tokens.push({ type: "sym", val: ch });
+      i++;
+      continue;
+    }
+    const nm = /^(?:(?:\d+(?:\.\d+)?|\.\d+)(?:[eE][+-]?\d+)?)(?:%|deg|rad|grad|turn)?/i.exec(s.slice(i));
+    if (nm && nm[0]) {
+      const rawTok = nm[0];
+      const lower = rawTok.toLowerCase();
+      let v;
+      if (lower.endsWith("%")) {
+        if (pctScale === null) return null;
+        v = (Number.parseFloat(lower.slice(0, -1)) / 100) * pctScale;
+      } else {
+        const um = /(deg|rad|grad|turn)$/i.exec(lower);
+        if (um) {
+          if (kind !== "angle") return null;
+          v = Number.parseFloat(lower.slice(0, um.index)) * angleMul[um[1].toLowerCase()];
+        } else {
+          v = Number.parseFloat(lower);
+        }
+      }
+      if (!Number.isFinite(v)) return null;
+      tokens.push({ type: "num", val: v });
+      i += rawTok.length;
+      continue;
+    }
+    const fm = /^[a-z-]+/i.exec(s.slice(i));
+    if (fm) {
+      tokens.push({ type: "id", val: fm[0].toLowerCase() });
+      i += fm[0].length;
+      continue;
+    }
+    return null;
+  }
+  let pos = 0;
+  const peek = () => tokens[pos] || null;
+  const consume = () => tokens[pos++];
+  const parseExpr = () => {
+    let left = parseTerm();
+    if (left === null) return null;
+    while (peek()?.type === "sym" && (peek().val === "+" || peek().val === "-")) {
+      const op = consume().val;
+      const right = parseTerm();
+      if (right === null) return null;
+      left = op === "+" ? left + right : left - right;
+      if (!Number.isFinite(left)) return null;
+    }
+    return left;
+  };
+  const parseTerm = () => {
+    let left = parseFactor();
+    if (left === null) return null;
+    while (peek()?.type === "sym" && (peek().val === "*" || peek().val === "/")) {
+      const op = consume().val;
+      const right = parseFactor();
+      if (right === null) return null;
+      if (op === "/") {
+        if (right === 0) return null;
+        left /= right;
+      } else {
+        left *= right;
+      }
+      if (!Number.isFinite(left)) return null;
+    }
+    return left;
+  };
+  const parseFactor = () => {
+    const tk = peek();
+    if (!tk) return null;
+    if (tk.type === "sym" && (tk.val === "+" || tk.val === "-")) {
+      consume();
+      const sub = parseFactor();
+      return sub === null ? null : tk.val === "-" ? -sub : sub;
+    }
+    if (tk.type === "num") {
+      consume();
+      return tk.val;
+    }
+    if (tk.type === "sym" && tk.val === "(") {
+      consume();
+      const val = parseExpr();
+      if (val === null || peek()?.type !== "sym" || peek().val !== ")") return null;
+      consume();
+      return val;
+    }
+    if (tk.type === "id") {
+      const fn = consume().val;
+      if (fn === "e" && peek()?.val !== "(") return Math.E;
+      if (fn === "pi" && peek()?.val !== "(") return Math.PI;
+      if (peek()?.type !== "sym" || peek().val !== "(") return null;
+      consume();
+      const args = [];
+      while (true) {
+        const aVal = parseExpr();
+        if (aVal === null) return null;
+        args.push(aVal);
+        if (peek()?.type === "sym" && peek().val === ",") {
+          consume();
+          continue;
+        }
+        if (peek()?.type === "sym" && peek().val === ")") {
+          consume();
+          break;
+        }
+        return null;
+      }
+      if (fn === "calc" && args.length === 1) return args[0];
+      if (fn === "min" && args.length >= 1) return Math.min(...args);
+      if (fn === "max" && args.length >= 1) return Math.max(...args);
+      if (fn === "clamp" && args.length === 3) return Math.max(args[0], Math.min(args[2], args[1]));
+      return null;
+    }
+    return null;
+  };
+  const out = parseExpr();
+  return pos === tokens.length && out !== null && Number.isFinite(out) ? out : null;
+}
+
+function srgb255ToXyzD65(r255, g255, b255) {
+  const lr = linSrgbChannelInv(r255 / 255);
+  const lg = linSrgbChannelInv(g255 / 255);
+  const lb = linSrgbChannelInv(b255 / 255);
+  return [
+    0.4123907992659595 * lr + 0.357584339383878 * lg + 0.1804807884018343 * lb,
+    0.21263900587151036 * lr + 0.715168678767756 * lg + 0.07219231536073371 * lb,
+    0.01933081871559185 * lr + 0.11919477979462599 * lg + 0.9505321522496607 * lb,
+  ];
+}
+
+function xyzD65ToD50(x, y, z) {
+  return [
+    1.0479298208405488 * x + 0.022946793341019088 * y - 0.05019222954313557 * z,
+    0.029627815688159344 * x + 0.990434484573249 * y - 0.01707382502938514 * z,
+    -0.009243058152591178 * x + 0.015055144896577895 * y + 0.7518742899580008 * z,
+  ];
+}
+
+function spaceToXyzD65(cs, c0, c1, c2) {
+  const k0 = Number.isNaN(c0) ? 0 : c0;
+  const k1 = Number.isNaN(c1) ? 0 : c1;
+  const k2 = Number.isNaN(c2) ? 0 : c2;
+  if (cs === "oklab") {
+    return linSrgbToXyzD65(...oklabToLinSrgb(k0, k1, k2));
+  }
+  if (cs === "oklch") {
+    const cPos = Math.max(0, k1);
+    const hr = (k2 * Math.PI) / 180;
+    return linSrgbToXyzD65(...oklabToLinSrgb(k0, cPos * Math.cos(hr), cPos * Math.sin(hr)));
+  }
+  if (cs === "lab") {
+    return labToXyzD65(k0, k1, k2);
+  }
+  if (cs === "lch") {
+    const cPos = Math.max(0, k1);
+    const hr = (k2 * Math.PI) / 180;
+    return labToXyzD65(k0, cPos * Math.cos(hr), cPos * Math.sin(hr));
+  }
+  if (cs === "hsl") {
+    const [r, g, b] = hslToSrgbFloat(k0, k1 / 100, k2 / 100);
+    return colorSpaceComponentsToXyzD65("srgb", r, g, b);
+  }
+  if (cs === "hwb") {
+    const [r, g, b] = hwbToSrgbFloat(k0, k1 / 100, k2 / 100);
+    return colorSpaceComponentsToXyzD65("srgb", r, g, b);
+  }
+  return colorSpaceComponentsToXyzD65(cs, k0, k1, k2);
+}
+
+function xyzD65ToSpace(cs, x, y, z) {
+  const [lr, lg, lb] = xyzD65ToLinSrgb(x, y, z);
+  const [r, g, b] = [linSrgbChannelToSrgbFloat(lr), linSrgbChannelToSrgbFloat(lg), linSrgbChannelToSrgbFloat(lb)];
+  if (cs === "srgb") return [r, g, b];
+  if (cs === "srgb-linear") return [lr, lg, lb];
+  if (cs === "xyz" || cs === "xyz-d65") return [x, y, z];
+  if (cs === "xyz-d50") return xyzD65ToD50(x, y, z);
+  if (cs === "display-p3" || cs === "display-p3-linear") {
+    const enc = (c) => {
+      if (cs === "display-p3-linear") return c;
+      const s = c < 0 ? -1 : 1;
+      const a = Math.abs(c);
+      return a > 0.0031308 ? s * (1.055 * Math.pow(a, 1 / 2.4) - 0.055) : 12.92 * c;
+    };
+    return [
+      enc(2.493496911941425 * x - 0.9313836179191239 * y - 0.40271078445071684 * z),
+      enc(-0.8294889695615747 * x + 1.7626640603183463 * y + 0.023624685841943577 * z),
+      enc(0.03584583024378447 * x - 0.07617238926804182 * y + 0.9568845240076872 * z),
+    ];
+  }
+  if (cs === "a98-rgb") {
+    const enc = (c) => (c < 0 ? -1 : 1) * Math.pow(Math.abs(c), 256 / 563);
+    return [
+      enc(2.0415879038107465 * x - 0.5650069742788596 * y - 0.34473135077832956 * z),
+      enc(-0.9692436362808795 * x + 1.8759675015077202 * y + 0.04155505740717557 * z),
+      enc(0.013444280632031142 * x - 0.11836239223101838 * y + 1.0151749943912054 * z),
+    ];
+  }
+  if (cs === "prophoto-rgb") {
+    const [x50, y50, z50] = xyzD65ToD50(x, y, z);
+    const enc = (c) => {
+      const s = c < 0 ? -1 : 1;
+      const a = Math.abs(c);
+      return a >= 1 / 512 ? s * Math.pow(a, 1 / 1.8) : 16 * c;
+    };
+    return [
+      enc(1.3457989731028281 * x50 - 0.25558010007997534 * y50 - 0.05110628506753401 * z50),
+      enc(-0.5446224939028347 * x50 + 1.5082327413132781 * y50 + 0.02053603239147973 * z50),
+      enc(1.2119675456389454 * z50),
+    ];
+  }
+  if (cs === "rec2020") {
+    const alpha = 1.09929682680944;
+    const beta = 0.018053968510807;
+    const enc = (c) => {
+      const s = c < 0 ? -1 : 1;
+      const a = Math.abs(c);
+      return a > beta ? s * (alpha * Math.pow(a, 0.45) - (alpha - 1)) : 4.5 * c;
+    };
+    return [
+      enc(1.7166511879712674 * x - 0.35567078377639233 * y - 0.25336628137365974 * z),
+      enc(-0.6666843518324892 * x + 1.6164812366349395 * y + 0.01576854581391113 * z),
+      enc(0.017639857445310783 * x - 0.042770613257808524 * y + 0.9421031212354738 * z),
+    ];
+  }
+  if (cs === "oklab" || cs === "oklch") {
+    const l = Math.cbrt(0.4122214708 * lr + 0.5363325363 * lg + 0.0514459929 * lb);
+    const m = Math.cbrt(0.2119034982 * lr + 0.6806995451 * lg + 0.1073969566 * lb);
+    const s = Math.cbrt(0.0883024619 * lr + 0.2817188376 * lg + 0.6299787005 * lb);
+    const L = 0.2104542553 * l + 0.793617785 * m - 0.0040720468 * s;
+    const ca = 1.9779984951 * l - 2.428592205 * m + 0.4505937099 * s;
+    const cb = 0.0259040371 * l + 0.7827717662 * m - 0.808675766 * s;
+    if (cs === "oklab") return [L, ca, cb];
+    const C = Math.hypot(ca, cb);
+    const h = C <= 1e-6 ? NaN : ((Math.atan2(cb, ca) * 180) / Math.PI + 360) % 360;
+    return [L, C, h];
+  }
+  if (cs === "lab" || cs === "lch") {
+    const [x50, y50, z50] = xyzD65ToD50(x, y, z);
+    const kappa = 24389 / 27;
+    const eps = 216 / 24389;
+    const xr = x50 / (0.3457 / 0.3585);
+    const yr = y50;
+    const zr = z50 / ((1 - 0.3457 - 0.3585) / 0.3585);
+    const f = (t) => (t > eps ? Math.cbrt(t) : (kappa * t + 16) / 116);
+    const fx = f(xr);
+    const fy = f(yr);
+    const fz = f(zr);
+    const L = 116 * fy - 16;
+    const ca = 500 * (fx - fy);
+    const cb = 200 * (fy - fz);
+    if (cs === "lab") return [L, ca, cb];
+    const C = Math.hypot(ca, cb);
+    const h = C <= 1e-4 ? NaN : ((Math.atan2(cb, ca) * 180) / Math.PI + 360) % 360;
+    return [L, C, h];
+  }
+  if (cs === "hsl" || cs === "hwb") {
+    const max = Math.max(r, g, b);
+    const min = Math.min(r, g, b);
+    const d = max - min;
+    let h = NaN;
+    if (d > 1e-6) {
+      if (max === r) h = ((g - b) / d + (g < b ? 6 : 0)) * 60;
+      else if (max === g) h = ((b - r) / d + 2) * 60;
+      else h = ((r - g) / d + 4) * 60;
+      h = ((h % 360) + 360) % 360;
+    }
+    if (cs === "hwb") return [h, min * 100, (1 - max) * 100];
+    const l = (max + min) / 2;
+    const denom = 1 - Math.abs(2 * l - 1);
+    const s = d === 0 || denom <= 1e-9 ? 0 : d / denom;
+    if (s <= 1e-6 || l <= 1e-6 || l >= 1 - 1e-6) h = NaN;
+    return [h, s * 100, l * 100];
+  }
+  return null;
+}
+
+function convertSpaceColor(col, targetCs) {
+  if (col.cs === targetCs) return [...col.comps];
+  const xyz = spaceToXyzD65(col.cs, col.comps[0], col.comps[1], col.comps[2]);
+  if (!xyz) return null;
+  const out = xyzD65ToSpace(targetCs, xyz[0], xyz[1], xyz[2]);
+  if (!out) return null;
+  const ANALOGOUS_CATS = {
+    srgb: ["r", "g", "b"],
+    "srgb-linear": ["r", "g", "b"],
+    "display-p3": ["r", "g", "b"],
+    "display-p3-linear": ["r", "g", "b"],
+    "a98-rgb": ["r", "g", "b"],
+    "prophoto-rgb": ["r", "g", "b"],
+    rec2020: ["r", "g", "b"],
+    xyz: ["x", "y", "z"],
+    "xyz-d50": ["x", "y", "z"],
+    "xyz-d65": ["x", "y", "z"],
+    lab: ["L", "a", "b_opp"],
+    oklab: ["L", "a", "b_opp"],
+    lch: ["L", "C", "H"],
+    oklch: ["L", "C", "H"],
+    hsl: ["H", "C", "L"],
+    hwb: ["H", null, null],
+  };
+  const srcCats = ANALOGOUS_CATS[col.cs];
+  const dstCats = ANALOGOUS_CATS[targetCs];
+  if (srcCats && dstCats) {
+    for (let i = 0; i < 3; i++) {
+      const cat = srcCats[i];
+      if (!cat || !Number.isNaN(col.comps[i])) continue;
+      const dstIdx = dstCats.indexOf(cat);
+      if (dstIdx !== -1) out[dstIdx] = NaN;
+    }
+  }
+  return out;
+}
+
+function interpolateHue(h1, h2, w1, w2, method = "shorter") {
+  if (Number.isNaN(h1) && Number.isNaN(h2)) return NaN;
+  if (Number.isNaN(h1)) return h2;
+  if (Number.isNaN(h2)) return h1;
+  let a = ((h1 % 360) + 360) % 360;
+  let b = ((h2 % 360) + 360) % 360;
+  if (method === "shorter") {
+    if (b - a > 180) a += 360;
+    else if (b - a < -180) b += 360;
+  } else if (method === "longer") {
+    const diff = b - a;
+    if (diff > 0 && diff < 180) a += 360;
+    else if (diff > -180 && diff <= 0) b += 360;
+  } else if (method === "increasing") {
+    if (b < a) b += 360;
+  } else if (method === "decreasing") {
+    if (a < b) a += 360;
+  }
+  return (((a * w1 + b * w2) % 360) + 360) % 360;
+}
+
+function parseCssColorToSpaceColor(trimmed, mode = null) {
+  const s = String(trimmed || "").trim();
+  if (!s) return null;
+  const low = s.toLowerCase();
+  if (low === "transparent") return { cs: "srgb", comps: [0, 0, 0], alpha: 0 };
+  if (/^#[0-9a-f]+$/i.test(s)) {
+    const hx = parseHexToRgba(s);
+    return hx ? { cs: "srgb", comps: [hx[0] / 255, hx[1] / 255, hx[2] / 255], alpha: hx[3] } : null;
+  }
+  if (Object.prototype.hasOwnProperty.call(CSS_NAMED_COLORS, low)) {
+    const hx = parseHexToRgba("#" + CSS_NAMED_COLORS[low]);
+    return hx ? { cs: "srgb", comps: [hx[0] / 255, hx[1] / 255, hx[2] / 255], alpha: hx[3] } : null;
+  }
+  const outer = parseOuterCssCall(s);
+  if (!outer) return null;
+  const { fn, body } = outer;
+
+  if (fn === "light-dark") {
+    const args = splitCssTopLevel(body, ",");
+    if (args.length !== 2) return null;
+    return parseCssColorToSpaceColor(mode === "dark" ? args[1] : args[0], mode);
+  }
+
+  if (fn === "color-mix") {
+    const args = splitCssTopLevel(body, ",");
+    if (args.length !== 3) return null;
+    const methodToks = args[0].toLowerCase().split(/\s+/).filter(Boolean);
+    if (methodToks[0] !== "in" || !methodToks[1]) return null;
+    const cs = methodToks[1];
+    let hueMethod = "shorter";
+    if (methodToks.length > 2) {
+      if (methodToks.length !== 4 || methodToks[3] !== "hue" || !/^(?:shorter|longer|increasing|decreasing)$/.test(methodToks[2])) {
+        return null;
+      }
+      hueMethod = methodToks[2];
+    }
+    const parseMixStop = (stopStr) => {
+      const sp = splitCssTopLevelSpaces(stopStr);
+      if (sp.length < 1) return null;
+      const tryPct = (tok) => {
+        const em = evalCssNumericExpr(tok, 100, "scalar");
+        return em !== null && (tok.includes("%") || /^(?:calc|min|max|clamp)\s*\(/i.test(tok)) ? em : null;
+      };
+      let pct = null;
+      let colStr = stopStr;
+      if (sp.length >= 2) {
+        const pLast = tryPct(sp[sp.length - 1]);
+        const pFirst = pLast === null ? tryPct(sp[0]) : null;
+        if (pLast !== null) {
+          pct = pLast;
+          colStr = sp.slice(0, -1).join(" ");
+        } else if (pFirst !== null) {
+          pct = pFirst;
+          colStr = sp.slice(1).join(" ");
+        }
+      }
+      const col = parseCssColorToSpaceColor(colStr, mode);
+      return col ? { col, pct } : null;
+    };
+    const s1 = parseMixStop(args[1]);
+    const s2 = parseMixStop(args[2]);
+    if (!s1 || !s2) return null;
+    let p1 = s1.pct;
+    let p2 = s2.pct;
+    if (p1 === null && p2 === null) {
+      p1 = 50;
+      p2 = 50;
+    } else if (p1 === null) {
+      p1 = 100 - p2;
+    } else if (p2 === null) {
+      p2 = 100 - p1;
+    }
+    if (p1 < 0 || p2 < 0 || p1 + p2 <= 0) return null;
+    const pSum = p1 + p2;
+    const alphaMult = pSum < 100 ? pSum / 100 : 1;
+    const w2 = p2 / pSum;
+    const w1 = 1 - w2;
+    const v1 = convertSpaceColor(s1.col, cs);
+    const v2 = convertSpaceColor(s2.col, cs);
+    if (!v1 || !v2) return null;
+    let a1 = s1.col.alpha;
+    let a2 = s2.col.alpha;
+    if (Number.isNaN(a1) && Number.isNaN(a2)) {
+      return { cs, comps: [0, 0, 0], alpha: 0 };
+    }
+    if (Number.isNaN(a1)) a1 = a2;
+    if (Number.isNaN(a2)) a2 = a1;
+    const aMix = a1 * w1 + a2 * w2;
+    if (aMix <= 0) return { cs, comps: [0, 0, 0], alpha: 0 };
+    const hueIdx = cs === "oklch" || cs === "lch" ? 2 : cs === "hsl" || cs === "hwb" ? 0 : -1;
+    const res = [0, 1, 2].map((idx) => {
+      if (idx === hueIdx) return interpolateHue(v1[idx], v2[idx], w1, w2, hueMethod);
+      let c1 = v1[idx];
+      let c2 = v2[idx];
+      if (Number.isNaN(c1) && Number.isNaN(c2)) return NaN;
+      if (Number.isNaN(c1)) c1 = c2;
+      if (Number.isNaN(c2)) c2 = c1;
+      return (c1 * a1 * w1 + c2 * a2 * w2) / aMix;
+    });
+    return { cs, comps: res, alpha: clamp01(aMix * alphaMult) };
+  }
+
+  if (!/^(?:oklch|oklab|rgba?|hsla?|hwb|lab|lch|color)$/.test(fn)) return null;
+  const slashParts = splitCssTopLevel(body, "/");
+  if (slashParts.length > 2) return null;
+  let mainStr = slashParts[0];
+  let alpha = 1;
+  if (slashParts.length === 2) {
+    const aVal = parseCssAlpha(slashParts[1]);
+    if (aVal === null) return null;
+    alpha = Number.isNaN(aVal) ? NaN : clamp01(aVal);
+  }
+  const commaParts = splitCssTopLevel(mainStr, ",");
+  const hasCommas = commaParts.length > 1;
+  const parts = hasCommas ? commaParts : splitCssTopLevelSpaces(mainStr);
   if (fn === "color") {
     if (parts.length !== 4) return null;
     const cs = parts[0].toLowerCase();
     const vals = parts.slice(1).map((p) => {
-      if (/^none$/i.test(p)) return 0;
-      const isPct = p.endsWith("%");
-      const n = Number.parseFloat(isPct ? p.slice(0, -1) : p);
-      if (!Number.isFinite(n)) return NaN;
-      return isPct ? n / 100 : n;
+      if (/^none$/i.test(p)) return NaN;
+      const v = evalCssNumericExpr(p, 1, "scalar");
+      return v !== null && Number.isFinite(v) ? v : null;
     });
-    if (!vals.every(Number.isFinite)) return null;
-    const rgb = colorSpaceComponentsToSrgb(cs, vals[0], vals[1], vals[2]);
-    return rgb ? [...rgb, alpha] : null;
+    if (vals.some((v) => v === null)) return null;
+    if (!colorSpaceComponentsToLinSrgb(cs, 0, 0, 0)) return null;
+    return { cs, comps: vals, alpha };
   }
   if (fn === "rgb" || fn === "rgba" || fn === "hsl" || fn === "hsla" || fn === "hwb") {
-    if (fn !== "hwb" && mainStr.includes(",") && parts.length === 4) {
+    if (fn !== "hwb" && hasCommas && parts.length === 4 && slashParts.length === 1) {
       const aVal = parseCssAlpha(parts[3]);
       if (aVal === null) return null;
-      alpha = clamp01(aVal);
-    } else if (parts.length !== 3 && !(fn !== "hwb" && mainStr.includes(",") && parts.length === 4)) {
+      alpha = Number.isNaN(aVal) ? NaN : clamp01(aVal);
+    } else if (parts.length !== 3) {
       return null;
     }
     if (fn === "rgb" || fn === "rgba") {
       const ch = parts.slice(0, 3).map((p) => {
-        if (/^none$/i.test(p)) return 0;
-        if (p.endsWith("%")) return Math.round(clamp01(Number.parseFloat(p) / 100) * 255);
-        const v = Number.parseFloat(p);
-        return Number.isFinite(v) ? Math.round(Math.max(0, Math.min(255, v))) : NaN;
+        if (/^none$/i.test(p)) return NaN;
+        const v = evalCssNumericExpr(p, 255, "scalar");
+        return v !== null && Number.isFinite(v) ? clamp01(v / 255) : null;
       });
-      return ch.every(Number.isFinite) ? [...ch, alpha] : null;
+      return ch.every((v) => v !== null) ? { cs: "srgb", comps: ch, alpha } : null;
     }
-    const h = parseCssAngleDeg(/^none$/i.test(parts[0]) ? "0" : parts[0]);
-    const p1 = /^none$/i.test(parts[1]) ? 0 : Number.parseFloat(parts[1]) / 100;
-    const p2 = /^none$/i.test(parts[2]) ? 0 : Number.parseFloat(parts[2]) / 100;
-    if (h === null || !Number.isFinite(p1) || !Number.isFinite(p2)) return null;
-    const rgb = fn === "hwb" ? hwbToSrgb(h, p1, p2) : hslToSrgb(h, p1, p2);
-    return [...rgb, alpha];
+    const h = /^none$/i.test(parts[0]) ? NaN : parseCssAngleDeg(parts[0]);
+    const p1v = /^none$/i.test(parts[1]) ? NaN : evalCssNumericExpr(parts[1], 100, "scalar");
+    const p2v = /^none$/i.test(parts[2]) ? NaN : evalCssNumericExpr(parts[2], 100, "scalar");
+    if (h === null || p1v === null || p2v === null || (!Number.isNaN(p1v) && !Number.isFinite(p1v)) || (!Number.isNaN(p2v) && !Number.isFinite(p2v))) {
+      return null;
+    }
+    return { cs: fn === "hwb" ? "hwb" : "hsl", comps: [h, p1v, p2v], alpha };
   }
   if (parts.length !== 3) return null;
   const parseUnitOrPct = (p, pctScale) => {
-    if (/^none$/i.test(p)) return 0;
-    const isPct = p.endsWith("%");
-    const n = Number.parseFloat(isPct ? p.slice(0, -1) : p);
-    if (!Number.isFinite(n)) return NaN;
-    return isPct ? (n / 100) * pctScale : n;
+    if (/^none$/i.test(p)) return NaN;
+    const n = evalCssNumericExpr(p, pctScale, "scalar");
+    return n !== null && Number.isFinite(n) ? n : null;
   };
   if (fn === "lab" || fn === "lch") {
     const L = parseUnitOrPct(parts[0], 100);
-    if (!Number.isFinite(L)) return null;
+    if (L === null) return null;
     if (fn === "lab") {
       const a = parseUnitOrPct(parts[1], 125);
       const b = parseUnitOrPct(parts[2], 125);
-      if (!Number.isFinite(a) || !Number.isFinite(b)) return null;
-      return [...labToSrgb(L, a, b), alpha];
+      if (a === null || b === null) return null;
+      return { cs: "lab", comps: [L, a, b], alpha };
     }
-    const C = parseUnitOrPct(parts[1], 150);
-    const h = /^none$/i.test(parts[2]) ? 0 : parseCssAngleDeg(parts[2]);
-    if (!Number.isFinite(C) || h === null) return null;
-    const hr = (h * Math.PI) / 180;
-    return [...labToSrgb(L, C * Math.cos(hr), C * Math.sin(hr)), alpha];
+    const rawC = parseUnitOrPct(parts[1], 150);
+    const h = /^none$/i.test(parts[2]) ? NaN : parseCssAngleDeg(parts[2]);
+    if (rawC === null || h === null) return null;
+    return { cs: "lch", comps: [L, Number.isNaN(rawC) ? NaN : Math.max(0, rawC), h], alpha };
   }
   const L = parseUnitOrPct(parts[0], 1);
-  if (!Number.isFinite(L)) return null;
+  if (L === null) return null;
   if (fn === "oklab") {
     const a = parseUnitOrPct(parts[1], 0.4);
     const b = parseUnitOrPct(parts[2], 0.4);
-    if (!Number.isFinite(a) || !Number.isFinite(b)) return null;
-    return [...oklabToSrgb(L, a, b), alpha];
+    if (a === null || b === null) return null;
+    return { cs: "oklab", comps: [L, a, b], alpha };
   }
   const C = parseUnitOrPct(parts[1], 0.4);
-  const h = /^none$/i.test(parts[2]) ? 0 : parseCssAngleDeg(parts[2]);
-  if (!Number.isFinite(C) || h === null) return null;
-  return [...oklchToSrgb(L, C, h), alpha];
+  const h = /^none$/i.test(parts[2]) ? NaN : parseCssAngleDeg(parts[2]);
+  if (C === null || h === null) return null;
+  return { cs: "oklch", comps: [L, Number.isNaN(C) ? NaN : Math.max(0, C), h], alpha };
+}
+
+export function parseCssColorToRgba(trimmed, mode = null) {
+  const sp = parseCssColorToSpaceColor(trimmed, mode);
+  if (!sp) return null;
+  const alpha = Number.isNaN(sp.alpha) ? 0 : sp.alpha;
+  const c0 = Number.isNaN(sp.comps[0]) ? 0 : sp.comps[0];
+  const c1 = Number.isNaN(sp.comps[1]) ? 0 : sp.comps[1];
+  const c2 = Number.isNaN(sp.comps[2]) ? 0 : sp.comps[2];
+  const cs = sp.cs;
+  if (cs === "srgb") {
+    return [Math.round(clamp01(c0) * 255), Math.round(clamp01(c1) * 255), Math.round(clamp01(c2) * 255), alpha];
+  }
+  if (cs === "oklch") return [...oklchToSrgb(c0, c1, c2), alpha];
+  if (cs === "oklab") return [...oklabToSrgb(c0, c1, c2), alpha];
+  if (cs === "lab") return [...labToSrgb(c0, c1, c2), alpha];
+  if (cs === "lch") {
+    const hr = (c2 * Math.PI) / 180;
+    return [...labToSrgb(c0, Math.max(0, c1) * Math.cos(hr), Math.max(0, c1) * Math.sin(hr)), alpha];
+  }
+  if (cs === "hsl") return [...hslToSrgb(c0, c1 / 100, c2 / 100), alpha];
+  if (cs === "hwb") return [...hwbToSrgb(c0, c1 / 100, c2 / 100), alpha];
+  const rgb = colorSpaceComponentsToSrgb(cs, c0, c1, c2);
+  return rgb ? [...rgb, alpha] : null;
 }
 
 const modePrefixCache = new WeakMap();
@@ -885,6 +1897,47 @@ function getModePrefixes(byPath) {
   cached = [...set];
   modePrefixCache.set(byPath, cached);
   return cached;
+}
+
+function selectLightDarkBranches(cssStr, mode) {
+  let cur = String(cssStr || "");
+  let safety = 0;
+  while (safety++ < 32) {
+    let foundIdx = -1;
+    let searchPos = 0;
+    while (searchPos < cur.length) {
+      const m = /\blight-dark\s*\(/i.exec(cur.slice(searchPos));
+      if (!m) break;
+      const cand = searchPos + m.index;
+      if (cand > 0 && /[a-zA-Z0-9_-]/.test(cur[cand - 1])) {
+        searchPos = cand + m[0].length;
+        continue;
+      }
+      foundIdx = cand;
+      break;
+    }
+    if (foundIdx === -1) return cur;
+    const openP = cur.indexOf("(", foundIdx);
+    let depth = 0;
+    let closeP = -1;
+    for (let k = openP; k < cur.length; k++) {
+      if (cur[k] === "(") depth++;
+      else if (cur[k] === ")") {
+        depth--;
+        if (depth === 0) {
+          closeP = k;
+          break;
+        }
+      }
+    }
+    if (closeP === -1) return null;
+    const body = cur.slice(openP + 1, closeP);
+    const args = splitCssTopLevel(body, ",");
+    if (args.length !== 2) return null;
+    const picked = (mode === "dark" ? args[1] : args[0]).trim();
+    cur = `${cur.slice(0, foundIdx)}${picked}${cur.slice(closeP + 1)}`;
+  }
+  return cur;
 }
 
 function resolveColorRgba(val, byPath, stack = [], mode = null) {
@@ -917,7 +1970,38 @@ function resolveColorRgba(val, byPath, stack = [], mode = null) {
       const rgba = parseHexToRgba(trimmed);
       if (rgba) return rgba;
     }
-    return parseCssColorToRgba(trimmed);
+    const ldCall = /^light-dark\s*\(/i.test(trimmed) ? parseOuterCssCall(trimmed) : null;
+    if (ldCall?.fn === "light-dark") {
+      const ldArgs = splitCssTopLevel(ldCall.body, ",");
+      if (ldArgs.length === 2) {
+        return resolveColorRgba(mode === "dark" ? ldArgs[1] : ldArgs[0], byPath, stack, mode);
+      }
+      return null;
+    }
+    let expanded = trimmed;
+    if (/\blight-dark\s*\(/i.test(expanded)) {
+      const ldSelected = selectLightDarkBranches(expanded, mode);
+      if (ldSelected === null) return null;
+      expanded = ldSelected;
+    }
+    if (/\{[^}]+\}/.test(expanded)) {
+      let failedRef = false;
+      expanded = expanded.replace(/\{([^}]+)\}/g, (full, inner) => {
+        const pt = pickModeTarget(inner.trim().replace(/\.\$root$/i, ""));
+        if (!pt) {
+          failedRef = true;
+          return full;
+        }
+        const rgba = resolveColorRgba(`{${pt}}`, byPath, stack, mode);
+        if (!rgba) {
+          failedRef = true;
+          return full;
+        }
+        return `rgb(${rgba[0]} ${rgba[1]} ${rgba[2]} / ${rgba[3]})`;
+      });
+      if (failedRef) return null;
+    }
+    return parseCssColorToRgba(expanded, mode);
   }
   if (val && typeof val === "object") {
     if (val.$ref) {
@@ -938,8 +2022,9 @@ function resolveColorRgba(val, byPath, stack = [], mode = null) {
       if (cs === "hwb") return [...hwbToSrgb(nums[0], nums[1] / 100, nums[2] / 100), alpha];
       if (cs === "lab") return [...labToSrgb(nums[0], nums[1], nums[2]), alpha];
       if (cs === "lch") {
+        const cPos = Math.max(0, nums[1]);
         const hr = (nums[2] * Math.PI) / 180;
-        return [...labToSrgb(nums[0], nums[1] * Math.cos(hr), nums[1] * Math.sin(hr)), alpha];
+        return [...labToSrgb(nums[0], cPos * Math.cos(hr), cPos * Math.sin(hr)), alpha];
       }
       if (cs !== "srgb") {
         const converted = colorSpaceComponentsToSrgb(cs, nums[0], nums[1], nums[2]);
@@ -1018,17 +2103,31 @@ export function analyzeDtcgModesAndContrast(source) {
       if (rgba) resolvedColors.push({ path: tok.path, mode: modeName, rgb: [rgba[0], rgba[1], rgba[2]], alpha: rgba[3], isInvariant: isInv });
     };
     if (hasThemeExtMode) {
+      const lightVal = lightExtKey ? unwrapModeEntry(extModes[lightExtKey]) : tok.value ?? (tok.ref ? { $ref: tok.ref } : null);
+      const darkVal = darkExtKey ? unwrapModeEntry(extModes[darkExtKey]) : tok.value ?? (tok.ref ? { $ref: tok.ref } : null);
+      const lightRgba = lightVal != null ? resolveColorRgba(lightVal, byPath, [tok.path], "light") : null;
+      const darkRgba = darkVal != null ? resolveColorRgba(darkVal, byPath, [tok.path], "dark") : null;
+      const sameRgba = Boolean(
+        lightRgba &&
+          darkRgba &&
+          lightRgba[0] === darkRgba[0] &&
+          lightRgba[1] === darkRgba[1] &&
+          lightRgba[2] === darkRgba[2] &&
+          lightRgba[3] === darkRgba[3]
+      );
       if (lightExtKey) {
         lightKeys.add(tok.path);
-        pushResolved("light", resolveColorRgba(unwrapModeEntry(extModes[lightExtKey]), byPath, [tok.path], "light"), false);
+        pushResolved("light", lightRgba, false);
       } else if (tok.value != null || tok.ref) {
         lightKeys.add(tok.path);
-        const baseVal = tok.value ?? { $ref: tok.ref };
-        pushResolved("light", resolveColorRgba(baseVal, byPath, [tok.path], "light"), true);
+        pushResolved("light", lightRgba, sameRgba);
       }
       if (darkExtKey) {
         darkKeys.add(tok.path);
-        pushResolved("dark", resolveColorRgba(unwrapModeEntry(extModes[darkExtKey]), byPath, [tok.path], "dark"), false);
+        pushResolved("dark", darkRgba, false);
+      } else if (tok.value != null || tok.ref) {
+        darkKeys.add(tok.path);
+        pushResolved("dark", darkRgba, sameRgba);
       }
       continue;
     }
@@ -1057,7 +2156,28 @@ export function analyzeDtcgModesAndContrast(source) {
     }
 
     if (mode === "default") {
-      invariantTokens.push(tok);
+      const baseVal = tok.value ?? (tok.ref ? { $ref: tok.ref } : null);
+      const lRgba = baseVal != null ? resolveColorRgba(baseVal, byPath, [tok.path], "light") : null;
+      const dRgba = baseVal != null ? resolveColorRgba(baseVal, byPath, [tok.path], "dark") : null;
+      const differsByMode = Boolean(
+        lRgba &&
+          dRgba &&
+          (lRgba[0] !== dRgba[0] || lRgba[1] !== dRgba[1] || lRgba[2] !== dRgba[2] || lRgba[3] !== dRgba[3])
+      );
+      if (differsByMode) {
+        lightKeys.add(tok.path);
+        darkKeys.add(tok.path);
+        pushResolved("light", lRgba, false);
+        pushResolved("dark", dRgba, false);
+      } else if (lRgba && !dRgba) {
+        lightKeys.add(tok.path);
+        pushResolved("light", lRgba, false);
+      } else if (dRgba && !lRgba) {
+        darkKeys.add(tok.path);
+        pushResolved("dark", dRgba, false);
+      } else {
+        invariantTokens.push(tok);
+      }
     } else {
       pushResolved(mode, resolveColorRgba(tok.value ?? (tok.ref ? { $ref: tok.ref } : null), byPath, [tok.path], mode), false);
     }
@@ -1121,7 +2241,19 @@ export function analyzeDtcgModesAndContrast(source) {
     });
     const compFgs = new Set();
     const compBgs = new Set();
+    const nonSurfaceBgs = [];
     const dedicatedOnSpecs = [];
+    const roleHasNonSurfaceBg = new Set();
+    for (const c of modeCols) {
+      if (isFgPath(c.path) || isNonFillPath(c.path)) continue;
+      const np = splitCamel(c.path);
+      if (bgRe.test(np)) continue;
+      const rp = stripModePath(c.path, c.mode, c.isInvariant);
+      nonSurfaceBgs.push({
+        rolePath: rp,
+        subRoles: [...rp.matchAll(subRoleRe)].map((mm) => mm[1].toLowerCase()),
+      });
+    }
     for (const c of modeCols) {
       const rp = stripModePath(c.path, c.mode, c.isInvariant);
       const comp = extractCompSlug(rp);
@@ -1131,9 +2263,17 @@ export function analyzeDtcgModesAndContrast(source) {
         const rawRole = onM ? (onM[1] || onM[2]).replace(/_/g, "-") : null;
         if (rawRole && !/^(?:surface|background|bg|canvas|light|dark|inverse|inversed)$/.test(rawRole)) {
           const escRole = rawRole.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/-/g, "[._-]");
+          const roleRe = new RegExp(`(?:^|[._-])${escRole}(?:$|[._-])`, "i");
+          const subRoles = new Set([...rawRole.matchAll(subRoleRe)].map((mm) => mm[1].toLowerCase()));
+          const hasNonSurfaceMatch =
+            !bgRe.test(rawRole) &&
+            nonSurfaceBgs.some((bgEntry) => roleRe.test(bgEntry.rolePath) && bgEntry.subRoles.every((sr) => subRoles.has(sr)));
+          const roleKey = `${rawRole}|${[...subRoles].sort().join(",")}`;
+          if (hasNonSurfaceMatch) roleHasNonSurfaceBg.add(roleKey);
           dedicatedOnSpecs.push({
-            roleRe: new RegExp(`(?:^|[._-])${escRole}(?:$|[._-])`, "i"),
-            subRoles: new Set([...rawRole.matchAll(subRoleRe)].map((mm) => mm[1].toLowerCase())),
+            roleRe,
+            subRoles,
+            hasNonSurfaceMatch,
           });
         }
       } else if (!isNonFillPath(c.path)) {
@@ -1166,6 +2306,7 @@ export function analyzeDtcgModesAndContrast(source) {
       hasOnPanel: modeCols.some((c) => isFgPath(c.path) && /(?:^|[._-])on[-_]?panel(?:$|[._-])/.test(splitCamel(c.path))),
       compPaired,
       dedicatedOnSpecs,
+      roleHasNonSurfaceBg,
     });
   }
   const pairs = [];
@@ -1196,6 +2337,7 @@ export function analyzeDtcgModesAndContrast(source) {
       hasOnPanel: false,
       compPaired: new Set(),
       dedicatedOnSpecs: [],
+      roleHasNonSurfaceBg: new Set(),
     };
     for (const bg of resolvedColors) {
       if (fg.path === bg.path || isFgPath(bg.path) || fg.mode !== bg.mode) continue;
@@ -1218,7 +2360,12 @@ export function analyzeDtcgModesAndContrast(source) {
       const bgHasLight = /(?:^|[._-])light(?:$|[._-])/.test(bgRolePath);
       const bgSubRoleSet = new Set([...bgRolePath.matchAll(subRoleRe)].map((m) => m[1].toLowerCase()));
       const hasDedicatedBgFg = () =>
-        mFlags.dedicatedOnSpecs.some((spec) => spec.roleRe.test(bgRolePath) && sameStrSet(bgSubRoleSet, spec.subRoles));
+        mFlags.dedicatedOnSpecs.some(
+          (spec) =>
+            !(spec.hasNonSurfaceMatch && bgRe.test(bgNormPath)) &&
+            spec.roleRe.test(bgRolePath) &&
+            sameStrSet(bgSubRoleSet, spec.subRoles)
+        );
       if (onRoleRaw) {
         if (/^(?:surface|background|bg|canvas)$/.test(onRoleRaw)) {
           if (!bgRe.test(bgNormPath)) continue;
@@ -1250,6 +2397,8 @@ export function analyzeDtcgModesAndContrast(source) {
           if (!roleRe.test(bgRolePath)) continue;
           const bgSubRoles = [...bgRolePath.matchAll(subRoleRe)].map((m) => m[1].toLowerCase());
           if (bgSubRoles.some((sr) => !onSubRoles.has(sr))) continue;
+          const roleKey = `${onRoleRaw}|${[...onSubRoles].sort().join(",")}`;
+          if (!bgRe.test(onRoleRaw) && mFlags.roleHasNonSurfaceBg.has(roleKey) && bgRe.test(bgNormPath)) continue;
         }
       } else {
         if (!bgRe.test(bgNormPath)) continue;
@@ -1360,66 +2509,6 @@ function findBalIdx(srcStr, openIdx, openCh, closeCh, maxLimit = srcStr.length) 
     }
   }
   return -1;
-}
-
-function findHardcodedColorFunctions(src) {
-  const s = String(src || "");
-  const out = [];
-  const headRe = /\b(rgba?|hsla?|hwb|lch|oklch|lab|oklab|color)\(/gi;
-  let cursor = 0;
-  let m;
-  while ((m = headRe.exec(s)) !== null) {
-    if (m.index < cursor) continue;
-    const prev = m.index > 0 ? s[m.index - 1] : "";
-    if (prev === "." || prev === "$" || prev === "-") continue;
-    const fnName = m[1].toLowerCase();
-    const openIdx = m.index + m[0].length - 1;
-    let depth = 1;
-    let q = null;
-    let i = openIdx + 1;
-    let aborted = false;
-    const hardStop = Math.min(s.length, openIdx + 512);
-    while (i < hardStop && depth > 0) {
-      const ch = s[i];
-      if (q) {
-        if (ch === "\\" && i + 1 < hardStop) { i += 2; continue; }
-        if (ch === q || ch === "\n") q = null;
-        i++;
-        continue;
-      }
-      if (ch === '"' || ch === "'") { q = ch; i++; continue; }
-      if (ch === ";" || ch === "{" || ch === "}" || ch === "<" || ch === ">") {
-        aborted = true;
-        break;
-      }
-      if (ch === "(") depth++;
-      else if (ch === ")") depth--;
-      i++;
-    }
-    if (aborted || depth !== 0) {
-      cursor = openIdx + 1;
-      headRe.lastIndex = cursor;
-      continue;
-    }
-    const full = s.slice(m.index, i);
-    const inner = s.slice(openIdx + 1, i - 1).trim();
-    cursor = i;
-    headRe.lastIndex = cursor;
-    if (!inner || /^["']/.test(inner)) continue;
-    if (fnName === "color") {
-      if (!/^(?:srgb|srgb-linear|display-p3|a98-rgb|prophoto-rgb|rec2020|xyz(?:-d50|-d65)?|--[a-z0-9_-]+)\s+(?=[\d.+-]|none\b|calc\(|var\()/i.test(inner)) {
-        continue;
-      }
-    } else if (!/(?:\d|from\s+|none\b|calc\(|var\()/i.test(inner)) {
-      continue;
-    }
-    out.push({ index: m.index, text: full });
-  }
-  return out;
-}
-
-function isTokenizedColorFn(fnText) {
-  return /\bvar\(\s*--/i.test(fnText);
 }
 
 function maskCssSelectorHeadersInRange(chars, src, start, end) {
@@ -1670,12 +2759,12 @@ function findNearDuplicateHexClusters(hexSet) {
 
 function isOffGridPxValue(n) {
   if (!Number.isFinite(n) || n <= 4 || n >= 200) return false;
-  return Number.isInteger(n) && n % 4 !== 0 && n !== 6 && n !== 10 && n !== 14;
+  return n % 4 !== 0 && n !== 6 && n !== 10 && n !== 14;
 }
 
 const stripCssVarNames = (v) => String(v || "").replace(/--[a-zA-Z0-9_-]+/g, "");
 
-function extractSpacingValueBranches(rawExpr) {
+function extractSpacingValueBranches(rawExpr, { includeUnitlessPx = false } = {}) {
   const expr = String(rawExpr || "");
   const out = [];
   const findBalLocal = (s, openIdx, openCh, closeCh, limit) => {
@@ -1803,7 +2892,7 @@ function extractSpacingValueBranches(rawExpr) {
     }
     return false;
   };
-  const visit = (start, end) => {
+  const visit = (start, end, inConcatOrTpl = false) => {
     const [l, r] = trimExpr(start, end);
     if (l >= r) return;
     {
@@ -1901,14 +2990,14 @@ function extractSpacingValueBranches(rawExpr) {
                 else if (ec === ";" && ep === 0 && eb === 0 && ebr === 0) break;
                 rExprEnd++;
               }
-              visit(rExprStart, rExprEnd);
+              visit(rExprStart, rExprEnd, inConcatOrTpl);
               rk = rExprEnd;
               rLastSig = ";";
             } else if (!/\s/.test(rc)) rLastSig = rc;
           }
           return;
         }
-        visit(bl, brEnd);
+        visit(bl, brEnd, inConcatOrTpl);
         return;
       }
     }
@@ -1953,8 +3042,8 @@ function extractSpacingValueBranches(rawExpr) {
       }
     }
     if (qPos !== -1 && colonPos !== -1) {
-      visit(qPos + 1, colonPos);
-      visit(colonPos + 1, r);
+      visit(qPos + 1, colonPos, inConcatOrTpl);
+      visit(colonPos + 1, r, inConcatOrTpl);
       return;
     }
     const orOps = [], andOps = [];
@@ -2000,14 +3089,14 @@ function extractSpacingValueBranches(rawExpr) {
     if (orOps.length > 0) {
       let cur = l;
       for (const [os, oe] of orOps) {
-        if (!hasTopComp(cur, os) || hasTopAnd(cur, os)) visit(cur, os);
+        if (!hasTopComp(cur, os) || hasTopAnd(cur, os)) visit(cur, os, inConcatOrTpl);
         cur = oe;
       }
-      if (!hasTopComp(cur, r) || hasTopAnd(cur, r)) visit(cur, r);
+      if (!hasTopComp(cur, r) || hasTopAnd(cur, r)) visit(cur, r, inConcatOrTpl);
       return;
     }
     if (andOps.length > 0) {
-      visit(andOps[andOps.length - 1][1], r);
+      visit(andOps[andOps.length - 1][1], r, inConcatOrTpl);
       return;
     }
     const plusParts = [];
@@ -2046,7 +3135,7 @@ function extractSpacingValueBranches(rawExpr) {
       if (plusParts.length > 0) plusParts.push([partStart, r]);
     }
     if (plusParts.length > 1) {
-      for (const [ps, pe] of plusParts) visit(ps, pe);
+      for (const [ps, pe] of plusParts) visit(ps, pe, true);
       return;
     }
     const slice = expr.slice(l, r);
@@ -2063,7 +3152,7 @@ function extractSpacingValueBranches(rawExpr) {
           if (se !== -1) {
             if (tk > tStart) out.push(expr.slice(tStart, tk));
             const beforeLen = out.length;
-            visit(tk + 2, se);
+            visit(tk + 2, se, true);
             if (/^px\b/i.test(expr.slice(se + 1, r - 1))) {
               for (let oi = beforeLen; oi < out.length; oi++) {
                 out[oi] = attachPxToBareNumbers(out[oi]);
@@ -2079,7 +3168,14 @@ function extractSpacingValueBranches(rawExpr) {
       if (tStart < r - 1) out.push(expr.slice(tStart, r - 1));
       return;
     }
-    if (!hasTopComp(l, r)) out.push(slice);
+    if (!hasTopComp(l, r)) {
+      const trimmedSlice = slice.trim();
+      if (includeUnitlessPx && !inConcatOrTpl && /^[+-]?(?:\d+(?:\.\d+)?|\.\d+)$/.test(trimmedSlice)) {
+        out.push(`${Math.abs(Number.parseFloat(trimmedSlice))}px`);
+      } else {
+        out.push(slice);
+      }
+    }
   };
   visit(0, expr.length);
   return out.join(" ");
@@ -2436,7 +3532,7 @@ function extractJsStyleSpacingEntries(src, baseOffset = 0) {
       i++;
     }
     const rawExpr = src.slice(valStart, i);
-    const cleanedExpr = stripCssVarNames(extractSpacingValueBranches(rawExpr));
+    const cleanedExpr = stripCssVarNames(extractSpacingValueBranches(rawExpr, { includeUnitlessPx: true }));
     if (cleanedExpr.trim()) {
       entries.push({ index: baseOffset + m.index, val: cleanedExpr });
     }
@@ -2660,22 +3756,34 @@ export function scanTarget(targetPath, options = {}) {
     if (resolved.toLowerCase().endsWith(".json")) tokenJsonFiles.push(resolved);
     else if (CODE_EXTS.has(extname(resolved).toLowerCase())) codeFiles.push(resolved);
   } else {
+    const ciFs = process.platform === "darwin" || process.platform === "win32";
+    const safeReal = (p) => {
+      try {
+        return (realpathSync.native || realpathSync)(p);
+      } catch {
+        return null;
+      }
+    };
+    const rootReal = safeReal(resolved) || resolved;
+    const isInsideRoot = (candidateReal) => {
+      if (!candidateReal) return false;
+      const relPath = relative(ciFs ? rootReal.toLowerCase() : rootReal, ciFs ? candidateReal.toLowerCase() : candidateReal);
+      return relPath === "" || (!(relPath === ".." || relPath.startsWith(`..${sep}`)) && !isAbsolute(relPath));
+    };
     const visitedDirs = new Set();
     function walk(dir) {
-      let realDir = dir;
-      try {
-        realDir = realpathSync(dir);
-      } catch {
-        return;
-      }
-      if (visitedDirs.has(realDir)) return;
-      visitedDirs.add(realDir);
+      const realDir = safeReal(dir);
+      if (!isInsideRoot(realDir)) return;
+      const visitKey = ciFs ? realDir.toLowerCase() : realDir;
+      if (visitedDirs.has(visitKey)) return;
+      visitedDirs.add(visitKey);
       for (const entry of readdirSync(dir, { withFileTypes: true })) {
         if (SKIP_DIRS.has(entry.name)) continue;
         const full = join(dir, entry.name);
         let isDir = entry.isDirectory();
         let isFile = entry.isFile();
         if (entry.isSymbolicLink()) {
+          if (!isInsideRoot(safeReal(full))) continue;
           try {
             const fst = statSync(full);
             isDir = fst.isDirectory();
@@ -2728,27 +3836,39 @@ export function scanTarget(targetPath, options = {}) {
     walk(resolved);
   }
 
-  // 1. Validate W3C DTCG files (preserving mode from split light.json / dark.json filenames)
+  // 1. Validate W3C DTCG files (preserving mode from split light.json / dark.json filenames and resolving cross-file $extends)
+  const hasExtendsDirective = (node) => {
+    if (!node || typeof node !== "object") return false;
+    if (Array.isArray(node)) return false;
+    if (typeof node.$extends === "string") return true;
+    return Object.entries(node).some(([k, v]) => !k.startsWith("$") && v && typeof v === "object" && !Array.isArray(v) && hasExtendsDirective(v));
+  };
   const parsedTokenFiles = [];
   const modeLocalPaths = { light: new Set(), dark: new Set() };
+  const leafOriginByPath = new Map();
+  const groupOriginByPath = new Map();
+  const extendsOriginByGroup = new Map();
+  const combinedTree = {};
   for (const tf of tokenJsonFiles.sort()) {
     try {
       const json = JSON.parse(readFileSync(tf, "utf8"));
-      const flat = flattenTokens(json);
-      if (flat.length === 0) continue;
+      if (!json || typeof json !== "object" || Array.isArray(json)) continue;
+      const flat = flattenTokensFromExpanded(json, []);
+      if (flat.length === 0 && !hasExtendsDirective(json)) continue;
       const relTf = (st.isDirectory() ? relative(resolved, tf) : tf).replace(/\\/g, "/");
       const modeTarget = st.isDirectory() ? relTf : basename(tf);
       const hasLightSeg = /(?:^|[/_.-])light(?:[/_.-]|\.tokens?\.json$|\.json$)/i.test(modeTarget);
       const hasDarkSeg = /(?:^|[/_.-])dark(?:[/_.-]|\.tokens?\.json$|\.json$)/i.test(modeTarget);
-      const hasInternalModes = flat.some(
-        (tok) => {
+      const hasLeadingRootMode = Object.keys(json).some((k) => /^(light|dark)$/i.test(k));
+      const hasInternalModes =
+        hasLeadingRootMode ||
+        flat.some((tok) => {
           const extModes = getTokenExtModes(tok);
           return (
             /^(light|dark)$/i.test(tok.path.split(".")[0] || "") ||
             Boolean(extModes && Object.keys(extModes).some((mk) => /^(light|dark)$/i.test(mk)))
           );
-        }
-      );
+        });
       const fileMode = hasLightSeg && hasDarkSeg ? null : hasInternalModes ? null : hasLightSeg ? "light" : hasDarkSeg ? "dark" : null;
       if (fileMode) {
         for (const tok of flat) {
@@ -2760,7 +3880,37 @@ export function scanTarget(targetPath, options = {}) {
           }
         }
       }
-      parsedTokenFiles.push({ relTf, flat, fileMode });
+      const preparedJson = prepareFileTreeForMerge(json);
+      const prefixedRoot = fileMode ? { [fileMode]: preparedJson } : preparedJson;
+      const originInfo = { relTf, fileMode };
+      const recordOrigins = (node, pathSegs = []) => {
+        if (!node || typeof node !== "object" || Array.isArray(node)) return;
+        const pStr = pathSegs.join(".");
+        if (pStr && typeof node.$extends === "string" && !extendsOriginByGroup.has(pStr)) {
+          extendsOriginByGroup.set(pStr, originInfo);
+        }
+        if (pStr && !groupOriginByPath.has(pStr)) {
+          groupOriginByPath.set(pStr, originInfo);
+        }
+        if (pStr && isTokenLeafObject(node)) {
+          if (!leafOriginByPath.has(pStr)) leafOriginByPath.set(pStr, originInfo);
+          return;
+        }
+        for (const [k, v] of Object.entries(node)) {
+          if (k === "$root" && v && typeof v === "object" && !Array.isArray(v)) {
+            if (pStr && !leafOriginByPath.has(pStr)) leafOriginByPath.set(pStr, originInfo);
+            continue;
+          }
+          if (k.startsWith("$")) continue;
+          if ((k === "type" || k === "description") && (v == null || typeof v !== "object")) continue;
+          if (v && typeof v === "object" && !Array.isArray(v)) {
+            recordOrigins(v, [...pathSegs, k]);
+          }
+        }
+      };
+      recordOrigins(prefixedRoot, []);
+      mergeRawDtcgTrees(combinedTree, prefixedRoot);
+      parsedTokenFiles.push({ relTf, fileMode, rawCount: flat.length });
     } catch (err) {
       if (st.isFile()) {
         throw new Error(`Invalid JSON in token file ${tf}: ${err.message}`);
@@ -2774,17 +3924,28 @@ export function scanTarget(targetPath, options = {}) {
       const segs = ref.slice(2).split("/").filter(Boolean).map((p) => p.replaceAll("~1", "/").replaceAll("~0", "~"));
       for (let i = segs.length; i > 0; i--) {
         if (i < segs.length && segs[i] !== "$value") continue;
-        const cand = segs.slice(0, i).join(".");
+        const cand = segs.slice(0, i).filter((seg) => seg !== "$root").join(".");
         if (localSet.has(cand)) return `#/${fm}/${ref.slice(2)}`;
       }
       return ref;
     }
-    return localSet.has(ref) ? `${fm}.${ref}` : ref;
+    const cleanRef = ref.replace(/\.\$root$/i, "");
+    return localSet.has(ref) || localSet.has(cleanRef) ? `${fm}.${ref}` : ref;
   };
   const rewriteValRefs = (val, fm, localSet) => {
     if (typeof val === "string") {
       const m = val.trim().match(/^\{([^}]+)\}$/);
-      if (m && localSet.has(m[1].trim())) return `{${fm}.${m[1].trim()}}`;
+      if (m) {
+        const inner = m[1].trim();
+        const cleanInner = inner.replace(/\.\$root$/i, "");
+        if (localSet.has(inner) || localSet.has(cleanInner)) return `{${fm}.${inner}}`;
+      } else if (/\{([^{}\s:;,"'()]+)\}/.test(val)) {
+        return val.replace(/\{([^{}\s:;,"'()]+)\}/g, (full, rawInner) => {
+          const inner = rawInner.trim();
+          const cleanInner = inner.replace(/\.\$root$/i, "");
+          return localSet.has(inner) || localSet.has(cleanInner) ? `{${fm}.${inner}}` : full;
+        });
+      }
       return val;
     }
     if (Array.isArray(val)) return val.map((x) => rewriteValRefs(x, fm, localSet));
@@ -2798,33 +3959,97 @@ export function scanTarget(targetPath, options = {}) {
     return val;
   };
 
+  const findTokenOrigin = (tokPath) => {
+    if (leafOriginByPath.has(tokPath)) return leafOriginByPath.get(tokPath);
+    const segs = String(tokPath || "").split(".");
+    for (let i = segs.length - 1; i >= 1; i--) {
+      const pref = segs.slice(0, i).join(".");
+      if (extendsOriginByGroup.has(pref)) return extendsOriginByGroup.get(pref);
+    }
+    for (let i = segs.length - 1; i >= 1; i--) {
+      const pref = segs.slice(0, i).join(".");
+      if (groupOriginByPath.has(pref)) return groupOriginByPath.get(pref);
+    }
+    return { relTf: parsedTokenFiles[0]?.relTf || "tokens.json", fileMode: parsedTokenFiles[0]?.fileMode || null };
+  };
+
   const dtcgReports = [];
   const mergedTokens = [];
   const dtcgFileByPath = new Map();
-  for (const { relTf, flat, fileMode } of parsedTokenFiles) {
-    const adjusted = flat.map((tok) => {
-      if (!fileMode) return tok;
-      const segs = tok.path.split(".");
-      const hasLeadingMode = /^(light|dark)$/i.test(segs[0] || "");
-      const hasExtMode = Boolean(getTokenExtModes(tok));
-      if (hasLeadingMode || hasExtMode) return tok;
-      const localSet = modeLocalPaths[fileMode];
-      return {
-        ...tok,
-        path: `${fileMode}.${tok.path}`,
-        value: rewriteValRefs(tok.value, fileMode, localSet),
-        ref: tok.ref ? rewriteRefStr(tok.ref, fileMode, localSet) : tok.ref,
-      };
+  let combinedDtcg = null;
+  let dtcgModes = null;
+  if (parsedTokenFiles.length > 0) {
+    const rawExtendsIssues = [];
+    const expandedTree = resolveDtcgExtends(combinedTree, rawExtendsIssues);
+    const rawMergedTokens = flattenTokensFromExpanded(expandedTree, rawExtendsIssues);
+    const enrichedExtendsIssues = rawExtendsIssues.map((iss) => {
+      const origin =
+        extendsOriginByGroup.get(iss.path) ||
+        (iss.path && iss.path !== "(root)" ? findTokenOrigin(iss.path) : { relTf: parsedTokenFiles[0]?.relTf || "tokens.json" });
+      return { ...iss, file: origin.relTf };
     });
-    const single = validateDtcgTokens(adjusted);
-    dtcgReports.push({ file: relTf, ...single });
-    for (const tok of adjusted) {
-      if (!dtcgFileByPath.has(tok.path)) dtcgFileByPath.set(tok.path, relTf);
+    for (const tok of rawMergedTokens) {
+      const origin = findTokenOrigin(tok.path);
+      if (!dtcgFileByPath.has(tok.path)) dtcgFileByPath.set(tok.path, origin.relTf);
+      const fm = origin.fileMode;
+      const adjustedTok = fm
+        ? {
+            ...tok,
+            value: rewriteValRefs(tok.value, fm, modeLocalPaths[fm]),
+            ref: tok.ref ? rewriteRefStr(tok.ref, fm, modeLocalPaths[fm]) : tok.ref,
+          }
+        : tok;
+      mergedTokens.push(adjustedTok);
     }
-    mergedTokens.push(...adjusted);
+    Object.defineProperty(mergedTokens, DTCG_EXTENDS_ISSUES, {
+      value: enrichedExtendsIssues,
+      enumerable: false,
+      configurable: true,
+    });
+    if (mergedTokens.length > 0) {
+      combinedDtcg = validateDtcgTokens(mergedTokens);
+      dtcgModes = analyzeDtcgModesAndContrast(mergedTokens);
+    } else if (enrichedExtendsIssues.length > 0) {
+      combinedDtcg = validateDtcgTokens(mergedTokens);
+    }
+    const tokensByFile = new Map(parsedTokenFiles.map((pf) => [pf.relTf, []]));
+    for (const tok of mergedTokens) {
+      const ownerRel = dtcgFileByPath.get(tok.path) || parsedTokenFiles[0].relTf;
+      if (!tokensByFile.has(ownerRel)) tokensByFile.set(ownerRel, []);
+      tokensByFile.get(ownerRel).push(tok);
+    }
+    for (const pf of parsedTokenFiles) {
+      const fileToks = tokensByFile.get(pf.relTf) || [];
+      if (parsedTokenFiles.length === 1) {
+        dtcgReports.push({ file: pf.relTf, ...(combinedDtcg || validateDtcgTokens(fileToks)) });
+      } else {
+        const fileExtIssues = enrichedExtendsIssues.filter((iss) => iss.file === pf.relTf);
+        const fileLocal = validateDtcgTokens(
+          Object.defineProperty([...fileToks], DTCG_EXTENDS_ISSUES, {
+            value: fileExtIssues,
+            enumerable: false,
+            configurable: true,
+          })
+        );
+        const filePathSet = new Set(fileToks.map((t) => t.path));
+        const combinedBlockingForFile = (combinedDtcg?.blockingIssues || []).filter(
+          (iss) => (iss.file ? iss.file === pf.relTf : dtcgFileByPath.get(iss.path) === pf.relTf)
+        );
+        const combinedMissingTypesForFile = (combinedDtcg?.missingTypeIssues || []).filter((iss) => filePathSet.has(iss.path));
+        dtcgReports.push({
+          file: pf.relTf,
+          tokenCount: fileLocal.tokenCount,
+          typedCount: fileLocal.typedCount,
+          describedCount: fileLocal.describedCount,
+          aliasCount: fileLocal.aliasCount,
+          componentScopedCount: fileLocal.componentScopedCount,
+          modernColorCount: fileLocal.modernColorCount,
+          blockingIssues: combinedBlockingForFile,
+          missingTypeIssues: combinedMissingTypesForFile,
+        });
+      }
+    }
   }
-  const combinedDtcg = mergedTokens.length > 0 ? validateDtcgTokens(mergedTokens) : null;
-  const dtcgModes = mergedTokens.length > 0 ? analyzeDtcgModesAndContrast(mergedTokens) : null;
 
   // 2. Codebase Drift Scan
   const definedVars = new Set();
@@ -2852,9 +4077,18 @@ export function scanTarget(targetPath, options = {}) {
 
   if (combinedDtcg) {
     for (const issue of combinedDtcg.blockingIssues) {
-      const ruleId = issue.type === "circular_reference" ? "dsaf/dtcg-circular-ref" : "dsaf/dtcg-unresolved-ref";
+      const ruleId =
+        issue.type === "circular_reference" || issue.type === "circular_extends"
+          ? "dsaf/dtcg-circular-ref"
+          : "dsaf/dtcg-unresolved-ref";
+      const fileForIssue =
+        issue.file ||
+        dtcgFileByPath.get(issue.path) ||
+        [...dtcgFileByPath.entries()].find(([k]) => k.startsWith(`${issue.path}.`))?.[1] ||
+        dtcgReports[0]?.file ||
+        "tokens.json";
       ciActive.push({
-        file: dtcgFileByPath.get(issue.path) || dtcgReports[0]?.file || "tokens.json",
+        file: fileForIssue,
         line: 1,
         ruleId,
         tier: "floor",
@@ -2984,6 +4218,12 @@ export function scanTarget(targetPath, options = {}) {
     for (const m of varUsageSurface.matchAll(/(?:^|[\s"'`:/!])-?([a-z]+-[a-z0-9-]+)/g)) {
       seenUtilityClasses.add(m[1]);
     }
+    for (const m of varUsageSurface.matchAll(/(?:^|[\s"'`:/!])@(?:(?:min|max)-)?([a-z0-9][a-z0-9-]*)(?=(?:\/[a-zA-Z0-9_-]+)?:)/g)) {
+      seenUtilityClasses.add(`@${m[1]}`);
+    }
+    for (const m of varUsageSurface.matchAll(/(?:^|[\s"'`:/!])(?:(?:min|max)-)?([a-z0-9][a-z0-9-]*):/g)) {
+      seenUtilityClasses.add(`bp:${m[1]}`);
+    }
 
     let linePreservingSurface = isStyle ? stripTokenBlocksPreservingLines(raw) : commentFreeRaw;
     const embeddedStyleRanges = [];
@@ -3061,7 +4301,7 @@ export function scanTarget(targetPath, options = {}) {
     colorTokenRefs += varRefsInFile;
 
     const twArbColorRe =
-      /(?<=^|[\s"'`:!])((?:bg|text|border(?:-(?:t|r|b|l|x|y|s|e))?|divide|fill|stroke|ring(?:-offset)?|from|to|via|accent|outline|decoration|shadow|caret|placeholder)-\[(?:color:)?(?:#[^\]\s]+|(?:rgba?|hsla?|oklch|oklab|hwb|lab|lch)\([^\]\s]+\))\]!?|\[(?:color|background-color|background|border-color|outline-color|fill|stroke|accent-color|caret-color):(?:#[0-9a-fA-F]{3,8}|(?:rgba?|hsla?|oklch|oklab|hwb|lab|lch)\([^\]\s]+\))\]!?)/g;
+      /(?<=^|[\s"'`:!])((?:bg|text|border(?:-(?:t|r|b|l|x|y|s|e))?|divide|fill|stroke|(?:inset-)?ring(?:-offset)?|from|to|via|accent|outline|decoration|shadow|caret|placeholder)-\[(?:color:)?(?:#[^\]\s]+|(?:rgba?|hsla?|oklch|oklab|hwb|lab|lch|color-mix|color|light-dark)\([^\]\s]+\))\]!?|\[(?:color|background-color|background|border-color|outline-color|fill|stroke|accent-color|caret-color):(?:#[0-9a-fA-F]{3,8}|(?:rgba?|hsla?|oklch|oklab|hwb|lab|lch|color-mix|color|light-dark)\([^\]\s]+\))\]!?)/g;
     const twArbSpaceRe =
       /(?<=^|[\s"'`:!])(-?(?:p|px|py|pt|pr|pb|pl|ps|pe|m|mx|my|mt|mr|mb|ml|ms|me|gap|gap-x|gap-y|space-x|space-y|rounded(?:-[a-z]+)?|(?:min-|max-)?(?:w|h|size)|inset(?:-[xy])?|top|right|bottom|left|start|end)-\[-?\d+(?:\.\d+)?px\]!?|\[(?:padding|margin|gap|row-gap|column-gap|width|height|min-width|max-width|min-height|max-height|inset|top|right|bottom|left|border-radius)(?:-(?:top|right|bottom|left|inline|block)(?:-(?:start|end))?)?:\s*-?\d+(?:\.\d+)?px\]!?)/g;
     const twPrimColorRe =
@@ -3089,8 +4329,10 @@ export function scanTarget(targetPath, options = {}) {
     const fileCiFindings = [];
 
     let fileColorDrift = 0;
+    const hexSpansInFile = [];
     for (const m of colorScanSurface.matchAll(HEX_COLOR_RE)) {
       fileColorDrift++;
+      hexSpansInFile.push([m.index, m.index + m[0].length]);
       const norm = normalizeHexKey(m[0]);
       if (norm) hardcodedHexSet.add(norm);
       fileCiFindings.push({
@@ -3104,6 +4346,12 @@ export function scanTarget(targetPath, options = {}) {
     }
     for (const m of findHardcodedColorFunctions(colorScanSurface)) {
       if (isTokenizedColorFn(m.text)) continue;
+      if (
+        /^color-mix\(/i.test(m.text) &&
+        hexSpansInFile.some(([hs, he]) => hs >= m.index && he <= m.index + m.text.length)
+      ) {
+        continue;
+      }
       fileColorDrift++;
       fileCiFindings.push({
         file: rel,
@@ -3432,6 +4680,7 @@ export function scanTarget(targetPath, options = {}) {
           "divide-",
           "ring-",
           "ring-offset-",
+          "inset-ring-",
           "fill-",
           "stroke-",
           "from-",
@@ -3441,9 +4690,22 @@ export function scanTarget(targetPath, options = {}) {
           "accent-",
           "decoration-",
           "shadow-",
+          "inset-shadow-",
+          "drop-shadow-",
+          "text-shadow-",
           "caret-",
           "placeholder-",
         ].some((p) => seenUtilityClasses.has(p + slug))
+      ) {
+        usedVars.add(tv);
+      }
+    } else if (tv === "--spacing") {
+      if (
+        [...seenUtilityClasses].some((u) =>
+          /^(?:p|px|py|pt|pr|pb|pl|ps|pe|m|mx|my|mt|mr|mb|ml|ms|me|gap|gap-x|gap-y|w|h|min-w|max-w|min-h|max-h|size|space-x|space-y|inset|inset-x|inset-y|top|right|bottom|left|start|end|scroll-m|scroll-p)-(?:\d+(?:\.\d+)?|\d+\/\d+|px)$/.test(
+            u
+          )
+        )
       ) {
         usedVars.add(tv);
       }
@@ -3519,15 +4781,37 @@ export function scanTarget(targetPath, options = {}) {
       ) {
         usedVars.add(tv);
       }
+    } else if (tv.startsWith("--font-weight-") && seenUtilityClasses.has("font-" + tv.slice(14))) {
+      usedVars.add(tv);
     } else if (tv.startsWith("--font-") && seenUtilityClasses.has("font-" + tv.slice(7).split("--")[0])) {
+      usedVars.add(tv);
+    } else if (tv.startsWith("--tracking-") && seenUtilityClasses.has("tracking-" + tv.slice(11))) {
+      usedVars.add(tv);
+    } else if (tv.startsWith("--leading-") && seenUtilityClasses.has("leading-" + tv.slice(10))) {
+      usedVars.add(tv);
+    } else if (tv.startsWith("--inset-shadow-") && seenUtilityClasses.has("inset-shadow-" + tv.slice(15))) {
+      usedVars.add(tv);
+    } else if (tv.startsWith("--drop-shadow-") && seenUtilityClasses.has("drop-shadow-" + tv.slice(14))) {
+      usedVars.add(tv);
+    } else if (tv.startsWith("--text-shadow-") && seenUtilityClasses.has("text-shadow-" + tv.slice(14))) {
       usedVars.add(tv);
     } else if (tv.startsWith("--shadow-") && seenUtilityClasses.has("shadow-" + tv.slice(9))) {
       usedVars.add(tv);
     } else if (tv.startsWith("--text-") && seenUtilityClasses.has("text-" + tv.slice(7).split("--")[0])) {
       usedVars.add(tv);
+    } else if (tv.startsWith("--blur-") && ["blur-", "backdrop-blur-"].some((p) => seenUtilityClasses.has(p + tv.slice(7)))) {
+      usedVars.add(tv);
+    } else if (tv.startsWith("--perspective-") && seenUtilityClasses.has("perspective-" + tv.slice(14))) {
+      usedVars.add(tv);
+    } else if (tv.startsWith("--aspect-") && seenUtilityClasses.has("aspect-" + tv.slice(9))) {
+      usedVars.add(tv);
+    } else if (tv.startsWith("--container-") && ["max-w-", "w-", "min-w-", "@"].some((p) => seenUtilityClasses.has(p + tv.slice(12)))) {
+      usedVars.add(tv);
     } else if (tv.startsWith("--animate-") && seenUtilityClasses.has("animate-" + tv.slice(10))) {
       usedVars.add(tv);
     } else if (tv.startsWith("--ease-") && seenUtilityClasses.has("ease-" + tv.slice(7))) {
+      usedVars.add(tv);
+    } else if (tv.startsWith("--breakpoint-") && seenUtilityClasses.has("bp:" + tv.slice(13))) {
       usedVars.add(tv);
     }
   }
@@ -5536,6 +6820,443 @@ function runSelfTest() {
     );
     const r40SubPxRes = scanTarget(r40SubPxDir);
     assert.equal(r40SubPxRes.drift.offGridSpacingHits, 0, "R40 A2-L8: leading-dot .5px/.25px/-0.5px must not trigger offGridSpacingHits");
+
+    // Round 41 (R40-A2-H4 transitive $extends subgroup & mode-only leaf merge; R40-A2-M3 on-primary vs surface.primary; R40-A2-M4 fractional >4px & unitless JS numeric spacing):
+    const r41ExtDoc = {
+      b: {
+        sub: {
+          c: { $type: "color", $value: "#ffffff" },
+          keepType: { $type: "dimension", $value: "16px" },
+        },
+      },
+      a: {
+        $extends: "{b}",
+        sub: {
+          c: { $extensions: { mode: { dark: "#000000" } } },
+        },
+      },
+      d: { $extends: "{a.sub}" },
+    };
+    const r41ExtRes = resolveDtcgExtends(r41ExtDoc);
+    assert.equal(r41ExtRes.d?.c?.$value, "#ffffff", "R41 A2-H4: mode-only leaf merge must preserve inherited $value");
+    assert.equal(r41ExtRes.d?.c?.$type, "color", "R41 A2-H4: mode-only leaf merge must preserve inherited $type");
+    assert.equal(r41ExtRes.d?.c?.$extensions?.mode?.dark, "#000000", "R41 A2-H4: mode-only leaf merge must apply dark override");
+    assert.equal(r41ExtRes.d?.keepType?.$value, "16px", "R41 A2-H4: c extends {a.sub} must inherit transitive b.sub members");
+
+    const r41RoleContrast = analyzeDtcgModesAndContrast({
+      color: {
+        brand: { primary: { $type: "color", $value: "#1d4ed8" } },
+        surface: { primary: { $type: "color", $value: "#ffffff" } },
+        text: {
+          primary: { $type: "color", $value: "#111827" },
+          "on-primary": { $type: "color", $value: "#ffffff" },
+        },
+      },
+    });
+    assert.equal(r41RoleContrast.contrast.wcagFailures, 0, "R41 A2-M3: text.on-primary must pair with brand.primary rather than neutral surface.primary");
+    assert.ok(r41RoleContrast.contrast.pairsEvaluated >= 2, "R41 A2-M3: both on-primary/brand.primary and text.primary/surface.primary must pair");
+
+    const r41SpaceDir = join(scratch, "r41-spacing");
+    mkdirSync(r41SpaceDir, { recursive: true });
+    writeFileSync(join(r41SpaceDir, "a.css"), ".a { padding: 7.5px; margin: 13.5px; gap: 1.5px; }\n");
+    writeFileSync(
+      join(r41SpaceDir, "Card.tsx"),
+      [
+        "export const C = ({ count = 2, big = false }: { count?: number; big?: boolean }) => (",
+        "  <div style={{ padding: 5, gap: 9, borderRadius: 7, marginTop: big ? 13 : 8, paddingLeft: count + 5 }} />",
+        ");",
+      ].join("\n") + "\n"
+    );
+    const r41SpRes = scanTarget(r41SpaceDir);
+    assert.equal(r41SpRes.drift.offGridSpacingHits, 6, "R41 A2-M4: must flag 7.5px, 13.5px, and unitless JS spacing 5/9/7/13 while ignoring 1.5px & count + 5");
+
+    // Round 42 (R41-A2-H1 symmetric dark fallback, R41-A2-M5 intra-parent $extends, R41-A2-M6 metadata-only leaf override):
+    const r42DarkFirstContrast = analyzeDtcgModesAndContrast({
+      surface: {
+        default: { $type: "color", $value: "#0f172a", $extensions: { modes: { light: "#ffffff" } } },
+      },
+      text: {
+        primary: { $type: "color", $value: "#0f172a", $extensions: { modes: { light: "#111827" } } },
+      },
+    });
+    assert.equal(r42DarkFirstContrast.parity.missingInDark.length, 0, "R42 A2-H1: dark-first base $value acts as dark mode when modes omits dark");
+    assert.ok(
+      r42DarkFirstContrast.contrast.failingPairs.some((p) => p.mode === "dark" && p.fg === "text.primary"),
+      "R42 A2-H1: dark-first token contrast failure (#0f172a on #0f172a) must be caught"
+    );
+
+    const r42ExtDoc = {
+      shared: {
+        base: {
+          primary: { $type: "color", $value: "#1d4ed8", $description: "Shared" },
+        },
+      },
+      themes: {
+        $extends: "{shared}",
+        base: {
+          secondary: { $type: "color", $value: "#0f172a" },
+        },
+        dark: {
+          $extends: "{themes.base}",
+          primary: { $description: "Brand primary" },
+        },
+      },
+    };
+    const r42ExtRes = resolveDtcgExtends(r42ExtDoc);
+    assert.equal(r42ExtRes.themes?.dark?.primary?.$value, "#1d4ed8", "R42 A2-M5/M6: metadata-only override must keep inherited $value from intra-parent $extends");
+    assert.equal(r42ExtRes.themes?.dark?.primary?.$type, "color", "R42 A2-M6: metadata-only override must keep inherited $type");
+    assert.equal(r42ExtRes.themes?.dark?.primary?.$description, "Brand primary", "R42 A2-M6: metadata-only override must apply new $description");
+    assert.equal(r42ExtRes.themes?.dark?.secondary?.$value, "#0f172a", "R42 A2-M5: local sibling additions inside themes.base must also merge into themes.dark");
+
+    // Round 43 (R42-A2-H1 multi-level stacked $extends, R42-A2-M6 cyclic/unresolved $extends, R42-A2-H2 CSS Color 4/5 + named + calc + light-dark + color-mix, R42-A2-M7 dynamic ext mode invariant, R42-A2-M8 split $root):
+    const r43DeepExtDoc = {
+      base: {
+        sub: {
+          deep: {
+            primary: { $type: "color", $value: "#1d4ed8" },
+          },
+        },
+      },
+      themes: {
+        $extends: "{base}",
+        sub: {
+          localOnly: { $type: "color", $value: "#0f172a" },
+          dark: { $extends: "{themes.sub.deep}" },
+        },
+      },
+    };
+    const r43DeepRes = resolveDtcgExtends(r43DeepExtDoc);
+    assert.equal(r43DeepRes.themes?.sub?.dark?.primary?.$value, "#1d4ed8", "R43 A2-H1: stacked multi-level $extends must preserve inheritedCur through local ancestor groups");
+
+    const r43ExtIssueDir = join(scratch, "r43-ext-issues");
+    mkdirSync(r43ExtIssueDir, { recursive: true });
+    writeFileSync(
+      join(r43ExtIssueDir, "tokens.tokens.json"),
+      JSON.stringify({
+        a: { $extends: "{b}", x: { $type: "color", $value: "#ffffff" } },
+        b: { $extends: "{a}" },
+        c: { $extends: "{missing.group}" },
+      })
+    );
+    const r43ExtScan = scanTarget(r43ExtIssueDir);
+    assert.ok(r43ExtScan.ciFindings.active.some((f) => f.ruleId === "dsaf/dtcg-circular-ref"), "R43 A2-M6: cyclic $extends must emit dsaf/dtcg-circular-ref");
+    assert.ok(r43ExtScan.ciFindings.active.some((f) => f.ruleId === "dsaf/dtcg-unresolved-ref"), "R43 A2-M6: unresolved $extends must emit dsaf/dtcg-unresolved-ref");
+
+    assert.deepEqual(parseCssColorToRgba("rebeccapurple"), [102, 51, 153, 1], "R43 A2-H2: named CSS Color 4 rebeccapurple");
+    const r43CalcRgb = parseCssColorToRgba("rgb(calc(100% - 20%) min(100, 128) clamp(0, 64, 255))");
+    assert.deepEqual(r43CalcRgb, [204, 100, 64, 1], "R43 A2-H2: calc()/min()/clamp() inside rgb()");
+    const r43Mix = parseCssColorToRgba("color-mix(in srgb, red 40%, blue)");
+    assert.deepEqual(r43Mix, [102, 0, 153, 1], "R43 A2-H2: color-mix(in srgb, red 40%, blue)");
+    const r43OklchMix = parseCssColorToRgba("color-mix(in oklch, #1d4ed8 75%, white)");
+    assert.ok(r43OklchMix && r43OklchMix[0] > 29 && r43OklchMix[2] > 216, "R43 A2-H2: color-mix(in oklch, ...)");
+    assert.deepEqual(parseCssColorToRgba("light-dark(#111827, #f8fafc)", "light"), [17, 24, 39, 1]);
+    assert.deepEqual(parseCssColorToRgba("light-dark(#111827, #f8fafc)", "dark"), [248, 250, 252, 1]);
+
+    const r43LightDarkContrast = analyzeDtcgModesAndContrast({
+      surface: { bg: { $type: "color", $value: "light-dark(#ffffff, #0f172a)" } },
+      text: { fg: { $type: "color", $value: "light-dark(#111827, #0f172a)" } },
+    });
+    assert.ok(
+      r43LightDarkContrast.contrast.failingPairs.some((p) => p.mode === "dark" && p.fg === "text.fg"),
+      "R43 A2-H2: light-dark() contrast failure in dark mode must be detected"
+    );
+
+    const r43ExtDynContrast = analyzeDtcgModesAndContrast({
+      palette: {
+        ink: { $type: "color", $value: "#ffffff", $extensions: { modes: { dark: "#f8fafc" } } },
+      },
+      components: {
+        card: {
+          bg: { $type: "color", $value: "#ffffff", $extensions: { modes: { dark: "#0f172a" } } },
+          light: {
+            text: { $type: "color", $value: "{palette.ink}", $extensions: { modes: { dark: "#e2e8f0" } } },
+          },
+        },
+      },
+    });
+    assert.ok(
+      r43ExtDynContrast.contrast.failingPairs.some((p) => p.mode === "light" && p.fg === "components.card.light.text" && p.bg === "components.card.bg"),
+      "R43 A2-M7: fallback alias resolving differently in light vs dark must set isInvariant=false so component mode segs strip and pair"
+    );
+
+    const r43SplitRootDir = join(scratch, "r43-split-root");
+    mkdirSync(join(r43SplitRootDir, "tokens"), { recursive: true });
+    writeFileSync(
+      join(r43SplitRootDir, "tokens/light.tokens.json"),
+      JSON.stringify({
+        brand: { $type: "color", $root: { $value: "#1d4ed8" } },
+        bg: { $type: "color", $value: "#ffffff" },
+        fg: { $type: "color", $value: "{brand.$root}" },
+        ptr: { $type: "color", $ref: "#/brand/$root" },
+      })
+    );
+    writeFileSync(
+      join(r43SplitRootDir, "tokens/dark.tokens.json"),
+      JSON.stringify({
+        brand: { $type: "color", $root: { $value: "#93c5fd" } },
+        bg: { $type: "color", $value: "#0f172a" },
+        fg: { $type: "color", $value: "{brand.$root}" },
+        ptr: { $type: "color", $ref: "#/brand/$root" },
+      })
+    );
+    const r43SplitScan = scanTarget(r43SplitRootDir);
+    assert.equal(
+      r43SplitScan.ciFindings.active.filter((f) => f.ruleId === "dsaf/dtcg-unresolved-ref").length,
+      0,
+      "R43 A2-M8: split light/dark $root alias & $ref pointers must rewrite cleanly without unresolved_reference"
+    );
+
+    // Round 44 (R43-A2-H1 embedded CSS function refs, R43-A2-M2 cross-file $extends, R43-A2-M3 default alias to dark-only, R43-A2-M4 wide-gamut color-mix):
+    const r44EmbeddedVal = validateDtcgTokens({
+      color: {
+        a: { $type: "color", $value: "color-mix(in srgb, {color.b} 50%, #ffffff)" },
+        b: { $type: "color", $value: "{color.a}" },
+        c: { $type: "color", $value: "light-dark({color.missingLight}, #000000)" },
+      },
+    });
+    assert.ok(
+      r44EmbeddedVal.blockingIssues.some((i) => i.type === "circular_reference"),
+      "R44 A2-H1: circular reference through color-mix({ref}) must be detected"
+    );
+    assert.ok(
+      r44EmbeddedVal.blockingIssues.some((i) => i.type === "unresolved_reference" && i.target === "color.missingLight"),
+      "R44 A2-H1: missing ref inside light-dark({ref}, ...) must be flagged as unresolved_reference"
+    );
+
+    const r44CrossExtDir = join(scratch, "r44-cross-extends");
+    mkdirSync(join(r44CrossExtDir, "tokens"), { recursive: true });
+    writeFileSync(
+      join(r44CrossExtDir, "tokens/base.tokens.json"),
+      JSON.stringify({
+        base: {
+          card: {
+            bg: { $type: "color", $value: "#ffffff" },
+            fg: { $type: "color", $value: "#111111" },
+          },
+        },
+      })
+    );
+    writeFileSync(
+      join(r44CrossExtDir, "tokens/theme.tokens.json"),
+      JSON.stringify({
+        card: { $extends: "{base.card}" },
+        alias: { $type: "color", $value: "{card.fg}" },
+      })
+    );
+    writeFileSync(
+      join(r44CrossExtDir, "tokens/dark.tokens.json"),
+      JSON.stringify({
+        card: { $extends: "{base.card}", bg: { $value: "#0f172a" }, fg: { $value: "#f8fafc" } },
+      })
+    );
+    const r44CrossScan = scanTarget(r44CrossExtDir);
+    assert.equal(
+      r44CrossScan.ciFindings.active.filter((f) => f.ruleId === "dsaf/dtcg-unresolved-ref").length,
+      0,
+      "R44 A2-M2: cross-file $extends across base/theme/split-dark files must resolve without dsaf/dtcg-unresolved-ref"
+    );
+
+    const r44DarkOnlyDoc = {
+      light: { color: { bg: { $type: "color", $value: "#ffffff" } } },
+      dark: {
+        color: {
+          bg: { $type: "color", $value: "#000000" },
+          accentDarkOnly: { $type: "color", $value: "#111111" },
+        },
+      },
+      color: {
+        text: { $type: "color", $value: "{color.accentDarkOnly}" },
+      },
+    };
+    const r44DarkOnlyVal = validateDtcgTokens(r44DarkOnlyDoc);
+    assert.ok(
+      r44DarkOnlyVal.blockingIssues.some((i) => i.type === "unresolved_reference" && i.path === "color.text"),
+      "R44 A2-M3: unscoped default token aliasing single-mode-only token must fail validation"
+    );
+    const r44DarkOnlyModes = analyzeDtcgModesAndContrast(r44DarkOnlyDoc);
+    assert.ok(
+      r44DarkOnlyModes.parity.missingInLight.includes("color.text"),
+      "R44 A2-M3: unscoped default token resolving only in dark mode must report missingInLight"
+    );
+
+    for (const sp of ["a98-rgb", "prophoto-rgb", "rec2020", "display-p3-linear"]) {
+      const mixed = parseCssColorToRgba(`color-mix(in ${sp}, #ff0000 50%, #0000ff)`);
+      assert.ok(Array.isArray(mixed) && mixed.length === 4, `R44 A2-M4: color-mix(in ${sp}, ...) must parse cleanly`);
+      const sameMix = parseCssColorToRgba(`color-mix(in ${sp}, #1d4ed8 50%, #1d4ed8)`);
+      assert.ok(
+        sameMix && Math.abs(sameMix[0] - 0x1d) <= 1 && Math.abs(sameMix[1] - 0x4e) <= 1 && Math.abs(sameMix[2] - 0xd8) <= 1,
+        `R44 A2-M4: color-mix(in ${sp}, #1d4ed8 50%, #1d4ed8) must round-trip within 1 LSB`
+      );
+    }
+
+    // Round 45 (composite non-fn refs, nested light-dark inside color-mix, negative chroma C<0 clamping):
+    const r45CompVal = validateDtcgTokens({
+      border: { card: { $type: "border", $value: "1px solid {missing.color}" } },
+      a: { $type: "shadow", $value: "0 2px 4px {b}" },
+      b: { $type: "shadow", $value: "{a}" },
+    });
+    assert.ok(r45CompVal.blockingIssues.some((i) => i.type === "unresolved_reference" && i.path === "border.card"), "R45 A2-M1: embedded ref in border string must validate");
+    assert.ok(r45CompVal.blockingIssues.some((i) => i.type === "circular_reference"), "R45 A2-M1: cycle through composite shadow string must be caught");
+
+    const r45NestedLdDoc = {
+      light: { a: { $type: "color", $value: "#111111" }, surface: { bg: { $type: "color", $value: "#ffffff" } } },
+      dark: { b: { $type: "color", $value: "#ffffff" }, surface: { bg: { $type: "color", $value: "#0f172a" } } },
+      text: { fg: { $type: "color", $value: "color-mix(in srgb, light-dark({a}, {b}) 90%, {surface.bg})" } },
+    };
+    const r45NestedVal = validateDtcgTokens(r45NestedLdDoc);
+    assert.equal(r45NestedVal.blockingIssues.length, 0, "R45 A2-M2: light-dark({a},{b}) inside color-mix(...) must resolve both mode branches cleanly");
+    const r45NestedContrast = analyzeDtcgModesAndContrast(r45NestedLdDoc);
+    assert.ok(r45NestedContrast.contrast.pairsEvaluated >= 2, "R45 A2-M2: light-dark inside color-mix contrast must evaluate in both light and dark modes");
+    assert.equal(r45NestedContrast.contrast.wcagFailures, 0);
+
+    assert.deepEqual(parseCssColorToRgba("oklch(0.6 -0.15 30)"), parseCssColorToRgba("oklch(0.6 0 30)"), "R45 A2-L1: oklch negative C must clamp to 0");
+    assert.deepEqual(parseCssColorToRgba("lch(60 -50 30)"), parseCssColorToRgba("lch(60 0 30)"), "R45 A2-L1: lch negative C must clamp to 0");
+    const r45NegChromaContrast = analyzeDtcgModesAndContrast({
+      surface: { bg: { $type: "color", $value: "#000000" } },
+      text: {
+        ok: { $type: "color", $value: { colorSpace: "oklch", components: [0.6, -0.15, 30] } },
+        okZero: { $type: "color", $value: { colorSpace: "oklch", components: [0.6, 0, 30] } },
+        lchNeg: { $type: "color", $value: { colorSpace: "lch", components: [60, -50, 30] } },
+        lchZero: { $type: "color", $value: { colorSpace: "lch", components: [60, 0, 30] } },
+      },
+    });
+    const r45Pairs = Object.fromEntries(r45NegChromaContrast.contrast.samplePairs.map((p) => [p.pair, p.wcagRatio]));
+    assert.equal(r45Pairs["text.ok vs surface.bg"], r45Pairs["text.okZero vs surface.bg"], "R45 A2-L1: W3C oklch negative C must match C=0");
+    assert.equal(r45Pairs["text.lchNeg vs surface.bg"], r45Pairs["text.lchZero vs surface.bg"], "R45 A2-L1: W3C lch negative C must match C=0");
+
+    // Round 46 (A2-M2 cross-file root $type isolation, A2-M3 TW arb color()/color-mix/light-dark, A2-M4 @theme v4 namespaces, A2-L8 display-p3-linear):
+    const r46RootTypeDir = join(scratch, "r46-roottype");
+    mkdirSync(r46RootTypeDir, { recursive: true });
+    writeFileSync(join(r46RootTypeDir, "01-colors.tokens.json"), JSON.stringify({ $type: "color", brand: { primary: { $value: "#1d4ed8" } } }));
+    writeFileSync(join(r46RootTypeDir, "02-spacing.tokens.json"), JSON.stringify({ $type: "dimension", space: { sm: { $value: "8px" } } }));
+    const r46RootTypeScan = scanTarget(r46RootTypeDir);
+    assert.equal(r46RootTypeScan.dtcg.blockingIssues.length, 0, "R46 A2-M2: 02-spacing root $type must not be dropped by 01-colors");
+    assert.equal(r46RootTypeScan.dtcg.missingTypeIssues.length, 0);
+
+    const r46BleedDir = join(scratch, "r46-bleed");
+    mkdirSync(r46BleedDir, { recursive: true });
+    writeFileSync(join(r46BleedDir, "01-untyped.tokens.json"), JSON.stringify({ space: { sm: { $value: "8px" } } }));
+    writeFileSync(join(r46BleedDir, "02-colors.tokens.json"), JSON.stringify({ $type: "color", brand: { primary: { $value: "#1d4ed8" } } }));
+    const r46BleedScan = scanTarget(r46BleedDir);
+    assert.ok(r46BleedScan.dtcg.missingTypeIssues.some((iss) => iss.path === "space.sm"), "R46 A2-M2: 02-colors root $type must not bleed backward into 01-untyped");
+
+    const r46TwDir = join(scratch, "r46-tw");
+    mkdirSync(r46TwDir, { recursive: true });
+    writeFileSync(
+      join(r46TwDir, "Comp.tsx"),
+      '<div className="bg-[color(display-p3_1_0.2_0.1)] bg-[color-mix(in_srgb,#ef4444_50%,#1d4ed8)] bg-[color-mix(in_srgb,red_50%,blue)] bg-[light-dark(red,blue)] font-semibold tracking-tight leading-snug blur-brand drop-shadow-card aspect-hero" />\n'
+    );
+    writeFileSync(
+      join(r46TwDir, "tokens.css"),
+      "@theme {\n  --font-weight-semibold: 600;\n  --tracking-tight: -0.02em;\n  --leading-snug: 1.375;\n  --blur-brand: 12px;\n  --drop-shadow-card: 0 2px 6px rgb(0 0 0 / 0.1);\n  --aspect-hero: 16 / 9;\n}\n.p3 { color: color(display-p3-linear 1 0 0); }\n"
+    );
+    const r46TwScan = scanTarget(r46TwDir);
+    assert.equal(r46TwScan.drift.tailwind.arbitraryColors, 4, "R46 A2-M3: color()/color-mix()/light-dark() TW arb classes must count 4");
+    assert.equal(r46TwScan.drift.hardcodedColorHits, 1, "R46 A2-M3 + L8: hex inside bg-[color-mix(...)] must not double-count, only display-p3-linear counts");
+    assert.equal(r46TwScan.drift.semanticOrphanCount, 0, "R46 A2-M4: @theme v4 namespaces must resolve used utilities cleanly");
+
+    // Round 47 (A2-M4 float color-mix with none hue & wide-gamut display-p3, A2-L8 @<slug> container queries, A2-L9 $extensions.mode-only $type):
+    const r47NoneMix = parseCssColorToRgba("color-mix(in oklch, oklch(0.7 0.2 none) 50%, oklch(0.5 0.2 120) 50%)");
+    const r47NoneExp = parseCssColorToRgba("oklch(0.6 0.2 120)");
+    assert.ok(
+      r47NoneMix && r47NoneExp && [0, 1, 2].every((idx) => Math.abs(r47NoneMix[idx] - r47NoneExp[idx]) <= 1),
+      "R47 A2-M4: color-mix(in oklch) must carry forward missing hue 'none' without resolving to 0deg"
+    );
+    const r47P3Mix = parseCssColorToRgba("color-mix(in display-p3, color(display-p3 1 0 0) 50%, color(display-p3 0 0 1) 50%)");
+    const r47P3Exp = parseCssColorToRgba("color(display-p3 0.5 0 0.5)");
+    assert.ok(
+      r47P3Mix && r47P3Exp && [0, 1, 2].every((idx) => Math.abs(r47P3Mix[idx] - r47P3Exp[idx]) <= 1),
+      "R47 A2-M4: color-mix(in display-p3) must mix wide-gamut stops without 8-bit sRGB pre-clamping"
+    );
+    const r47ContDir = join(scratch, "r47-container");
+    mkdirSync(r47ContDir, { recursive: true });
+    writeFileSync(join(r47ContDir, "theme.css"), "@theme {\n  --container-sidebar: 18rem;\n}\n");
+    writeFileSync(join(r47ContDir, "Layout.tsx"), 'export const Layout = () => <aside className="@sidebar:w-72 @max-sidebar:hidden" />;\n');
+    const r47ContScan = scanTarget(r47ContDir);
+    assert.equal(r47ContScan.drift.semanticOrphanCount, 0, "R47 A2-L8: @sidebar container variant must mark --container-sidebar used");
+
+    const r47ModeOnlyDoc = {
+      color: {
+        white: { $type: "color", $value: "#ffffff" },
+        black: { $type: "color", $value: "#000000" },
+        surface: { $extensions: { mode: { light: "{color.white}", dark: "{color.black}" } } },
+      },
+    };
+    const r47ModeOnlyVal = validateDtcgTokens(r47ModeOnlyDoc);
+    assert.equal(r47ModeOnlyVal.missingTypeIssues.length, 0, "R47 A2-L9: $extensions.mode-only alias leaf must inherit $type cleanly");
+
+    // Round 48 (A1-M1 symlink escape containment, A2-M2 color-mix & inset-ring, A2-M3 @theme --spacing/--breakpoint/shadow, A2-L1 analogous none propagation):
+    const r48OutDir = join(scratch, "r48-outside");
+    const r48RepoDir = join(scratch, "r48-repo");
+    mkdirSync(join(r48OutDir, "nested"), { recursive: true });
+    mkdirSync(join(r48RepoDir, "src"), { recursive: true });
+    writeFileSync(join(r48OutDir, "secret.tokens.json"), JSON.stringify({ $type: "color", secret: { $value: "#ff00aa" } }));
+    writeFileSync(join(r48OutDir, "secret.css"), ".bad { color: #ff00aa; }\n");
+    writeFileSync(join(r48OutDir, "nested/sub.css"), ".bad2 { color: #123456; }\n");
+    writeFileSync(join(r48RepoDir, "src/ok.css"), ".ok { color: var(--fg); }\n");
+    symlinkSync(join(r48OutDir, "secret.tokens.json"), join(r48RepoDir, "secret.tokens.json"));
+    symlinkSync(join(r48OutDir, "secret.css"), join(r48RepoDir, "src/secret.css"));
+    symlinkSync(join(r48OutDir, "nested"), join(r48RepoDir, "src/ext-nested"));
+    const r48SymScan = scanTarget(r48RepoDir);
+    assert.equal(r48SymScan.filesScanned.tokenJson, 0, "R48 A1-M1: escaping token symlink must be skipped");
+    assert.equal(r48SymScan.filesScanned.uiAndStyle, 1, "R48 A1-M1: escaping file & dir symlinks must be skipped");
+    assert.equal(r48SymScan.drift.hardcodedColorHits, 0);
+
+    const r48MixDir = join(scratch, "r48-color-mix");
+    mkdirSync(r48MixDir, { recursive: true });
+    writeFileSync(
+      join(r48MixDir, "styles.css"),
+      [
+        ".a { color: color-mix(in srgb, red 50%, blue); }",
+        ".b { color: color-mix(in oklch, #1d4ed8 70%, white); }",
+        ".c { color: color-mix(in srgb, var(--brand) 80%, white); }",
+      ].join("\n") + "\n"
+    );
+    writeFileSync(
+      join(r48MixDir, "Comp.tsx"),
+      '<div className="inset-ring-[#ff00aa] inset-ring-offset-[#123456]" />\n'
+    );
+    const r48MixScan = scanTarget(r48MixDir);
+    assert.equal(r48MixScan.drift.hardcodedColorHits, 2, "R48 A2-M2: bare color-mix() + hex color-mix() count without double-counting; var() skipped");
+    assert.equal(r48MixScan.drift.tailwind.arbitraryColors, 2, "R48 A2-M2: inset-ring-[...] and inset-ring-offset-[...] must count as TW arb colors");
+
+    const r48ThemeDir = join(scratch, "r48-theme");
+    mkdirSync(r48ThemeDir, { recursive: true });
+    writeFileSync(
+      join(r48ThemeDir, "theme.css"),
+      [
+        "@theme {",
+        "  --spacing: 0.25rem;",
+        "  --breakpoint-laptop: 64rem;",
+        "  --color-brand: #1d4ed8;",
+        "}",
+      ].join("\n") + "\n"
+    );
+    writeFileSync(
+      join(r48ThemeDir, "App.tsx"),
+      '<div className="p-4 min-laptop:gap-6 inset-ring-brand inset-shadow-brand drop-shadow-brand text-shadow-brand" />\n'
+    );
+    const r48ThemeScan = scanTarget(r48ThemeDir);
+    assert.equal(r48ThemeScan.drift.semanticOrphanCount, 0, "R48 A2-M3: @theme --spacing, --breakpoint-*, and inset-ring/shadow/drop-shadow/text-shadow colors must be marked used");
+
+    const r48MixL = parseCssColorToRgba("color-mix(in oklch, lab(none 0 0) 50%, oklch(0.8 0 0) 50%)");
+    const r48MixLExp = parseCssColorToRgba("oklch(0.8 0 0)");
+    assert.ok(
+      r48MixL && r48MixLExp && [0, 1, 2].every((idx) => Math.abs(r48MixL[idx] - r48MixLExp[idx]) <= 1),
+      "R48 A2-L1: missing Lightness 'none' in lab() must carry forward analogously into oklch"
+    );
+    const r48MixR = parseCssColorToRgba("color-mix(in display-p3, rgb(none 0 0) 50%, color(display-p3 1 0 0) 50%)");
+    const r48MixRExp = parseCssColorToRgba("color(display-p3 1 0 0)");
+    assert.ok(
+      r48MixR && r48MixRExp && [0, 1, 2].every((idx) => Math.abs(r48MixR[idx] - r48MixRExp[idx]) <= 1),
+      "R48 A2-L1: missing Red 'none' in rgb() must carry forward analogously into display-p3"
+    );
+
+    // Round 49 (A2-L1 CSS <hue> percentages inside calc() must be rejected):
+    assert.equal(parseCssColorToRgba("oklch(0.6 0.15 calc(50%))"), null, "R49 A2-L1: calc(50%) hue must be rejected");
+    assert.equal(parseCssColorToRgba("hsl(calc(50%) 100% 50%)"), null, "R49 A2-L1: hsl calc(50%) hue must be rejected");
+    assert.equal(parseCssColorToRgba("oklch(0.6 0.15 calc(90deg + 50%))"), null, "R49 A2-L1: mixed deg + % in hue must be rejected");
+    assert.deepEqual(parseCssColorToRgba("hsl(calc(90deg + 0.25turn) 100% 50%)"), [0, 255, 255, 1], "R49 A2-L1: valid angle addition in hue must still resolve");
 
     console.log("AUDIT_TOKENS_SELF_TEST_PASSED (DTCG + scoped CSS/@theme/Tailwind + fixture/OG + SVG/swatch + SARIF/waivers)");
     return 0;
